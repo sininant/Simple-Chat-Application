@@ -1,26 +1,28 @@
 # Simple Chat Application
 
-A desktop client-server chat application for the Computer Network term project. The application uses Python TCP sockets over IPv4 and a custom length-prefixed JSON application protocol.
+A desktop client-server chat application for the Computer Network term project. The application uses Python socket programming over TCP/IPv4 and a custom JSON application protocol (using newline-delimited JSON `\n` framing, with `Socket.IO` also supported as an option).
+
+> **Note:** The architecture, protocol format, and UI stack described in this repository are **working ideas (draft baseline)** aligned with the course requirements and can be adjusted by the team as implementation progresses. See [docs/project-ideas.md](docs/project-ideas.md) for the part-by-part breakdown (Part 1, Part 2, and Part 3).
 
 ## Project scope
 
-The system uses separate server and client programs. The final demonstration uses two clients running on different physical computers. Every client maintains a TCP connection to one central server; clients never communicate directly with one another.
+The system uses separate server and client programs. The final demonstration uses at least two clients running on different physical computers (`R1`). Every client communicates with one central server over Socket Programming (`R2`); clients never communicate directly with one another.
 
-Required functionality:
+Required functionality (Part 2 — `R3` to `R11`):
 
-- unique usernames and a live connected-user list;
-- separate private and group chat rooms;
-- private messages visible only to the sender and receiver;
-- group creation, group discovery, voluntary joining, and member-only messages.
+- unique usernames (`R3`) and a live connected-user list including the user's own name (`R4`);
+- separate private and group chat rooms (`R5`), each with a chat box and chat window (`R6`);
+- private messages visible only to the sender and receiver (`R7`);
+- group creation with the creator as the sole initial member (`R8`), group discovery with member lists (`R9`), voluntary joining (`R10`), and member-only group messages (`R11`).
 
-Planned special features:
+Planned special features (Part 3 — 4 Special Points):
 
-- speech-to-text input (AI feature);
-- predefined stickers sent by sticker ID;
-- system-wide announcements;
-- private-message read receipts.
+1. **Speech-to-text input (Mandatory AI feature):** client-side microphone transcription into text before sending over the chat socket;
+2. **Send Sticker:** predefined stickers stored locally in `assets/stickers/` and sent by `sticker_id`;
+3. **Announcement:** system-wide broadcast alert displayed across all chat rooms;
+4. **Read Receipt:** automatic `READ_ACK` confirmation (inspired by `rdt` acknowledgements) when a recipient views a private message.
 
-## Network architecture
+## Network architecture (Part 1)
 
 The recommended setup uses **two physical computers**:
 
@@ -39,25 +41,26 @@ Physical computer A                         Physical computer B
 +---------------------------+   Ethernet
 ```
 
-Although the server and Alice run on the same physical computer, `server.py` and `client.py` are separate programs and separate operating-system processes. This satisfies the requirement because Alice and Bob, the two clients, run on different physical computers.
+Although the server and Alice run on the same physical computer, `server.py` and `client.py` are separate programs and separate operating-system processes. This satisfies `R1` because Alice and Bob, the two clients, run on different physical computers.
 
 | Layer | Choice | Responsibility |
 | --- | --- | --- |
-| Application | Custom length-prefixed JSON protocol | Defines registration, chat, group, sticker, announcement, and read-receipt messages |
-| Transport | TCP | Provides reliable, ordered delivery between each client and the server |
-| Network | IPv4 | Addresses and routes traffic between computers |
-| Network access | Wi-Fi or Ethernet | Connects the physical computers |
+| Application | Custom JSON chat protocol (`\n` JSON or `Socket.IO`) | Fulfills Presentation-layer (JSON encoding/framing) and Session-layer (login & group membership state) responsibilities |
+| Transport | TCP | Provides reliable, ordered delivery and 4-tuple connection-oriented demultiplexing between each client and the server |
+| Network | IP (IPv4) | Addresses and routes traffic between physical computers |
+| Network access | Wi-Fi or Ethernet | Connects the physical computers on the same local network |
 
-See [docs/protocol.md](docs/protocol.md) for the protocol contract.
+See [docs/protocol.md](docs/protocol.md) for the working protocol draft and [docs/project-ideas.md](docs/project-ideas.md) for the lecture-theory points and part-by-part implementation guide.
 
-## Technology
+## Technology (Working Stack)
 
-- Python 3.11 or newer
-- Python standard-library `socket`, `threading`, `json`, and `tkinter` modules
-- Speech-recognition dependency to be finalized before the AI feature is implemented
-- `pytest` and Ruff for automated checks
-
-This project uses raw TCP sockets, not Socket.IO or WebSocket.
+- **Language:** Python 3.11 or newer
+- **Networking:** Python standard-library `socket` + `threading` + `json` (or `python-socketio` if the team opts for Socket.IO events)
+- **Desktop GUI (Client):**
+  - **Recommended:** `CustomTkinter` + `Pillow` (or standard-library `tkinter` with `ttk.Notebook` tabs) for simple multi-tab chat rooms (`R5`), inline `.png` sticker rendering, and 1-line `"Read ✓✓"` label updates
+  - **Alternative:** `PySide6` / `PyQt5` (`QTabWidget` / `QListWidget` / `QTextBrowser`)
+- **AI Feature (Speech-to-Text):** Client-side `SpeechRecognition` (with Google Web Speech API or OpenAI Whisper)
+- **Quality checks:** `pytest` and Ruff
 
 ## Getting started
 
@@ -66,8 +69,6 @@ This project uses raw TCP sockets, not Socket.IO or WebSocket.
 - Python 3.11+
 - Git
 - Two computers on the same network for the final integration test
-
-Tkinter is included with the standard Python installer on Windows and macOS. Some Linux distributions require a separate `python3-tk` package.
 
 ### Setup
 
@@ -118,17 +119,19 @@ Tkinter is included with the standard Python installer on Windows and macOS. Som
 Simple-Chat-Application/
 |-- .github/
 |   `-- workflows/pr-check.yml
-|-- assets/stickers/       Preinstalled sticker images
-|-- docs/protocol.md       Shared client-server protocol contract
-|-- tests/                 Automated unit and integration tests
-|-- client.py              Client networking entry point
-|-- gui.py                 Tkinter user interface
-|-- protocol.py            Framing, encoding, and decoding helpers
-|-- server.py              Multi-client TCP server
-`-- speech.py              Speech-to-text integration
+|-- assets/stickers/         Preinstalled sticker images (.png)
+|-- docs/
+|   |-- project-ideas.md     Part 1, Part 2, and Part 3 working design guide
+|   `-- protocol.md          Shared client-server protocol draft
+|-- tests/                   Automated unit and integration tests
+|-- client.py                Client networking and session entry point
+|-- gui.py                   Desktop user interface (CustomTkinter / Tkinter / PySide6)
+|-- protocol.py              Message framing, encoding, and decoding helpers
+|-- server.py                Multi-client server and routing logic
+`-- speech.py                Client-side speech-to-text integration
 ```
 
-The implementation files will be added incrementally through focused pull requests. Dependency management will be added when the team selects a speech-to-text library; the core socket application currently uses Python's standard library only.
+The implementation files will be added incrementally through focused pull requests and can be adapted as the team finalizes each part.
 
 ## Quality checks
 
@@ -157,9 +160,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and naming conventi
 ## Security and repository rules
 
 - Never commit API keys, credentials, microphone recordings, `.env` files, or private IP configuration.
-- Treat the sender identity from a client packet as untrusted; the server must derive the sender from the registered socket.
-- Validate message type, payload size, target, group membership, and sticker ID on the server.
-- System announcements must originate from an authorized server-side action.
+- Treat the sender identity from a client packet as untrusted; the server must verify or derive the sender from the registered socket.
+- Validate message command/type, target, group membership (`R10`, `R11`), and `sticker_id` on the server.
+- System announcements must originate from an authorized server-side or admin action.
 - Keep each pull request focused and do not commit directly to `main` after initial setup.
 
 ## License
