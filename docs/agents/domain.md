@@ -1,51 +1,46 @@
 # Domain Docs
 
-How the engineering skills should consume this repo's domain documentation when exploring the codebase.
+How the engineering skills should consume this repo's domain and architecture documentation when exploring the codebase.
 
 ## Before exploring, read these
 
-- **`GLOSSARY.md`** at the repo root, or
-- **`GLOSSARY-MAP.md`** at the repo root if it exists: it points at one `GLOSSARY.md` per context. Read each one relevant to the topic.
-- **`docs/adr/`**: read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
+- **`GLOSSARY.md`** at the repo root (when present) for canonical project terminology.
+- **`docs/protocol.md`** for the client-server JSON message contract, framing rules, and field semantics.
+- **`docs/project-ideas.md`** for the working design across Part 1 (System Architecture), Part 2 (Fundamental Implementation `R3`–`R11`), and Part 3 (Special Points `SP1`–`SP4`).
+- **`docs/adr/`**: read ADRs that touch the area you're about to work in.
 
-If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
+If `GLOSSARY.md` or `docs/adr/` don't exist yet, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
 
 ## File structure
 
-Single-context repo (most repos):
+This repository uses a single-context layout at the root:
 
-```
+```text
 /
-├── GLOSSARY.md
-├── docs/adr/
-│   ├── 0001-event-sourced-orders.md
-│   └── 0002-postgres-for-write-model.md
-└── src/
+├── AGENTS.md
+├── GLOSSARY.md                (created lazily when domain terms are resolved)
+├── docs/
+│   ├── adr/                   (created lazily for architectural decision records)
+│   ├── agents/                (agent skill and tracker configuration)
+│   ├── project-ideas.md       (Part 1, Part 2, and Part 3 working design guide)
+│   └── protocol.md            (client-server chat protocol contract)
+├── assets/stickers/           (preinstalled sticker PNG assets)
+├── tests/                     (automated unit and integration tests)
+├── client.py
+├── gui.py
+├── protocol.py
+├── server.py
+└── speech.py
 ```
 
-Multi-context repo (presence of `GLOSSARY-MAP.md` at the root):
+## Use the glossary's and protocol's vocabulary
 
-```
-/
-├── GLOSSARY-MAP.md
-├── docs/adr/                          ← system-wide decisions
-└── src/
-    ├── ordering/
-    │   ├── GLOSSARY.md
-    │   └── docs/adr/                  ← context-specific decisions
-    └── billing/
-        ├── GLOSSARY.md
-        └── docs/adr/
-```
+When your output names a domain concept or message type (in an issue title, a refactor proposal, a hypothesis, or a test name), use the terms defined in `GLOSSARY.md` and `docs/protocol.md`. Don't drift to synonyms that the glossary or protocol contract avoids.
 
-## Use the glossary's vocabulary
-
-When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `GLOSSARY.md`. Don't drift to synonyms the glossary explicitly avoids.
-
-If the concept you need isn't in the glossary yet, that's a signal: either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
+If the concept you need isn't in `GLOSSARY.md` yet, that's a signal: either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
 
 ## Flag ADR conflicts
 
-If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
+If your output contradicts an existing ADR or protocol rule in `docs/protocol.md`, surface it explicitly rather than silently overriding:
 
-> _Contradicts ADR-0007 (event-sourced orders), but worth reopening because…_
+> _Contradicts ADR-0001 / `docs/protocol.md` (newline-delimited JSON framing), but worth reopening because…_
