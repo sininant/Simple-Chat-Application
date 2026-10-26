@@ -121,9 +121,11 @@ Simple-Chat-Application/
 |   `-- workflows/pr-check.yml
 |-- assets/stickers/         Preinstalled sticker images (.png)
 |-- docs/
+|   |-- agents/              Agent skill, tracker, and domain docs config
 |   |-- project-ideas.md     Part 1, Part 2, and Part 3 working design guide
 |   `-- protocol.md          Shared client-server protocol draft
 |-- tests/                   Automated unit and integration tests
+|-- AGENTS.md                Agent instructions and safety rules
 |-- client.py                Client networking and session entry point
 |-- gui.py                   Desktop user interface (CustomTkinter / Tkinter / PySide6)
 |-- protocol.py              Message framing, encoding, and decoding helpers
