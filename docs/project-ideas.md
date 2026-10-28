@@ -48,7 +48,50 @@ To keep socket programming in Python (`server.py` and `client.py`) and remain 10
 2. **Alternative Option: `PySide6` / `PyQt5`**
    - Offers `QTabWidget` for separate rooms (`R5`) and `QListWidget` or `QTextBrowser` (with `<img src="...">` support) for rendering stickers and rich layouts.
 
-### 2.2 Requirement-by-Requirement Flow (`R3`–`R11`)
+### 2.2 Baseline 2-Screen UI Layout (`R3`–`R11`, `SP1`–`SP4`)
+
+```text
++-----------------------------------------------------------------------------------+
+| [Screen 1: Login View (R3)]                                                       |
+|                                                                                   |
+|                     +---------------------------------------+                     |
+|                     |       Simple Chat Application         |                     |
+|                     |  Server IP : [ 127.0.0.1           ]  |                     |
+|                     |  Port      : [ 5000                ]  |                     |
+|                     |  Username  : [ Alice               ]  |                     |
+|                     |  [       Connect to Server         ]  |                     |
+|                     |  (Error label if username is taken)   |                     |
+|                     +---------------------------------------+                     |
++-----------------------------------------------------------------------------------+
+
++-----------------------------------------------------------------------------------+
+| [Screen 2: Main Chat Window]                                                      |
+| Logged in as: Alice (Online)                                                      |
++-----------------------------------------------------------------------------------+
+| 📢 ANNOUNCEMENT BANNER (SP3): "Server will restart in 5 minutes!"          [Hide] |
++---------------------------+-------------------------------------------------------+
+| LEFT SIDEBAR              | RIGHT PANEL: CHAT ROOM TABS (CTkTabview - R5)         |
+|                           | [ 👤 Bob ] [ 👥 StudyGroup * ]                        |
+| 🟢 Online Users (R4)      +-------------------------------------------------------+
+| - Alice (You)             | CHAT WINDOW (CTkScrollableFrame - R6)                 |
+| - Bob          [Chat]     |                                                       |
+| - Charlie      [Chat]     |  [Bob - 14:30]                                        |
+|                           |  Hello Alice!                                         |
+| ------------------------- |                                                       |
+| 👥 Chat Groups (R8-R10)   |                                      [You - 14:31]    |
+| [+ New Group Name] [Add]  |                                      Hi Bob!          |
+|                           |                                      Read ✓✓ (SP4)    |
+| • StudyGroup              |                                                       |
+|   Members: Alice, Bob     |                                      [You - 14:32]    |
+|   [Open Room]             |                                      [🖼️ STK_001.png] |
+|                           |                                      Read ✓✓ (SP4)    |
+| • Gamers                  +-------------------------------------------------------+
+|   Members: Charlie        | CHAT BOX (R6)                                         |
+|   [Join Group] (R10)      | [😊 Sticker (SP2)] [🎤 Mic (SP1)] [ Type msg... ] [Send]|
++---------------------------+-------------------------------------------------------+
+```
+
+### 2.3 Requirement-by-Requirement Flow (`R3`–`R11`)
 
 1. **Unique Username Registration & Online User List (`R3`, `R4`):**
    - Immediately upon connecting, the client sends `{"command": "CONNECT_REQ", "sender": "MyName"}`.
