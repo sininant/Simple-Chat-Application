@@ -100,7 +100,7 @@ To keep the Socket.IO server and desktop client in Python (`server.py`, `client.
    - The UI maintains separate tabs or windows for each private conversation and each joined group (`R5`) so messages never mix.
    - Every chat room includes a **Chat window** for displaying sent and incoming messages and a **Chat box** (with text input, Send button, Microphone button, and Sticker button) (`R6`).
 3. **Private Messaging (`R7`):**
-   - The sender emits `private_message` with `{"message_id": "MSG_001", "target": "Bob", "message": "Hi Bob!"}`.
+   - The sender emits `private_message` with `{"message_id": "MSG_001", "target": "Bob", "message": "Hi Bob!", "timestamp": "14:31"}`.
    - The server derives Alice from `sessions[sid]` and emits the completed event only to Alice and Bob. No other client receives it.
 4. **Group Chat Lifecycle (`R8`, `R9`, `R10`, `R11`):**
    - **Create Group (`R8`):** The client emits `create_group` with `{"group_name": "StudyGroup"}`. The server adds only the creator's `sid` to the Socket.IO Room and broadcasts `group_list`.
@@ -123,8 +123,8 @@ To keep the Socket.IO server and desktop client in Python (`server.py`, `client.
 ### 2. Send Sticker (Predefined Stickers by ID)
 - **Architecture:**
   - Preinstalled sticker image files (e.g., `assets/stickers/STK_001.png`) are bundled on every client machine.
-  - Clicking a sticker emits `send_sticker` with a compact JSON payload containing only the identifier and destination, such as `{"sticker_id": "STK_001", "target": "Bob", "group_name": null}`.
-  - Upon receiving the packet, the recipient's UI loads `assets/stickers/STK_001.png` from local disk and renders the image inside the appropriate chat window (`R6`).
+  - Clicking a sticker emits `send_sticker` with identifier, destination, and metadata, such as `{"sticker_id": "STK_001", "target": "Bob", "group_name": null, "message_id": "MSG_003", "timestamp": "14:33"}`.
+  - The server verifies sender identity and forwards a `sticker_message` event to the target user or group Room. Upon receiving `sticker_message`, the recipient's UI loads `assets/stickers/STK_001.png` from local disk and renders the image inside the appropriate chat window (`R6`).
 
 ### 3. System-Wide Announcement (One-to-All Broadcast)
 - **Architecture:**
@@ -147,7 +147,7 @@ To keep the Socket.IO server and desktop client in Python (`server.py`, `client.
    - Define event-name constants, JSON payload validation, and the schemas in `docs/protocol.md`. Socket.IO handles framing; do not implement a newline buffer.
 2. **Step 2 — Build the Socket.IO Server & State (`server.py`):**
    - Maintain session mappings from `sid` to username and group metadata for the `group_list` event.
-   - Register handlers for `register`, `private_message`, `create_group`, `join_group`, `group_message`, `send_sticker`, `announcement`, and `read_ack`; use Socket.IO Rooms for member-only delivery.
+   - Register handlers for `register`, `disconnect`, `private_message`, `create_group`, `join_group`, `group_message`, `send_sticker`, `announcement`, and `read_ack`; use Socket.IO Rooms for member-only delivery.
 3. **Step 3 — Build the Client Session & Desktop GUI (`client.py`, `gui.py`):**
    - Implement the login screen, online user & group sidebars (`R4`, `R9`), and multi-tab chat rooms (`R5`, `R6`).
    - Connect Socket.IO callbacks to the GUI thread through a thread-safe `queue.Queue`.

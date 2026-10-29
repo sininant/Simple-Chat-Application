@@ -105,19 +105,19 @@ See [docs/protocol.md](docs/protocol.md) for the agreed Socket.IO event contract
    python server.py
    ```
 
-5. On Computer A, start Alice's desktop client in a second terminal:
+5. On Computer A, start Alice's client session in a second terminal:
 
    ```bash
-   python gui.py --server-url http://127.0.0.1:5000
+   python client.py --server-url http://127.0.0.1:5000
    ```
 
 6. On Computer B, start Bob using Computer A's LAN IPv4 address:
 
    ```bash
-   python gui.py --server-url http://192.168.1.10:5000
+   python client.py --server-url http://192.168.1.10:5000
    ```
 
-   Replace `192.168.1.10` with the actual LAN IPv4 address of Computer A. Do not use `127.0.0.1` on Computer B because that address refers to Computer B itself. The exact CLI is implemented in Issue #5; it must connect through `socketio.Client()`.
+   Replace `192.168.1.10` with the actual LAN IPv4 address of Computer A. Do not use `127.0.0.1` on Computer B because that address refers to Computer B itself.
 
 ## Planned project structure
 
