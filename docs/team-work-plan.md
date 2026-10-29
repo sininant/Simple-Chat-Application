@@ -27,7 +27,7 @@ There are **3 key checkpoints** that all 4 team members complete together to kee
 
 ### 1.1 Kick-off Sync (Before Phase 1 — ~30 mins)
 - Merge [PR #16](https://github.com/sininant/Simple-Chat-Application/pull/16) (Baseline 2-Screen UI Layout) into `main`.
-- Review the shared contracts in `docs/protocol.md` and `GLOSSARY.md` so everyone uses identical packet types and payload field names.
+- Review the shared contracts in `docs/protocol.md` and `GLOSSARY.md` so everyone uses identical Socket.IO event names and payload schemas.
 - Align on the predefined sticker IDs (`sticker_id`) and visual UI direction for [Issue #3](https://github.com/sininant/Simple-Chat-Application/issues/3).
 - **Mandatory PR Evidence Rule**: Because the course presentation requires **two Code Snapshot boxes per requirement (e.g., Server + Client/GUI)** and the **Generative AI Prompt (if used)**, every member must record both items directly in their PR description when opening a PR.
 
@@ -48,8 +48,8 @@ This allocation ensures **every member works across both Network/Backend and UI*
 
 | Member | Implementation (Owner) | Code Review (Reviewer) | Workload Rationale |
 | :--- | :--- | :--- | :--- |
-| **`A` (Pornpanit)** | **3 Tickets**: [#3](https://github.com/sininant/Simple-Chat-Application/issues/3) (P1), [#5](https://github.com/sininant/Simple-Chat-Application/issues/5) (P2), [#12](https://github.com/sininant/Simple-Chat-Application/issues/12) (`SP3` - P4) | **3 Tickets**: [#4](https://github.com/sininant/Simple-Chat-Application/issues/4), [#8](https://github.com/sininant/Simple-Chat-Application/issues/8), [#11](https://github.com/sininant/Simple-Chat-Application/issues/11) | Starts with Figma & sticker assets (`#3`), moves to the core TCP Server/Session engine (`#5`) in Phase 2, reviews server-side group logic in Phase 3, and implements `SP3` Announcement (`#12`) in Phase 4. |
-| **`B` (Worawalan)** | **3 Tickets**: [#4](https://github.com/sininant/Simple-Chat-Application/issues/4) (P1), [#7](https://github.com/sininant/Simple-Chat-Application/issues/7) (P3), [#13](https://github.com/sininant/Simple-Chat-Application/issues/13) (`SP4` - P4) | **2 Tickets**: [#5](https://github.com/sininant/Simple-Chat-Application/issues/5), [#10](https://github.com/sininant/Simple-Chat-Application/issues/10) | Builds the JSON framing foundation (`#4`), reviews `#5` in Phase 2, and owns the end-to-end 1-to-1 private messaging track across Phase 3 (`#7`) and Phase 4 (`#13` Read Receipt). |
+| **`A` (Pornpanit)** | **3 Tickets**: [#3](https://github.com/sininant/Simple-Chat-Application/issues/3) (P1), [#5](https://github.com/sininant/Simple-Chat-Application/issues/5) (P2), [#12](https://github.com/sininant/Simple-Chat-Application/issues/12) (`SP3` - P4) | **3 Tickets**: [#4](https://github.com/sininant/Simple-Chat-Application/issues/4), [#8](https://github.com/sininant/Simple-Chat-Application/issues/8), [#11](https://github.com/sininant/Simple-Chat-Application/issues/11) | Starts with Figma & sticker assets (`#3`), implements the Socket.IO Server/Session engine (`#5`) in Phase 2, reviews server-side group logic in Phase 3, and implements `SP3` Announcement broadcast (`#12`) in Phase 4. |
+| **`B` (Worawalan)** | **3 Tickets**: [#4](https://github.com/sininant/Simple-Chat-Application/issues/4) (P1), [#7](https://github.com/sininant/Simple-Chat-Application/issues/7) (P3), [#13](https://github.com/sininant/Simple-Chat-Application/issues/13) (`SP4` - P4) | **2 Tickets**: [#5](https://github.com/sininant/Simple-Chat-Application/issues/5), [#10](https://github.com/sininant/Simple-Chat-Application/issues/10) | Defines Socket.IO event contracts & validators (`#4`), reviews `#5` in Phase 2, and owns the end-to-end 1-to-1 private messaging track across Phase 3 (`#7`) and Phase 4 (`#13` Read Receipt). |
 | **`C` (Jiruchya)** | **2 Tickets + Lead `R1` & Slides**: [#9](https://github.com/sininant/Simple-Chat-Application/issues/9) (P3), [#11](https://github.com/sininant/Simple-Chat-Application/issues/11) (`SP2` - P4) + Lead `R1` Diagram & Slides in [#14](https://github.com/sininant/Simple-Chat-Application/issues/14) | **4 Tickets**: [#3](https://github.com/sininant/Simple-Chat-Application/issues/3), [#6](https://github.com/sininant/Simple-Chat-Application/issues/6), [#7](https://github.com/sininant/Simple-Chat-Application/issues/7), [#12](https://github.com/sininant/Simple-Chat-Application/issues/12) | Guards UI/UX consistency by reviewing `#3, #6, #7, #12`, implements Group Chat rooms (`#9`) and `SP2` Stickers (`#11`), and leads the `R1` System Architecture Diagram and slide deck formatting in `#14`. |
 | **`D` (Sininant)** | **3 Tickets**: [#6](https://github.com/sininant/Simple-Chat-Application/issues/6) (P2), [#8](https://github.com/sininant/Simple-Chat-Application/issues/8) (P3), [#10](https://github.com/sininant/Simple-Chat-Application/issues/10) (`SP1` AI - P4) | **2 Tickets**: [#9](https://github.com/sininant/Simple-Chat-Application/issues/9), [#13](https://github.com/sininant/Simple-Chat-Application/issues/13) | Builds the core `gui.py` 2-screen shell (`#6`) in Phase 2, extends it with Group creation/discovery/join (`#8`) in Phase 3, and delivers the mandatory AI feature `SP1` Speech-to-Text (`#10`) in Phase 4. |
 
@@ -62,7 +62,7 @@ This allocation ensures **every member works across both Network/Backend and UI*
 | Ticket | Scope | Owner | Reviewer | Review Focus |
 | :--- | :--- | :---: | :---: | :--- |
 | **[#3](https://github.com/sininant/Simple-Chat-Application/issues/3)** | Create 2-screen Figma design + predefined `.png` sticker pack in `assets/stickers/` | **`A`** | **`C`** | `C` verifies that UI placements cover every required feature before `D` builds `gui.py` in `#6`. |
-| **[#4](https://github.com/sininant/Simple-Chat-Application/issues/4)** | Implement `protocol.py` (`\n` JSON framing, `LineBuffer`, packet validators — `R2`) | **`B`** | **`A`** | `A` immediately consumes `protocol.py` in `#5` (`server.py` and `ClientSession`). |
+| **[#4](https://github.com/sininant/Simple-Chat-Application/issues/4)** | Define Socket.IO event contracts, payload schemas, and client/server event validators (`R2`) | **`B`** | **`A`** | `A` immediately consumes event definitions and payload models in `#5` (`server.py` and `ClientSession`). |
 
 > **Early Prep During Phase 1 for `C` and `D` (No Idle Waiting):**
 > - **`D`**: Can scaffold initial CustomTkinter layout classes for `#6` and begin researching the AI model / writing standalone `speech.py` (`SpeechTranscriber` + `tests/test_speech.py`) ahead of `#10` (`SP1`).
@@ -72,7 +72,7 @@ This allocation ensures **every member works across both Network/Backend and UI*
 
 | Ticket | Scope | Owner | Reviewer | Review Focus |
 | :--- | :--- | :---: | :---: | :--- |
-| **[#5](https://github.com/sininant/Simple-Chat-Application/issues/5)** | Implement `server.py` (multi-threaded TCP + `ChatEngine`) and `client.py` (`ClientSession` for login & online list — `R2, R3, R4`) | **`A`** | **`B`** | `A` transitions from Phase 1 Design to the Server/Session core; `B` (author of `protocol.py`) reviews framing usage, thread locks, and `ClientSession` APIs before `#7`. |
+| **[#5](https://github.com/sininant/Simple-Chat-Application/issues/5)** | Implement `server.py` (`socketio.Server` with room and session management) and `client.py` (`socketio.Client` session wrapper for login & presence — `R2, R3, R4`) | **`A`** | **`B`** | `A` transitions from Phase 1 Design to the Socket.IO Server/Session core; `B` (author of `protocol.py` event contracts) reviews event names, room usage, and `ClientSession` APIs before `#7`. |
 | **[#6](https://github.com/sininant/Simple-Chat-Application/issues/6)** | Build `gui.py` (CustomTkinter 2-screen UI shell, Global Reusable Components, login & presence wiring — `R3, R4, R5, R6`) | **`D`** | **`C`** | `D` builds the UI shell from `#3`'s Figma (layout work can start alongside `#5`, then wire `ClientSession`); `C` checks design fidelity and reusable component boundaries. |
 
 ### Phase 3: Core Chat Rooms — Private & Group Chat (`B`, `D`, `C`)
@@ -88,8 +88,8 @@ This allocation ensures **every member works across both Network/Backend and UI*
 | Ticket | Special Point (1.0 pt each) | Owner | Reviewer | Assignment & Review Focus |
 | :--- | :--- | :---: | :---: | :--- |
 | **[#10](https://github.com/sininant/Simple-Chat-Application/issues/10)** | **SP1 (Mandatory AI)**: Client-side Speech-to-Text microphone input | **`D`** | **`B`** | `D` wires `speech.py` into `gui.py`; `B` (author of `#7` chat send flow) verifies background audio threading so the UI never freezes. |
-| **[#11](https://github.com/sininant/Simple-Chat-Application/issues/11)** | **SP2**: Predefined sticker picker popup and `sticker_id` image rendering | **`C`** | **`A`** | `C` extends `MessageBubble` for sticker rendering across private and group rooms; `A` (creator of `#3` sticker assets) verifies image rendering and missing-file fallbacks. |
-| **[#12](https://github.com/sininant/Simple-Chat-Application/issues/12)** | **SP3**: Server-wide one-to-all announcement broadcast and top alert banner | **`A`** | **`C`** | `A` extends `server.py` broadcast logic from `#5`; `C` reviews the top `AnnouncementBanner` placement across room tabs in `gui.py`. |
+| **[#11](https://github.com/sininant/Simple-Chat-Application/issues/11)** | **SP2**: Predefined sticker picker popup and `sticker_id` image rendering *(Early start after #6; Integration gate: verified in both Private #7 and Group #9)* | **`C`** | **`A`** | `C` extends `MessageBubble` for sticker rendering across private and group rooms; `A` (creator of `#3` sticker assets) verifies image rendering and missing-file fallbacks.<br><br>**Integration Gate**: Final sign-off on #11 requires verifying sticker transmission and rendering in both 1-to-1 private chat (#7) and group chat rooms (#9). Development can start as soon as #6 provides the picker/bubble components, but the PR cannot be completed until validated against #9. |
+| **[#12](https://github.com/sininant/Simple-Chat-Application/issues/12)** | **SP3**: Server-wide one-to-all announcement broadcast and top alert banner *(UI prep after #6; Integration gate: server broadcast with #5)* | **`A`** | **`C`** | `A` implements the one-to-all broadcast on `server.py` (`#5`); `C` reviews the top `AnnouncementBanner` layout in `gui.py` (`#6`).<br><br>**Integration Gate**: Final acceptance requires verifying that an announcement broadcast is received simultaneously across >= 2 connected client instances. Client-side banner UI work alone does not complete #12. |
 | **[#13](https://github.com/sininant/Simple-Chat-Application/issues/13)** | **SP4**: Automatic `READ_ACK` (`Read ✓✓`) when viewing private messages | **`B`** | **`D`** | `B` extends `#7` private chat with `rdt2.0`-style read acknowledgments; `D` (author of `gui.py`) verifies active-tab focus detection before firing `READ_ACK`. |
 
 ### Phase 5: Multi-Computer LAN Verification & Final Presentation (All 4 Members)
@@ -106,25 +106,25 @@ This allocation ensures **every member works across both Network/Backend and UI*
 flowchart LR
     subgraph P1["Phase 1: Foundation"]
         T3["#3 Design & Stickers (A -> C)"]
-        T4["#4 protocol.py (B -> A)"]
+        T4["#4 Socket.IO Contracts & Schemas (B -> A)"]
         Prep["Early GUI / speech.py Prep (D)"]
     end
 
     subgraph P2["Phase 2: Server & GUI Core"]
-        T5["#5 Server & Session (A -> B)"]
-        T6["#6 GUI Shell (D -> C)"]
+        T5["#5 Socket.IO Server & Session (A -> B)"]
+        T6["#6 GUI Shell & MessageBubble (D -> C)"]
     end
 
     subgraph P3["Phase 3: Core Chat Rooms"]
-        T7["#7 Private Chat (B -> C)"]
-        T8["#8 Group Create/Join (D -> A)"]
-        T9["#9 Group Chat (C -> D)"]
+        T7["#7 Private Chat & Sockets (B -> C)"]
+        T8["#8 Group Management & Rooms (D -> A)"]
+        T9["#9 Group Chat & Broadcast (C -> D)"]
     end
 
     subgraph P4["Phase 4: Special Points (1 SP Each)"]
         T10["#10 SP1 Speech AI (D -> B)"]
-        T11["#11 SP2 Stickers (C -> A)"]
-        T12["#12 SP3 Announcement (A -> C)"]
+        T11["#11 SP2 Stickers (C -> A)<br/>[Gate: Tested in Private #7 & Group #9]"]
+        T12["#12 SP3 Announcement (A -> C)<br/>[Gate: Tested with Server Broadcast #5]"]
         T13["#13 SP4 Read Receipt (B -> D)"]
     end
 
@@ -142,8 +142,9 @@ flowchart LR
     Prep -.-> T10
     T7 --> T10
     T3 --> T11
-    T7 --> T11
-    T6 --> T12
+    T6 --> T11
+    T9 -.->|Group Verification Gate| T11
+    T5 & T6 --> T12
     T7 --> T13
     T7 --> T14
     T9 --> T14
