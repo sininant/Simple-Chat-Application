@@ -62,7 +62,7 @@ This allocation ensures **every member works across both Network/Backend and UI*
 | Ticket | Scope | Owner | Reviewer | Review Focus |
 | :--- | :--- | :---: | :---: | :--- |
 | **[#3](https://github.com/sininant/Simple-Chat-Application/issues/3)** | Create 2-screen Figma design + predefined `.png` sticker pack in `assets/stickers/` | **`A`** | **`C`** | `C` verifies that UI placements cover every required feature before `D` builds `gui.py` in `#6`. |
-| **[#4](https://github.com/sininant/Simple-Chat-Application/issues/4)** | Define Socket.IO event contracts, payload schemas, and client/server event validators (`R2`) | **`B`** | **`A`** | `A` immediately consumes event definitions and payload models in `#5` (`server.py` and `ClientSession`). |
+| **[#4](https://github.com/sininant/Simple-Chat-Application/issues/4)** | Define Socket.IO event names, JSON payload schemas (e.g., `register`, `private_message`, `group_message`), and event validators (`R2`) | **`B`** | **`A`** | `A` immediately consumes event definitions and payload models in `#5` (`server.py` and `ClientSession`). |
 
 > **Early Prep During Phase 1 for `C` and `D` (No Idle Waiting):**
 > - **`D`**: Can scaffold initial CustomTkinter layout classes for `#6` and begin researching the AI model / writing standalone `speech.py` (`SpeechTranscriber` + `tests/test_speech.py`) ahead of `#10` (`SP1`).
@@ -72,7 +72,7 @@ This allocation ensures **every member works across both Network/Backend and UI*
 
 | Ticket | Scope | Owner | Reviewer | Review Focus |
 | :--- | :--- | :---: | :---: | :--- |
-| **[#5](https://github.com/sininant/Simple-Chat-Application/issues/5)** | Implement `server.py` (`socketio.Server` with room and session management) and `client.py` (`socketio.Client` session wrapper for login & presence — `R2, R3, R4`) | **`A`** | **`B`** | `A` transitions from Phase 1 Design to the Socket.IO Server/Session core; `B` (author of `protocol.py` event contracts) reviews event names, room usage, and `ClientSession` APIs before `#7`. |
+| **[#5](https://github.com/sininant/Simple-Chat-Application/issues/5)** | Use `socketio.Server()` and `socketio.Client()` to manage connect/disconnect, sessions, rooms, and routing (`R2, R3, R4`) | **`A`** | **`B`** | `A` transitions from Phase 1 Design to the Socket.IO Server/Session core; `B` (author of `protocol.py` event contracts) reviews event names, room usage, and `ClientSession` APIs before `#7`. |
 | **[#6](https://github.com/sininant/Simple-Chat-Application/issues/6)** | Build `gui.py` (CustomTkinter 2-screen UI shell, Global Reusable Components, login & presence wiring — `R3, R4, R5, R6`) | **`D`** | **`C`** | `D` builds the UI shell from `#3`'s Figma (layout work can start alongside `#5`, then wire `ClientSession`); `C` checks design fidelity and reusable component boundaries. |
 
 ### Phase 3: Core Chat Rooms — Private & Group Chat (`B`, `D`, `C`)
