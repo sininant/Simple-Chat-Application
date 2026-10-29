@@ -1,8 +1,8 @@
 # Simple Chat Application
 
-A desktop client-server chat application for the Computer Network term project. The application uses Python socket programming over TCP/IPv4 and a custom JSON application protocol (using newline-delimited JSON `\n` framing, with `Socket.IO` also supported as an option).
+A desktop client-server chat application for the Computer Network term project. The application uses **Socket.IO (`python-socketio`) events with JSON payloads** over TCP/IPv4.
 
-> **Note:** The architecture, protocol format, and UI stack described in this repository are **working ideas (draft baseline)** aligned with the course requirements and can be adjusted by the team as implementation progresses. See [docs/project-ideas.md](docs/project-ideas.md) for the part-by-part breakdown (Part 1, Part 2, and Part 3).
+> **Note:** Socket.IO is the team's agreed application-layer architecture. The UI details and implementation sequence can still be refined; the shared event contract is in [docs/protocol.md](docs/protocol.md).
 
 ## Project scope
 
@@ -45,17 +45,17 @@ Although the server and Alice run on the same physical computer, `server.py` and
 
 | Layer | Choice | Responsibility |
 | --- | --- | --- |
-| Application | Custom JSON chat protocol (`\n` JSON or `Socket.IO`) | Fulfills Presentation-layer (JSON encoding/framing) and Session-layer (login & group membership state) responsibilities |
+| Application | Socket.IO / Engine.IO events with JSON payloads | Fulfills Presentation-layer (JSON serialization and library-managed framing) and Session-layer (login sessions and group-room membership) responsibilities |
 | Transport | TCP | Provides reliable, ordered delivery and 4-tuple connection-oriented demultiplexing between each client and the server |
 | Network | IP (IPv4) | Addresses and routes traffic between physical computers |
 | Network access | Wi-Fi or Ethernet | Connects the physical computers on the same local network |
 
-See [docs/protocol.md](docs/protocol.md) for the working protocol draft and [docs/project-ideas.md](docs/project-ideas.md) for the lecture-theory points and part-by-part implementation guide.
+See [docs/protocol.md](docs/protocol.md) for the agreed Socket.IO event contract and [docs/project-ideas.md](docs/project-ideas.md) for the lecture-theory points and part-by-part implementation guide.
 
 ## Technology (Working Stack)
 
 - **Language:** Python 3.11 or newer
-- **Networking:** Python standard-library `socket` + `threading` + `json` (or `python-socketio` if the team opts for Socket.IO events)
+- **Networking:** `python-socketio` for Socket.IO / Engine.IO events over TCP; it manages application framing, reconnect handling, and named event delivery
 - **Desktop GUI (Client):**
   - **Recommended:** `CustomTkinter` + `Pillow` (or standard-library `tkinter` with `ttk.Notebook` tabs) for simple multi-tab chat rooms (`R5`), inline `.png` sticker rendering, and 1-line `"Read ✓✓"` label updates
   - **Alternative:** `PySide6` / `PyQt5` (`QTabWidget` / `QListWidget` / `QTextBrowser`)
@@ -93,22 +93,28 @@ See [docs/protocol.md](docs/protocol.md) for the working protocol draft and [doc
    .venv\Scripts\Activate.ps1
    ```
 
-3. On Computer A, start the server in one terminal:
+3. Install the planned networking and desktop-client dependencies:
+
+   ```bash
+   pip install python-socketio customtkinter pillow
+   ```
+
+4. On Computer A, start the Socket.IO server in one terminal:
 
    ```bash
    python server.py
    ```
 
-4. On Computer A, start Alice in a second terminal:
+5. On Computer A, start Alice's client session in a second terminal:
 
    ```bash
-   python client.py --host 127.0.0.1 --port 5000
+   python client.py --server-url http://127.0.0.1:5000
    ```
 
-5. On Computer B, start Bob using Computer A's LAN IPv4 address:
+6. On Computer B, start Bob using Computer A's LAN IPv4 address:
 
    ```bash
-   python client.py --host 192.168.1.10 --port 5000
+   python client.py --server-url http://192.168.1.10:5000
    ```
 
    Replace `192.168.1.10` with the actual LAN IPv4 address of Computer A. Do not use `127.0.0.1` on Computer B because that address refers to Computer B itself.
@@ -128,8 +134,8 @@ Simple-Chat-Application/
 |-- AGENTS.md                Agent instructions and safety rules
 |-- client.py                Client networking and session entry point
 |-- gui.py                   Desktop user interface (CustomTkinter / Tkinter / PySide6)
-|-- protocol.py              Message framing, encoding, and decoding helpers
-|-- server.py                Multi-client server and routing logic
+|-- protocol.py              Socket.IO event names, payload schemas, and validators
+|-- server.py                Socket.IO server, session registry, rooms, and routing logic
 `-- speech.py                Client-side speech-to-text integration
 ```
 
