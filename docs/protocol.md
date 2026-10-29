@@ -5,10 +5,10 @@
 ## Protocol stack
 
 ```text
-Application layer : Socket.IO Events & JSON Payloads
-Transport layer   : WebSocket / HTTP Long-Polling over TCP
+Application layer : Socket.IO / Engine.IO events & JSON payloads
+Transport layer   : TCP
 Network layer     : IP (IPv4)
-Network access    : Wi-Fi or Ethernet
+Network access    : Wi-Fi
 ```
 
 The application is implemented using **Socket.IO (`python-socketio`)** over TCP/IPv4, which is explicitly permitted and listed under course project materials (`https://socket.io/docs/v4/`).
@@ -62,7 +62,8 @@ All communication between Client and Server occurs through named Socket.IO event
 | `send_sticker` | Client -> Server | `{"sticker_id": "STK_001", "target": "Bob", "group_name": null, "message_id": "MSG_003", "timestamp": "14:33"}` | Client sends a predefined sticker to a peer or group (**Special Point 2**). |
 | `sticker_message` | Server -> Recipients | `{"sender": "Alice", "sticker_id": "STK_001", "target": "Bob", "group_name": null, "message_id": "MSG_003", "timestamp": "14:33"}` | Server forwards sticker event; client renders image from `assets/stickers/<sticker_id>.png`. |
 | `announcement` | Server -> All Clients | `{"message": "Server will restart in 5 minutes!", "timestamp": "14:30"}` | Server broadcasts alert across all client instances, displayed in top banner (**Special Point 3**). |
-| `read_ack` | Receiver -> Server -> Original Sender | `{"message_id": "MSG_001", "sender": "Alice", "reader": "Bob"}` | Acknowledges that recipient viewed the message, updating status to `"Read ✓✓"` (**Special Point 4**). |
+| `read_ack` | Client -> Server | `{"message_id": "MSG_001", "target": "Alice"}` | Client notifies server that they viewed Alice's private message (**Special Point 4**). |
+| `read_ack` | Server -> Original Sender | `{"message_id": "MSG_001", "reader": "Bob"}` | Server derives `reader` from `sessions[sid]`, validates target, and emits acknowledgment exclusively to Alice, updating message status to `"Read ✓✓"`. |
 
 ---
 
