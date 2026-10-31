@@ -3,7 +3,6 @@
 import pytest
 
 from protocol import (
-    ALL_EVENTS,
     CLIENT_EVENT_PAYLOAD_MAP,
     EVENT_ANNOUNCEMENT,
     EVENT_PRIVATE_MSG,
@@ -45,27 +44,6 @@ from protocol import (
 # -----------------------------------------------------------------------------
 
 
-def test_canonical_event_constants_defined():
-    """Verify that all canonical event names match protocol.md specifications."""
-    expected_events = {
-        "connect",
-        "disconnect",
-        "register",
-        "register_ack",
-        "user_list",
-        "private_message",
-        "create_group",
-        "join_group",
-        "group_list",
-        "group_message",
-        "send_sticker",
-        "sticker_message",
-        "announcement",
-        "read_ack",
-    }
-    assert ALL_EVENTS == expected_events
-
-
 def test_directional_event_maps():
     """Verify client and server event maps are explicitly partitioned."""
     # Client map: only client-to-server events
@@ -94,7 +72,7 @@ def test_protocol_validation_error_is_exception_not_value_error():
 
 
 # -----------------------------------------------------------------------------
-# 2. Primitive & Boundary Validators Tests
+# 2. Primitive & Boundary Validators Tests (Strict Unpadded Enforcement)
 # -----------------------------------------------------------------------------
 
 
@@ -128,6 +106,7 @@ def test_validate_username_invalid(invalid_user):
 def test_validate_group_name_valid():
     assert validate_group_name("StudyGroup") == "StudyGroup"
     assert validate_group_name("General Chat 101") == "General Chat 101"
+    assert validate_group_name("a" * 50) == "a" * 50  # Exactly 50 chars
 
 
 @pytest.mark.parametrize(
@@ -135,6 +114,11 @@ def test_validate_group_name_valid():
     [
         "",
         "   ",
+        " StudyGroup ",  # whitespace padded must be rejected
+        "StudyGroup ",
+        " StudyGroup",
+        "a" * 51,  # > 50 chars must be rejected
+        " " * 48 + "StudyGroup",  # total length > 50 with padding must be rejected
         12345,
         None,
     ],
@@ -145,8 +129,9 @@ def test_validate_group_name_invalid(invalid_group):
 
 
 def test_validate_message_text_valid():
+    # Message must retain exact original spacing without silent trimming
     assert validate_message_text("Hello World!") == "Hello World!"
-    assert validate_message_text("  trimmed  ") == "trimmed"
+    assert validate_message_text("  trimmed  ") == "  trimmed  "
 
 
 @pytest.mark.parametrize(
@@ -166,8 +151,15 @@ def test_validate_message_text_invalid(invalid_msg):
 
 def test_validate_message_id():
     assert validate_message_id("MSG_001") == "MSG_001"
-    assert validate_message_id("  UUID-1234  ") == "UUID-1234"
+    assert validate_message_id("UUID-1234") == "UUID-1234"
 
+    # Whitespace padding must be rejected (no silent trim)
+    with pytest.raises(ProtocolValidationError):
+        validate_message_id("  MSG_001  ")
+    with pytest.raises(ProtocolValidationError):
+        validate_message_id("MSG_001 ")
+    with pytest.raises(ProtocolValidationError):
+        validate_message_id(" MSG_001")
     with pytest.raises(ProtocolValidationError):
         validate_message_id("")
     with pytest.raises(ProtocolValidationError):
@@ -176,14 +168,22 @@ def test_validate_message_id():
         validate_message_id(None)
 
 
-def test_validate_timestamp_pure():
-    """Verify validate_timestamp is a pure validator without fallback mutation."""
+def test_validate_timestamp_strict():
+    """Verify validate_timestamp is strict against whitespace and invalid format."""
     # Valid HH:MM
     assert validate_timestamp("14:30") == "14:30"
     assert validate_timestamp("00:00") == "00:00"
     assert validate_timestamp("23:59") == "23:59"
 
-    # Missing or invalid timestamp must raise ProtocolValidationError (no hidden auto-generate)
+    # Leading/trailing spaces must be rejected (no silent trimming)
+    with pytest.raises(ProtocolValidationError):
+        validate_timestamp(" 14:30 ")
+    with pytest.raises(ProtocolValidationError):
+        validate_timestamp("14:30 ")
+    with pytest.raises(ProtocolValidationError):
+        validate_timestamp(" 14:30")
+
+    # Missing or invalid timestamp must raise ProtocolValidationError
     with pytest.raises(ProtocolValidationError):
         validate_timestamp(None)
     with pytest.raises(ProtocolValidationError):
@@ -200,6 +200,13 @@ def test_validate_sticker_id():
     assert validate_sticker_id("STK_001") == "STK_001"
     assert validate_sticker_id("STK_999") == "STK_999"
 
+    # Whitespace padding must be rejected (no silent trim)
+    with pytest.raises(ProtocolValidationError):
+        validate_sticker_id("  STK_001  ")
+    with pytest.raises(ProtocolValidationError):
+        validate_sticker_id("STK_001 ")
+    with pytest.raises(ProtocolValidationError):
+        validate_sticker_id(" STK_001")
     with pytest.raises(ProtocolValidationError):
         validate_sticker_id("STK_1")  # not 3 digits
     with pytest.raises(ProtocolValidationError):
@@ -217,6 +224,14 @@ def test_message_meta_composite():
     assert meta.timestamp == "12:30"
     assert meta.to_dict() == d
 
+    # Non-dict inputs must raise ProtocolValidationError (not AttributeError)
+    with pytest.raises(ProtocolValidationError):
+        MessageMeta.from_dict(None)
+    with pytest.raises(ProtocolValidationError):
+        MessageMeta.from_dict("not_a_dict")
+    with pytest.raises(ProtocolValidationError):
+        MessageMeta.from_dict(123)
+
 
 def test_validate_destination_helper():
     # Target only
@@ -233,9 +248,21 @@ def test_validate_destination_helper():
     with pytest.raises(ProtocolValidationError):
         validate_destination("Alice", "StudyGroup")
 
+    # Both provided even if one is whitespace raises mutual exclusivity error
+    with pytest.raises(ProtocolValidationError):
+        validate_destination("   ", "StudyGroup")
+
     # Neither raises error
     with pytest.raises(ProtocolValidationError):
         validate_destination(None, None)
+
+    # Whitespace target without group fails unpadded/regex username validation
+    with pytest.raises(ProtocolValidationError):
+        validate_destination("   ", None)
+
+    # Whitespace group without target fails unpadded group_name validation
+    with pytest.raises(ProtocolValidationError):
+        validate_destination(None, "   ")
 
 
 # -----------------------------------------------------------------------------
@@ -259,7 +286,7 @@ def test_register_payload_extra_field_sanitized():
 
 
 def test_register_ack_payload_conditional_validation():
-    # Success ACK: must have username, no error
+    # Success ACK: must have username, message preserved when present
     success_raw = {"success": True, "username": "Alice", "message": "Welcome!"}
     p1 = RegisterAckPayload.from_dict(success_raw)
     assert p1.success is True
@@ -267,6 +294,18 @@ def test_register_ack_payload_conditional_validation():
     assert p1.message == "Welcome!"
     assert p1.error is None
     assert p1.to_dict() == success_raw
+
+    # Success ACK without message: to_dict() still supplies empty string "message" key
+    success_no_msg = {"success": True, "username": "Alice"}
+    p1_no_msg = RegisterAckPayload.from_dict(success_no_msg)
+    assert p1_no_msg.success is True
+    assert p1_no_msg.username == "Alice"
+    assert p1_no_msg.message is None
+    assert p1_no_msg.to_dict() == {
+        "success": True,
+        "username": "Alice",
+        "message": "",
+    }
 
     # Success ACK missing username raises ProtocolValidationError
     with pytest.raises(ProtocolValidationError):
@@ -278,7 +317,7 @@ def test_register_ack_payload_conditional_validation():
             {"success": True, "username": "Alice", "error": "Contradiction"}
         )
 
-    # Failure ACK: must have error, no username
+    # Failure ACK: must have error, no username, no message
     fail_raw = {"success": False, "error": "Username already taken"}
     p2 = RegisterAckPayload.from_dict(fail_raw)
     assert p2.success is False
@@ -289,6 +328,14 @@ def test_register_ack_payload_conditional_validation():
     # Failure ACK missing error raises ProtocolValidationError
     with pytest.raises(ProtocolValidationError):
         RegisterAckPayload.from_dict({"success": False})
+
+    # Failure ACK with username raises ProtocolValidationError
+    with pytest.raises(ProtocolValidationError):
+        RegisterAckPayload.from_dict({"success": False, "error": "Failed", "username": "Alice"})
+
+    # Failure ACK with message raises ProtocolValidationError
+    with pytest.raises(ProtocolValidationError):
+        RegisterAckPayload.from_dict({"success": False, "error": "Failed", "message": "Note"})
 
 
 def test_user_list_payload():
@@ -312,8 +359,8 @@ def test_private_message_client_and_server_payloads():
     client_p = PrivateMessagePayload.from_dict(client_raw)
     assert client_p.target == "Bob"
     assert client_p.message == "Hi Bob!"
-    assert client_p.message_id == "MSG_001"
-    assert client_p.timestamp == "14:31"
+    assert client_p.meta.message_id == "MSG_001"
+    assert client_p.meta.timestamp == "14:31"
     assert client_p.to_dict() == client_raw
 
     # Server -> Recipients (includes verified sender)
@@ -327,8 +374,8 @@ def test_private_message_client_and_server_payloads():
     server_p = PrivateMessageServerPayload.from_dict(server_raw)
     assert server_p.sender == "Alice"
     assert server_p.target == "Bob"
-    assert server_p.message_id == "MSG_001"
-    assert server_p.timestamp == "14:31"
+    assert server_p.meta.message_id == "MSG_001"
+    assert server_p.meta.timestamp == "14:31"
     assert server_p.to_dict() == server_raw
 
 
@@ -364,7 +411,7 @@ def test_group_payloads():
         }
     )
     assert gmsg_client.group_name == "StudyGroup"
-    assert gmsg_client.message_id == "MSG_002"
+    assert gmsg_client.meta.message_id == "MSG_002"
 
     # Group message Server -> Room
     gmsg_server = GroupMessageServerPayload.from_dict(
@@ -380,8 +427,15 @@ def test_group_payloads():
     assert gmsg_server.group_name == "StudyGroup"
 
 
-def test_send_and_receive_sticker_payload():
-    # Valid private sticker
+def test_send_and_receive_sticker_payload_constructor_and_roundtrip():
+    # Test direct constructor invocation with target/group_name
+    meta = MessageMeta("MSG_003", "14:33")
+    stk_direct = SendStickerPayload("STK_001", meta, target="Bob", group_name=None)
+    assert stk_direct.target == "Bob"
+    assert stk_direct.group_name is None
+    assert stk_direct.meta.message_id == "MSG_003"
+
+    # Valid private sticker from_dict
     priv_stk = SendStickerPayload.from_dict(
         {
             "sticker_id": "STK_001",
@@ -461,8 +515,6 @@ def test_parse_client_event_prevents_identity_spoofing():
         "message_id": "MSG_999",
         "timestamp": "10:00",
     }
-    # Parsing via parse_client_event MUST return PrivateMessagePayload (Client type)
-    # and MUST NOT create a PrivateMessageServerPayload
     payload = parse_client_event(EVENT_PRIVATE_MSG, injected_data)
     assert isinstance(payload, PrivateMessagePayload)
     assert not hasattr(payload, "sender")

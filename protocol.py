@@ -38,26 +38,6 @@ EVENT_STICKER_MSG = "sticker_message"  # SP2
 EVENT_ANNOUNCEMENT = "announcement"  # SP3
 EVENT_READ_ACK = "read_ack"  # SP4
 
-# Set of all defined application-level events
-ALL_EVENTS = frozenset(
-    {
-        EVENT_CONNECT,
-        EVENT_DISCONNECT,
-        EVENT_REGISTER,
-        EVENT_REGISTER_ACK,
-        EVENT_USER_LIST,
-        EVENT_PRIVATE_MSG,
-        EVENT_CREATE_GROUP,
-        EVENT_JOIN_GROUP,
-        EVENT_GROUP_LIST,
-        EVENT_GROUP_MSG,
-        EVENT_SEND_STICKER,
-        EVENT_STICKER_MSG,
-        EVENT_ANNOUNCEMENT,
-        EVENT_READ_ACK,
-    }
-)
-
 
 # -----------------------------------------------------------------------------
 # Protocol Validation Exceptions
@@ -79,7 +59,7 @@ class ProtocolValidationError(Exception):
 
 
 # -----------------------------------------------------------------------------
-# Boundary & Primitive Field Validators
+# Boundary & Primitive Field Validators (Strict Unpadded Enforcement)
 # -----------------------------------------------------------------------------
 
 USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_]{1,20}$")
@@ -88,7 +68,7 @@ TIMESTAMP_REGEX = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
 def validate_username(value: Any, field_name: str = "username") -> str:
-    """Validate that a username is 1-20 alphanumeric characters without whitespace."""
+    """Validate that a username is 1-20 alphanumeric characters without whitespace padding."""
     if not isinstance(value, str):
         raise ProtocolValidationError("Username must be a string", field=field_name)
     if not USERNAME_REGEX.match(value):
@@ -101,66 +81,78 @@ def validate_username(value: Any, field_name: str = "username") -> str:
 
 
 def validate_group_name(value: Any, field_name: str = "group_name") -> str:
-    """Validate that a group name is a non-empty string."""
+    """Validate that a group name is a 1-50 char string without whitespace padding."""
     if not isinstance(value, str):
         raise ProtocolValidationError("Group name must be a string", field=field_name)
-    cleaned = value.strip()
-    if not cleaned:
-        raise ProtocolValidationError("Group name cannot be empty", field=field_name)
-    return cleaned
+    if len(value) < 1 or len(value) > 50:
+        raise ProtocolValidationError(
+            f"Group name length must be between 1 and 50 characters, got {len(value)}",
+            field=field_name,
+        )
+    if value != value.strip() or not value.strip():
+        raise ProtocolValidationError(
+            f"Invalid group name '{value}'. "
+            "Must not have leading/trailing whitespace or be whitespace-only.",
+            field=field_name,
+        )
+    return value
 
 
 def validate_message_text(value: Any, max_length: int = 1000, field_name: str = "message") -> str:
-    """Validate that a message is a non-empty string within size limits."""
+    """Validate that a message is a non-empty string within size limits without silent trimming."""
     if not isinstance(value, str):
         raise ProtocolValidationError("Message must be a string", field=field_name)
-    cleaned = value.strip()
-    if not cleaned:
-        raise ProtocolValidationError("Message cannot be empty", field=field_name)
-    if len(cleaned) > max_length:
+    if not value or not value.strip():
         raise ProtocolValidationError(
-            f"Message exceeds maximum length of {max_length} characters",
+            "Message cannot be empty or whitespace-only", field=field_name
+        )
+    if len(value) > max_length:
+        raise ProtocolValidationError(
+            f"Message exceeds maximum length of {max_length} characters, got {len(value)}",
             field=field_name,
         )
-    return cleaned
+    return value
 
 
 def validate_message_id(value: Any, field_name: str = "message_id") -> str:
-    """Validate that a message ID is a non-empty string identifier."""
-    if not isinstance(value, str) or not value.strip():
-        raise ProtocolValidationError("Message ID must be a non-empty string", field=field_name)
-    return value.strip()
+    """Validate that a message ID is a non-empty string without whitespace padding."""
+    if not isinstance(value, str):
+        raise ProtocolValidationError("Message ID must be a string", field=field_name)
+    if not value or value != value.strip():
+        raise ProtocolValidationError(
+            f"Invalid message ID '{value}'. Must be a non-empty string without whitespace padding.",
+            field=field_name,
+        )
+    return value
 
 
 def validate_timestamp(value: Any, field_name: str = "timestamp") -> str:
-    """Validate that a timestamp is formatted strictly as 'HH:MM' (24-hour)."""
+    """Validate that a timestamp is formatted strictly as 'HH:MM' without whitespace padding."""
     if not isinstance(value, str):
         raise ProtocolValidationError("Timestamp must be a string", field=field_name)
-    cleaned = value.strip()
-    if not TIMESTAMP_REGEX.match(cleaned):
+    if not TIMESTAMP_REGEX.match(value):
         raise ProtocolValidationError(
-            f"Timestamp '{value}' must be in 'HH:MM' 24-hour format", field=field_name
+            f"Timestamp '{value}' must be in strict 'HH:MM' 24-hour format", field=field_name
         )
-    return cleaned
+    return value
 
 
 def validate_sticker_id(value: Any, field_name: str = "sticker_id") -> str:
-    """Validate that a sticker ID matches 'STK_XXX' where XXX is a 3-digit number."""
+    """Validate that a sticker ID matches 'STK_XXX' without whitespace padding."""
     if not isinstance(value, str):
         raise ProtocolValidationError("Sticker ID must be a string", field=field_name)
-    cleaned = value.strip()
-    if not STICKER_ID_REGEX.match(cleaned):
+    if not STICKER_ID_REGEX.match(value):
         raise ProtocolValidationError(
             f"Invalid sticker ID '{value}'. Must be in format 'STK_XXX' (e.g., 'STK_001').",
             field=field_name,
         )
-    return cleaned
+    return value
 
 
 def validate_destination(target_raw: Any, group_name_raw: Any) -> tuple[str | None, str | None]:
     """Validate mutually exclusive destination (either private target or group_name)."""
-    has_target = target_raw is not None and str(target_raw).strip() != ""
-    has_group = group_name_raw is not None and str(group_name_raw).strip() != ""
+    has_target = target_raw is not None
+    has_group = group_name_raw is not None
 
     if has_target and has_group:
         raise ProtocolValidationError(
@@ -174,6 +166,13 @@ def validate_destination(target_raw: Any, group_name_raw: Any) -> tuple[str | No
     target = validate_username(target_raw, field_name="target") if has_target else None
     group_name = validate_group_name(group_name_raw, field_name="group_name") if has_group else None
     return target, group_name
+
+
+def _destination_to_dict(target: str | None, group_name: str | None) -> dict[str, str | None]:
+    """Consistently serialize mutually exclusive destination fields."""
+    if target is not None:
+        return {"target": target, "group_name": None}
+    return {"target": None, "group_name": group_name}
 
 
 def _ensure_dict(data: Any) -> dict[str, Any]:
@@ -196,9 +195,10 @@ class MessageMeta:
     timestamp: str
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Self:
-        message_id = validate_message_id(data.get("message_id"))
-        timestamp = validate_timestamp(data.get("timestamp"))
+    def from_dict(cls, data: Any) -> Self:
+        d = _ensure_dict(data)
+        message_id = validate_message_id(d.get("message_id"))
+        timestamp = validate_timestamp(d.get("timestamp"))
         return cls(message_id=message_id, timestamp=timestamp)
 
     def to_dict(self) -> dict[str, Any]:
@@ -268,17 +268,27 @@ class RegisterAckPayload:
                 raise ProtocolValidationError(
                     "Failed RegisterAck must specify an 'error' message", field="error"
                 )
+            if username is not None:
+                raise ProtocolValidationError(
+                    "Failed RegisterAck cannot contain 'username'", field="username"
+                )
+            if message is not None:
+                raise ProtocolValidationError(
+                    "Failed RegisterAck cannot contain 'message'", field="message"
+                )
             return cls(success=False, username=None, message=None, error=error)
 
     def to_dict(self) -> dict[str, Any]:
-        result: dict[str, Any] = {"success": self.success}
-        if self.username is not None:
-            result["username"] = self.username
-        if self.message is not None:
-            result["message"] = self.message
-        if self.error is not None:
-            result["error"] = self.error
-        return result
+        if self.success:
+            return {
+                "success": True,
+                "username": self.username,
+                "message": self.message if self.message is not None else "",
+            }
+        return {
+            "success": False,
+            "error": self.error,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,14 +320,6 @@ class PrivateMessagePayload:
     message: str
     meta: MessageMeta
 
-    @property
-    def message_id(self) -> str:
-        return self.meta.message_id
-
-    @property
-    def timestamp(self) -> str:
-        return self.meta.timestamp
-
     @classmethod
     def from_dict(cls, data: Any) -> Self:
         d = _ensure_dict(data)
@@ -343,14 +345,6 @@ class PrivateMessageServerPayload:
     target: str
     message: str
     meta: MessageMeta
-
-    @property
-    def message_id(self) -> str:
-        return self.meta.message_id
-
-    @property
-    def timestamp(self) -> str:
-        return self.meta.timestamp
 
     @classmethod
     def from_dict(cls, data: Any) -> Self:
@@ -447,14 +441,6 @@ class GroupMessagePayload:
     message: str
     meta: MessageMeta
 
-    @property
-    def message_id(self) -> str:
-        return self.meta.message_id
-
-    @property
-    def timestamp(self) -> str:
-        return self.meta.timestamp
-
     @classmethod
     def from_dict(cls, data: Any) -> Self:
         d = _ensure_dict(data)
@@ -480,14 +466,6 @@ class GroupMessageServerPayload:
     group_name: str
     message: str
     meta: MessageMeta
-
-    @property
-    def message_id(self) -> str:
-        return self.meta.message_id
-
-    @property
-    def timestamp(self) -> str:
-        return self.meta.timestamp
 
     @classmethod
     def from_dict(cls, data: Any) -> Self:
@@ -517,14 +495,6 @@ class SendStickerPayload:
     target: str | None = None
     group_name: str | None = None
 
-    @property
-    def message_id(self) -> str:
-        return self.meta.message_id
-
-    @property
-    def timestamp(self) -> str:
-        return self.meta.timestamp
-
     @classmethod
     def from_dict(cls, data: Any) -> Self:
         d = _ensure_dict(data)
@@ -545,12 +515,7 @@ class SendStickerPayload:
             "message_id": self.meta.message_id,
             "timestamp": self.meta.timestamp,
         }
-        if self.target is not None:
-            result["target"] = self.target
-            result["group_name"] = None
-        else:
-            result["target"] = None
-            result["group_name"] = self.group_name
+        result.update(_destination_to_dict(self.target, self.group_name))
         return result
 
 
@@ -563,14 +528,6 @@ class StickerMessageServerPayload:
     meta: MessageMeta
     target: str | None = None
     group_name: str | None = None
-
-    @property
-    def message_id(self) -> str:
-        return self.meta.message_id
-
-    @property
-    def timestamp(self) -> str:
-        return self.meta.timestamp
 
     @classmethod
     def from_dict(cls, data: Any) -> Self:
@@ -595,12 +552,7 @@ class StickerMessageServerPayload:
             "message_id": self.meta.message_id,
             "timestamp": self.meta.timestamp,
         }
-        if self.target is not None:
-            result["target"] = self.target
-            result["group_name"] = None
-        else:
-            result["target"] = None
-            result["group_name"] = self.group_name
+        result.update(_destination_to_dict(self.target, self.group_name))
         return result
 
 
@@ -659,8 +611,29 @@ class ReadAckServerPayload:
 
 
 # -----------------------------------------------------------------------------
-# Explicit Directional Dispatcher APIs (Server Trust Boundary Enforcement)
+# Explicit Directional Dispatcher APIs & Type Unions
 # -----------------------------------------------------------------------------
+
+ClientPayload = (
+    RegisterPayload
+    | PrivateMessagePayload
+    | CreateGroupPayload
+    | JoinGroupPayload
+    | GroupMessagePayload
+    | SendStickerPayload
+    | ReadAckClientPayload
+)
+
+ServerPayload = (
+    RegisterAckPayload
+    | UserListPayload
+    | PrivateMessageServerPayload
+    | GroupListPayload
+    | GroupMessageServerPayload
+    | StickerMessageServerPayload
+    | AnnouncementPayload
+    | ReadAckServerPayload
+)
 
 CLIENT_EVENT_PAYLOAD_MAP: dict[str, type] = {
     EVENT_REGISTER: RegisterPayload,
@@ -684,17 +657,19 @@ SERVER_EVENT_PAYLOAD_MAP: dict[str, type] = {
 }
 
 
-def parse_client_event(event: str, data: Any) -> Any:
+def _parse_event(event: str, data: Any, event_map: dict[str, type], role_label: str) -> Any:
+    """Helper to dispatch event data through the mapped schema class."""
+    if event not in event_map:
+        raise ProtocolValidationError(f"Unknown or unauthorized {role_label} event: '{event}'")
+    schema_cls = event_map[event]
+    return schema_cls.from_dict(data)
+
+
+def parse_client_event(event: str, data: Any) -> ClientPayload:
     """Parse and validate an inbound event payload sent from an untrusted client to server."""
-    if event not in CLIENT_EVENT_PAYLOAD_MAP:
-        raise ProtocolValidationError(f"Unknown or unauthorized client event: '{event}'")
-    schema_cls = CLIENT_EVENT_PAYLOAD_MAP[event]
-    return schema_cls.from_dict(data)
+    return _parse_event(event, data, CLIENT_EVENT_PAYLOAD_MAP, "client")
 
 
-def parse_server_event(event: str, data: Any) -> Any:
+def parse_server_event(event: str, data: Any) -> ServerPayload:
     """Parse and validate an inbound event payload received by a client from server."""
-    if event not in SERVER_EVENT_PAYLOAD_MAP:
-        raise ProtocolValidationError(f"Unknown or unauthorized server event: '{event}'")
-    schema_cls = SERVER_EVENT_PAYLOAD_MAP[event]
-    return schema_cls.from_dict(data)
+    return _parse_event(event, data, SERVER_EVENT_PAYLOAD_MAP, "server")
