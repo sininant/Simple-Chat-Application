@@ -71,7 +71,7 @@ def validate_username(value: Any, field_name: str = "username") -> str:
     """Validate that a username is 1-20 alphanumeric characters without whitespace padding."""
     if not isinstance(value, str):
         raise ProtocolValidationError("Username must be a string", field=field_name)
-    if not USERNAME_REGEX.match(value):
+    if not USERNAME_REGEX.fullmatch(value):
         raise ProtocolValidationError(
             f"Invalid username '{value}'. "
             "Must be 1-20 characters of letters, digits, or underscores only.",
@@ -130,7 +130,7 @@ def validate_timestamp(value: Any, field_name: str = "timestamp") -> str:
     """Validate that a timestamp is formatted strictly as 'HH:MM' without whitespace padding."""
     if not isinstance(value, str):
         raise ProtocolValidationError("Timestamp must be a string", field=field_name)
-    if not TIMESTAMP_REGEX.match(value):
+    if not TIMESTAMP_REGEX.fullmatch(value):
         raise ProtocolValidationError(
             f"Timestamp '{value}' must be in strict 'HH:MM' 24-hour format", field=field_name
         )
@@ -141,7 +141,7 @@ def validate_sticker_id(value: Any, field_name: str = "sticker_id") -> str:
     """Validate that a sticker ID matches 'STK_XXX' without whitespace padding."""
     if not isinstance(value, str):
         raise ProtocolValidationError("Sticker ID must be a string", field=field_name)
-    if not STICKER_ID_REGEX.match(value):
+    if not STICKER_ID_REGEX.fullmatch(value):
         raise ProtocolValidationError(
             f"Invalid sticker ID '{value}'. Must be in format 'STK_XXX' (e.g., 'STK_001').",
             field=field_name,
@@ -487,6 +487,7 @@ class GroupMessageServerPayload:
 
 
 @dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True)
 class SendStickerPayload:
     """Client -> Server: Transmit predefined sticker to private user or group (SP2)."""
 
@@ -494,6 +495,9 @@ class SendStickerPayload:
     meta: MessageMeta
     target: str | None = None
     group_name: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_destination(self.target, self.group_name)
 
     @classmethod
     def from_dict(cls, data: Any) -> Self:
