@@ -94,6 +94,9 @@ def test_validate_username_valid():
         "alice!",  # punctuation
         "user@name",  # symbol
         "this_username_is_way_too_long_to_be_accepted",  # > 20 chars
+        "Alice\n",  # trailing newline must be rejected by fullmatch
+        "\nAlice",  # leading newline
+        "Alice\r\n",  # CRLF
         123,  # non-string
         None,  # NoneType
     ],
@@ -175,13 +178,17 @@ def test_validate_timestamp_strict():
     assert validate_timestamp("00:00") == "00:00"
     assert validate_timestamp("23:59") == "23:59"
 
-    # Leading/trailing spaces must be rejected (no silent trimming)
+    # Leading/trailing spaces or newlines must be rejected (no silent trimming)
     with pytest.raises(ProtocolValidationError):
         validate_timestamp(" 14:30 ")
     with pytest.raises(ProtocolValidationError):
         validate_timestamp("14:30 ")
     with pytest.raises(ProtocolValidationError):
         validate_timestamp(" 14:30")
+    with pytest.raises(ProtocolValidationError):
+        validate_timestamp("14:30\n")
+    with pytest.raises(ProtocolValidationError):
+        validate_timestamp("\n14:30")
 
     # Missing or invalid timestamp must raise ProtocolValidationError
     with pytest.raises(ProtocolValidationError):
@@ -200,13 +207,17 @@ def test_validate_sticker_id():
     assert validate_sticker_id("STK_001") == "STK_001"
     assert validate_sticker_id("STK_999") == "STK_999"
 
-    # Whitespace padding must be rejected (no silent trim)
+    # Whitespace or newline padding must be rejected (no silent trim)
     with pytest.raises(ProtocolValidationError):
         validate_sticker_id("  STK_001  ")
     with pytest.raises(ProtocolValidationError):
         validate_sticker_id("STK_001 ")
     with pytest.raises(ProtocolValidationError):
         validate_sticker_id(" STK_001")
+    with pytest.raises(ProtocolValidationError):
+        validate_sticker_id("STK_001\n")
+    with pytest.raises(ProtocolValidationError):
+        validate_sticker_id("\nSTK_001")
     with pytest.raises(ProtocolValidationError):
         validate_sticker_id("STK_1")  # not 3 digits
     with pytest.raises(ProtocolValidationError):
@@ -434,6 +445,29 @@ def test_send_and_receive_sticker_payload_constructor_and_roundtrip():
     assert stk_direct.target == "Bob"
     assert stk_direct.group_name is None
     assert stk_direct.meta.message_id == "MSG_003"
+
+    # Direct constructor invariants: must fail if both or neither target/group_name are specified
+    with pytest.raises(ProtocolValidationError):
+        SendStickerPayload("STK_001", meta)
+    with pytest.raises(ProtocolValidationError):
+        SendStickerPayload("STK_001", meta, target=None, group_name=None)
+    with pytest.raises(ProtocolValidationError):
+        SendStickerPayload("STK_001", meta, target="Bob", group_name="Room1")
+
+    with pytest.raises(ProtocolValidationError):
+        StickerMessageServerPayload("Alice", "STK_001", meta)
+    with pytest.raises(ProtocolValidationError):
+        StickerMessageServerPayload("Alice", "STK_001", meta, target=None, group_name=None)
+    with pytest.raises(ProtocolValidationError):
+        StickerMessageServerPayload("Alice", "STK_001", meta, target="Bob", group_name="Room1")
+
+    # Direct constructor with valid group_name
+    srv_direct = StickerMessageServerPayload(
+        "Alice", "STK_001", meta, target=None, group_name="Room1"
+    )
+    assert srv_direct.sender == "Alice"
+    assert srv_direct.group_name == "Room1"
+    assert srv_direct.target is None
 
     # Valid private sticker from_dict
     priv_stk = SendStickerPayload.from_dict(

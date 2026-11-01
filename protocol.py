@@ -487,7 +487,6 @@ class GroupMessageServerPayload:
 
 
 @dataclass(frozen=True, slots=True)
-@dataclass(frozen=True, slots=True)
 class SendStickerPayload:
     """Client -> Server: Transmit predefined sticker to private user or group (SP2)."""
 
@@ -532,6 +531,9 @@ class StickerMessageServerPayload:
     meta: MessageMeta
     target: str | None = None
     group_name: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_destination(self.target, self.group_name)
 
     @classmethod
     def from_dict(cls, data: Any) -> Self:
