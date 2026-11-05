@@ -561,6 +561,7 @@ class SidebarPanel:
             corner_radius=15,
             bg_color=BLUE,
             fg_color=WHITE,
+            hover_color=BLUE,
             border_color=INK,
             border_width=1,
             text_color=INK,
@@ -595,7 +596,7 @@ class SidebarPanel:
         self._active_dialog = dialog
         dialog.title("Create New Group")
         dialog.withdraw()
-        width, height = 470, 260
+        width, height = 630, 320
         dialog.geometry(f"{width}x{height}")
         dialog.resizable(False, False)
         dialog.transient(self.frame.winfo_toplevel())
@@ -614,52 +615,52 @@ class SidebarPanel:
             dialog, fg_color=WHITE, border_color=INK, border_width=2, corner_radius=14
         )
         card.pack(fill="both", expand=True)
-        header = tk.Canvas(card, height=58, bg=WHITE, highlightthickness=0, bd=0)
+        header = tk.Canvas(card, height=84, bg=WHITE, highlightthickness=0, bd=0)
         header.pack(fill="x")
         header.bind("<Configure>", lambda _event: self._draw_group_dialog_header(header))
 
         name_entry = ui.CTkEntry(
             card,
             placeholder_text="Enter Group Name",
-            height=38,
-            font=(FONT, 18),
+            height=60,
+            font=(FONT, 19),
             fg_color=PINK_LIGHT,
             border_color=INK,
-            border_width=1,
-            corner_radius=19,
+            border_width=2,
+            corner_radius=30,
         )
-        name_entry.pack(fill="x", padx=38, pady=(18, 10))
+        name_entry.pack(fill="x", padx=46, pady=(46, 20))
 
         btn_row = ui.CTkFrame(card, fg_color="transparent")
-        btn_row.pack(fill="x", padx=38, pady=(4, 10))
+        btn_row.pack(pady=(8, 12))
 
         ui.CTkButton(
             btn_row,
             text="Cancel",
-            width=100,
-            height=44,
+            width=92,
+            height=54,
             fg_color="#E0E0E0",
             hover_color="#D0D0D0",
             text_color=INK,
-            corner_radius=12,
+            corner_radius=16,
             font=(FONT, 14, "bold"),
             command=_close_dialog,
-        ).pack(side="left", padx=(0, 10))
+        ).pack(side="left", padx=(0, 14))
 
         ui.CTkButton(
             btn_row,
             text="Create",
-            width=180,
-            height=44,
+            width=228,
+            height=62,
             fg_color=BLUE,
             hover_color="#91D5DF",
             text_color=INK,
             border_color=INK,
             border_width=1,
-            corner_radius=12,
-            font=(FONT, 16, "bold"),
+            corner_radius=18,
+            font=(FONT, 18, "bold"),
             command=lambda: self._create_group(name_entry, dialog),
-        ).pack(side="right", fill="x", expand=True)
+        ).pack(side="left")
 
         name_entry.bind("<Return>", lambda _event: self._create_group(name_entry, dialog))
         dialog.after(50, lambda: self._center_group_dialog(dialog, width, height, name_entry))
