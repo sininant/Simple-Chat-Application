@@ -121,7 +121,7 @@ def _load_avatar() -> Any | None:
 
 
 class LoginView:
-    """Reusable login card for R3."""
+    """Reusable Create User card for R3, styled after the supplied design."""
 
     def __init__(self, parent: Any, on_connect: Callable[[str, str, str], None]) -> None:
         ui = _require_ctk()
@@ -129,24 +129,53 @@ class LoginView:
         self.frame.grid_columnconfigure(1, weight=1)
         heading = ui.CTkLabel(
             self.frame,
-            text="Simple Chat Application",
+            text="Create User",
             font=("Avenir", 24, "bold"),
             text_color=INK,
         )
         heading.grid(row=0, column=0, columnspan=2, padx=28, pady=(24, 20))
-        self.host = self._entry("Server host", "127.0.0.1", 1)
-        self.port = self._entry("Port", "5000", 2)
-        self.username = self._entry("Username", "", 3)
+        self.username = self._entry("Name", "", 1)
+        ui.CTkLabel(self.frame, text="Choose your character", text_color=INK, anchor="w").grid(
+            row=2, column=0, columnspan=2, padx=28, pady=(12, 2), sticky="w"
+        )
+        self.character = "rabbit"
+        self.character_buttons: dict[str, Any] = {}
+        character_row = ui.CTkFrame(self.frame, fg_color="transparent")
+        character_row.grid(row=3, column=0, columnspan=2, padx=28, pady=(2, 12), sticky="ew")
+        for index, (name, emoji) in enumerate((("cat", "🐱"), ("dog", "🐶"), ("rabbit", "🐰"))):
+            button = ui.CTkButton(
+                character_row,
+                text=f"{emoji}\n{name.title()}",
+                width=78,
+                height=62,
+                fg_color=PINK_LIGHT if name == self.character else "white",
+                hover_color="#F7D4E1",
+                text_color=INK,
+                command=lambda selected=name: self._choose_character(selected),
+            )
+            button.grid(row=0, column=index, padx=4, sticky="ew")
+            self.character_buttons[name] = button
+        connection_label = ui.CTkLabel(
+            self.frame, text="Server connection", text_color=INK, anchor="w"
+        )
+        connection_label.grid(row=4, column=0, columnspan=2, padx=28, pady=(2, 2), sticky="w")
+        self.host = self._entry("Host", "127.0.0.1", 5)
+        self.port = self._entry("Port", "5000", 6)
         self.error = ui.CTkLabel(self.frame, text="", text_color="#C64B68", wraplength=300)
-        self.error.grid(row=4, column=0, columnspan=2, padx=28, pady=(10, 4))
+        self.error.grid(row=7, column=0, columnspan=2, padx=28, pady=(10, 4))
         ui.CTkButton(
             self.frame,
-            text="Connect to Server",
+            text="Create",
             fg_color=PINK,
             hover_color="#DF6D98",
             text_color=INK,
             command=lambda: on_connect(self.host.get(), self.port.get(), self.username.get()),
-        ).grid(row=5, column=0, columnspan=2, padx=28, pady=(10, 24), sticky="ew")
+        ).grid(row=8, column=0, columnspan=2, padx=28, pady=(10, 24), sticky="ew")
+
+    def _choose_character(self, character: str) -> None:
+        self.character = character
+        for name, button in self.character_buttons.items():
+            button.configure(fg_color=PINK_LIGHT if name == character else "white")
 
     def _entry(self, label: str, value: str, row: int) -> Any:
         ui = _require_ctk()
