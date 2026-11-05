@@ -594,11 +594,11 @@ class SidebarPanel:
 
         dialog = ui.CTkToplevel(self.frame.winfo_toplevel())
         self._active_dialog = dialog
-        dialog.title("Create New Group")
         dialog.withdraw()
         width, height = 630, 320
         dialog.geometry(f"{width}x{height}")
         dialog.resizable(False, False)
+        dialog.overrideredirect(True)
         dialog.transient(self.frame.winfo_toplevel())
 
         def _close_dialog() -> None:
@@ -611,11 +611,13 @@ class SidebarPanel:
         dialog.protocol("WM_DELETE_WINDOW", _close_dialog)
         dialog.bind("<Escape>", lambda _event: _close_dialog())
 
-        card = ui.CTkFrame(dialog, fg_color=WHITE, border_width=0, corner_radius=14)
+        card = ui.CTkFrame(dialog, fg_color=WHITE, border_width=0, corner_radius=0)
         card.pack(fill="both", expand=True)
         header = tk.Canvas(card, height=84, bg=WHITE, highlightthickness=0, bd=0)
         header.pack(fill="x")
         header.bind("<Configure>", lambda _event: self._draw_group_dialog_header(header))
+        header.bind("<ButtonPress-1>", lambda event: self._start_dialog_drag(dialog, event))
+        header.bind("<B1-Motion>", lambda event: self._drag_dialog(dialog, event))
 
         name_entry = ui.CTkEntry(
             card,
@@ -686,22 +688,7 @@ class SidebarPanel:
         width = max(canvas.winfo_width(), 10)
         height = max(canvas.winfo_height(), 10)
         canvas.delete("all")
-        radius = min(14, height // 2)
-        canvas.create_rectangle(0, radius, width, height, fill=BLUE, outline=BLUE)
-        canvas.create_rectangle(radius, 0, width - radius, height, fill=BLUE, outline=BLUE)
-        canvas.create_arc(
-            0, 0, radius * 2, radius * 2, start=90, extent=90, fill=BLUE, outline=BLUE
-        )
-        canvas.create_arc(
-            width - radius * 2,
-            0,
-            width,
-            radius * 2,
-            start=0,
-            extent=90,
-            fill=BLUE,
-            outline=BLUE,
-        )
+        canvas.create_rectangle(0, 0, width, height, fill=BLUE, outline=BLUE)
         canvas.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
         canvas.create_text(
             24,
