@@ -18,12 +18,20 @@ from typing import Any
 import socketio
 
 from protocol import (
+    EVENT_CREATE_GROUP,
+    EVENT_GROUP_ERROR,
+    EVENT_GROUP_LIST,
+    EVENT_JOIN_GROUP,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    CreateGroupPayload,
+    GroupErrorPayload,
+    GroupListPayload,
+    JoinGroupPayload,
     MessageMeta,
     PrivateMessagePayload,
     PrivateMessageServerPayload,
@@ -35,6 +43,7 @@ from protocol import (
     UserListPayload,
     parse_server_event,
     validate_avatar,
+    validate_group_name,
     validate_message_id,
     validate_message_text,
     validate_username,
@@ -76,6 +85,7 @@ class ClientSession:
         self._username: str | None = None
         self._avatar = "rabbit"
         self._online_users: list[str] = []
+        self._groups: list[dict[str, Any]] = []
         self._is_connected: bool = False
         self._is_registered: bool = False
 
@@ -126,6 +136,28 @@ class ClientSession:
             self.event_queue.put((EVENT_USER_LIST, payload))
 
         @self.sio.event
+        def group_list(data: Any) -> None:
+            try:
+                payload = parse_server_event(EVENT_GROUP_LIST, data)
+                assert isinstance(payload, GroupListPayload)
+            except ProtocolValidationError as error:
+                logger.warning("Received invalid group_list from server: %s", error)
+                return
+            with self._lock:
+                self._groups = [group.to_dict() for group in payload.groups]
+            self.event_queue.put((EVENT_GROUP_LIST, payload))
+
+        @self.sio.event
+        def group_error(data: Any) -> None:
+            try:
+                payload = parse_server_event(EVENT_GROUP_ERROR, data)
+                assert isinstance(payload, GroupErrorPayload)
+            except ProtocolValidationError as error:
+                logger.warning("Received invalid group_error from server: %s", error)
+                return
+            self.event_queue.put((EVENT_GROUP_ERROR, payload))
+
+        @self.sio.event
         def private_message(data: Any) -> None:
             try:
                 payload = parse_server_event(EVENT_PRIVATE_MSG, data)
@@ -155,6 +187,8 @@ class ClientSession:
             if event not in {
                 EVENT_REGISTER_ACK,
                 EVENT_USER_LIST,
+                EVENT_GROUP_LIST,
+                EVENT_GROUP_ERROR,
                 EVENT_PRIVATE_MSG,
                 EVENT_PRIVATE_MSG_ERROR,
                 EVENT_READ_ACK,
@@ -260,6 +294,26 @@ class ClientSession:
         self.sio.emit(EVENT_PRIVATE_MSG, payload.to_dict())
         return msg_id
 
+    def create_group(self, group_name: str) -> bool:
+        """Request creation of a group with this client as the initial member (R8)."""
+        try:
+            payload = CreateGroupPayload(group_name=validate_group_name(group_name))
+        except ProtocolValidationError as error:
+            logger.warning("Invalid group creation request: %s", error)
+            return False
+        self.sio.emit(EVENT_CREATE_GROUP, payload.to_dict())
+        return True
+
+    def join_group(self, group_name: str) -> bool:
+        """Request that this client voluntarily joins an existing group (R10)."""
+        try:
+            payload = JoinGroupPayload(group_name=validate_group_name(group_name))
+        except ProtocolValidationError as error:
+            logger.warning("Invalid group join request: %s", error)
+            return False
+        self.sio.emit(EVENT_JOIN_GROUP, payload.to_dict())
+        return True
+
     def send_read_ack(self, message_id: str, target: str) -> bool:
         """Send a 1-to-1 read receipt acknowledgment over Socket.IO (SP4).
 
@@ -315,6 +369,12 @@ class ClientSession:
         """Return the latest list of registered online usernames (R4)."""
         with self._lock:
             return list(self._online_users)
+
+    @property
+    def groups(self) -> list[dict[str, Any]]:
+        """Return the latest group list and member rosters received from the server (R9)."""
+        with self._lock:
+            return [group.copy() | {"members": list(group["members"])} for group in self._groups]
 
     @property
     def sid(self) -> str | None:
