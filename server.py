@@ -19,12 +19,20 @@ from wsgiref.simple_server import WSGIServer, make_server
 import socketio
 
 from protocol import (
+    EVENT_CREATE_GROUP,
+    EVENT_GROUP_ERROR,
+    EVENT_GROUP_LIST,
+    EVENT_JOIN_GROUP,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    CreateGroupPayload,
+    GroupInfo,
+    GroupListPayload,
+    JoinGroupPayload,
     MessageMeta,
     PrivateMessagePayload,
     PrivateMessageServerPayload,
@@ -36,6 +44,7 @@ from protocol import (
     UserListPayload,
     parse_client_event,
     validate_avatar,
+    validate_group_name,
     validate_username,
 )
 
@@ -64,6 +73,14 @@ class ReadAckRouteResult(RouteResult[ReadAckServerPayload]):
     """Encapsulates the result of routing a 1-to-1 read acknowledgment (SP4)."""
 
 
+@dataclass(frozen=True)
+class GroupRouteResult:
+    """Encapsulates a group creation or voluntary-join decision."""
+
+    success: bool
+    error: str | None = None
+
+
 # -----------------------------------------------------------------------------
 # Headless Server State Machine: ChatEngine
 # -----------------------------------------------------------------------------
@@ -83,6 +100,7 @@ class ChatEngine:
         self._users: dict[str, str] = {}  # username -> sid
         self._avatars: dict[str, str] = {}  # username -> selected character
         self._private_messages: dict[str, tuple[str, str]] = {}  # message_id -> (sender, target)
+        self._groups: dict[str, set[str]] = {}  # group_name -> member usernames
 
     # --- Session & Identity Management (R3, R4) ---
 
@@ -111,6 +129,8 @@ class ChatEngine:
             if old_user is not None and old_user != username:
                 self._users.pop(old_user, None)
                 self._avatars.pop(old_user, None)
+                for members in self._groups.values():
+                    members.discard(old_user)
 
             self._sessions[sid] = username
             self._users[username] = sid
@@ -128,6 +148,8 @@ class ChatEngine:
             if username is not None:
                 self._users.pop(username, None)
                 self._avatars.pop(username, None)
+                for members in self._groups.values():
+                    members.discard(username)
             return username
 
     def get_username(self, sid: str) -> str | None:
@@ -154,6 +176,49 @@ class ChatEngine:
         """Return selected characters for the active user roster."""
         with self._lock:
             return {username: self._avatars[username] for username in self.get_online_users()}
+
+    # --- Group Lifecycle (R8, R9, R10) ---
+
+    def create_group(self, creator_sid: str, group_name: str) -> GroupRouteResult:
+        """Create a group whose sole initial member is the authenticated creator (R8)."""
+        try:
+            group_name = validate_group_name(group_name)
+        except ProtocolValidationError as error:
+            return GroupRouteResult(success=False, error=error.message)
+
+        with self._lock:
+            creator = self._sessions.get(creator_sid)
+            if creator is None:
+                return GroupRouteResult(success=False, error="Creator not registered")
+            if group_name in self._groups:
+                return GroupRouteResult(success=False, error="Group name already exists")
+            self._groups[group_name] = {creator}
+            return GroupRouteResult(success=True)
+
+    def join_group(self, member_sid: str, group_name: str) -> GroupRouteResult:
+        """Add the authenticated requester to an existing group (R10)."""
+        try:
+            group_name = validate_group_name(group_name)
+        except ProtocolValidationError as error:
+            return GroupRouteResult(success=False, error=error.message)
+
+        with self._lock:
+            member = self._sessions.get(member_sid)
+            if member is None:
+                return GroupRouteResult(success=False, error="Member not registered")
+            members = self._groups.get(group_name)
+            if members is None:
+                return GroupRouteResult(success=False, error="Group does not exist")
+            members.add(member)
+            return GroupRouteResult(success=True)
+
+    def get_groups(self) -> list[GroupInfo]:
+        """Return each group with its sorted current member list (R9)."""
+        with self._lock:
+            return [
+                GroupInfo(group_name=name, members=sorted(members))
+                for name, members in sorted(self._groups.items())
+            ]
 
     # --- 1-to-1 Private Message Routing (R7) ---
 
@@ -280,6 +345,7 @@ class ChatServer:
                 initial_roster.to_dict(),
                 room=sid,
             )
+            self.sio.emit(EVENT_GROUP_LIST, self._group_list_payload().to_dict(), room=sid)
 
         @self.sio.event
         def disconnect(sid: str) -> None:
@@ -287,6 +353,7 @@ class ChatServer:
             if username is not None:
                 logger.info("Client disconnected: user=%s sid=%s", username, sid)
                 self.broadcast_user_list()
+                self.broadcast_group_list()
             else:
                 logger.info("Unregistered client disconnected: sid=%s", sid)
 
@@ -304,6 +371,7 @@ class ChatServer:
             if ack.success and ack.username:
                 logger.info("User registered successfully: user=%s sid=%s", ack.username, sid)
                 self.broadcast_user_list()
+                self.broadcast_group_list()
 
         @self.sio.event
         def private_message(sid: str, data: Any) -> None:
@@ -339,6 +407,42 @@ class ChatServer:
                 self.sio.emit(EVENT_PRIVATE_MSG, outbound_dict, room=sid)
 
         @self.sio.event
+        def create_group(sid: str, data: Any) -> None:
+            try:
+                payload = parse_client_event(EVENT_CREATE_GROUP, data)
+                assert isinstance(payload, CreateGroupPayload)
+            except ProtocolValidationError as error:
+                logger.warning("Invalid create_group from sid=%s: %s", sid, error)
+                self.sio.emit(EVENT_GROUP_ERROR, {"error": error.message}, room=sid)
+                return
+
+            result = self.engine.create_group(sid, payload.group_name)
+            if not result.success:
+                logger.warning("Failed to create group from sid=%s: %s", sid, result.error)
+                self.sio.emit(EVENT_GROUP_ERROR, {"error": result.error}, room=sid)
+                return
+            self.sio.enter_room(sid, payload.group_name)
+            self.broadcast_group_list()
+
+        @self.sio.event
+        def join_group(sid: str, data: Any) -> None:
+            try:
+                payload = parse_client_event(EVENT_JOIN_GROUP, data)
+                assert isinstance(payload, JoinGroupPayload)
+            except ProtocolValidationError as error:
+                logger.warning("Invalid join_group from sid=%s: %s", sid, error)
+                self.sio.emit(EVENT_GROUP_ERROR, {"error": error.message}, room=sid)
+                return
+
+            result = self.engine.join_group(sid, payload.group_name)
+            if not result.success:
+                logger.warning("Failed to join group from sid=%s: %s", sid, result.error)
+                self.sio.emit(EVENT_GROUP_ERROR, {"error": result.error}, room=sid)
+                return
+            self.sio.enter_room(sid, payload.group_name)
+            self.broadcast_group_list()
+
+        @self.sio.event
         def read_ack(sid: str, data: Any) -> None:
             try:
                 payload = parse_client_event(EVENT_READ_ACK, data)
@@ -371,6 +475,14 @@ class ChatServer:
         """Broadcast updated connected user roster to all clients (R4)."""
         payload = self._user_list_payload()
         self.sio.emit(EVENT_USER_LIST, payload.to_dict())
+
+    def _group_list_payload(self) -> GroupListPayload:
+        """Build the current group roster once for direct and broadcast delivery."""
+        return GroupListPayload(groups=self.engine.get_groups())
+
+    def broadcast_group_list(self) -> None:
+        """Broadcast all group names and their member lists (R9)."""
+        self.sio.emit(EVENT_GROUP_LIST, self._group_list_payload().to_dict())
 
     # --- HTTP/WSGI Server Lifecycle ---
 
