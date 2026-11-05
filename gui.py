@@ -220,28 +220,48 @@ class SidebarPanel:
 
     def __init__(self, parent: Any, on_chat: Callable[[str], None]) -> None:
         ui = _require_ctk()
-        self.frame = ui.CTkFrame(parent, fg_color=BACKGROUND, border_color=INK, border_width=2)
+        self.frame = ui.CTkFrame(parent, fg_color="transparent")
         self.on_chat = on_chat
         self.avatar = _load_avatars().get("rabbit")
+        self.friends_card = ui.CTkFrame(
+            self.frame, fg_color=BACKGROUND, border_color=INK, border_width=2, corner_radius=14
+        )
+        self.friends_card.pack(fill="both", expand=True)
         friends_heading = ui.CTkLabel(
-            self.frame,
+            self.friends_card,
             text="☻  Friends",
             font=("Avenir", 20, "bold"),
             text_color=INK,
             fg_color=YELLOW,
+            corner_radius=10,
         )
         friends_heading.pack(fill="x", padx=2, pady=2)
-        self.users = ui.CTkScrollableFrame(self.frame, fg_color=BACKGROUND, height=220)
+        self.users = ui.CTkScrollableFrame(self.friends_card, fg_color=BACKGROUND, height=220)
         self.users.pack(fill="both", expand=True, padx=8, pady=8)
+        self.community_card = ui.CTkFrame(
+            self.frame, fg_color=BACKGROUND, border_color=INK, border_width=2, corner_radius=14
+        )
+        self.community_card.pack(fill="both", expand=True, pady=(14, 0))
         community_heading = ui.CTkLabel(
-            self.frame,
+            self.community_card,
             text="♣  Community",
             font=("Avenir", 18, "bold"),
             text_color=INK,
             fg_color=BLUE,
+            corner_radius=10,
         )
         community_heading.pack(fill="x", padx=2, pady=(8, 2))
-        ui.CTkLabel(self.frame, text="Group rooms will appear here.", text_color=INK).pack(
+        ui.CTkButton(
+            self.community_card,
+            text="＋ New Group",
+            width=120,
+            fg_color="white",
+            border_color=INK,
+            border_width=1,
+            text_color=INK,
+            command=_noop,
+        ).pack(anchor="e", padx=12, pady=(10, 4))
+        ui.CTkLabel(self.community_card, text="Group rooms will appear here.", text_color=INK).pack(
             pady=(8, 16)
         )
 
@@ -313,9 +333,18 @@ class ChatRoomTab:
         self, parent: Any, room_name: str, on_send: Callable[[str], None] | None = None
     ) -> None:
         ui = _require_ctk()
-        self.frame = ui.CTkFrame(parent, fg_color=BACKGROUND)
+        self.frame = ui.CTkFrame(parent, fg_color=BACKGROUND, corner_radius=12)
+        self.header = ui.CTkFrame(self.frame, fg_color=PINK, corner_radius=10)
+        self.header.pack(fill="x", padx=6, pady=(6, 0))
+        ui.CTkLabel(
+            self.header,
+            text=f"▤  {room_name}",
+            font=("Avenir", 20, "bold"),
+            text_color=INK,
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=9)
         self.window = ui.CTkScrollableFrame(self.frame, fg_color=BACKGROUND)
-        self.window.pack(fill="both", expand=True, padx=8, pady=8)
+        self.window.pack(fill="both", expand=True, padx=8, pady=(8, 4))
         self.on_send = on_send or self._send_local
         self.box = ChatBoxBar(self.frame, self._send)
         self.box.frame.pack(fill="x", padx=8, pady=(0, 8))
