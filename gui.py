@@ -140,6 +140,8 @@ class GuiController:
                     if payload.username not in self.online_users:
                         self.online_users.append(payload.username)
                     self.login_error = None
+                    if self.on_reconnect:
+                        self.on_reconnect()
                 else:
                     self.login_error = payload.error or "Login was rejected."
                 changed = True
@@ -165,8 +167,6 @@ class GuiController:
                     self.on_read_ack(payload.message_id, payload.reader)
                 changed = True
             elif event_name in (EVENT_CONNECT, "connect"):
-                if self.on_reconnect:
-                    self.on_reconnect()
                 changed = True
         if changed:
             self._changed()
@@ -1151,7 +1151,9 @@ class MainChatWindow:
         self._retry_pending_acks()
 
     def _retry_pending_acks(self) -> None:
-        """Retry sending pending read receipts for the active room upon reconnect or poll (SP4)."""
+        """Retry sending pending read receipts for the active room upon reconnect (SP4)."""
+        if not getattr(self.controller.session, "is_registered", True):
+            return
         if self._active_room and self._unread_messages.get(self._active_room):
             self._ack_unread_in_room(self._active_room)
 

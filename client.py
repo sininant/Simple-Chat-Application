@@ -86,8 +86,12 @@ class ClientSession:
         def connect() -> None:
             with self._lock:
                 self._is_connected = True
+                username_to_reregister = self._username
             logger.info("Connected to server: %s", self.server_url)
             self.event_queue.put(("connect", None))
+            if username_to_reregister is not None:
+                logger.info("Auto re-registering on reconnect as: %s", username_to_reregister)
+                self.register(username_to_reregister)
 
         @self.sio.event
         def disconnect() -> None:
@@ -222,8 +226,8 @@ class ClientSession:
         Returns:
             The message_id if emission succeeded, or None if validation/emission failed.
         """
-        if not self.is_connected:
-            logger.warning("Cannot send private message: client is not connected")
+        if not self.is_connected or (self._username is not None and not self.is_registered):
+            logger.warning("Cannot send private message: client is not connected and registered")
             return None
 
         try:
@@ -256,8 +260,8 @@ class ClientSession:
         Returns:
             True if emission succeeded, False if disconnected or validation failed.
         """
-        if not self.is_connected:
-            logger.warning("Cannot send read_ack: client is not connected")
+        if not self.is_connected or (self._username is not None and not self.is_registered):
+            logger.warning("Cannot send read_ack: client is not connected and registered")
             return False
 
         try:

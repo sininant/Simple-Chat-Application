@@ -9,7 +9,6 @@ import pytest
 
 from gui import GuiController, MainChatWindow
 from protocol import (
-    EVENT_CONNECT,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
@@ -259,6 +258,22 @@ class DirectSession:
         self.username = username
         self.events: deque[tuple[str, Any]] = deque()
         self.is_connected = True
+        self.is_registered = True
+
+    def disconnect_socket(self) -> None:
+        self.is_connected = False
+        self.is_registered = False
+        self.server.sio._trigger_event("disconnect", "/", self.sid)
+
+    def reconnect_socket(self, new_sid: str) -> None:
+        self.sid = new_sid
+        self.is_connected = True
+        self.is_registered = False
+        self.server.sio._trigger_event("connect", "/", self.sid, {})
+
+    def reregister(self) -> None:
+        payload = {"username": self.username}
+        self.server.sio._trigger_event("register", "/", self.sid, payload)
 
     def send_private_message(
         self,
@@ -267,6 +282,8 @@ class DirectSession:
         message_id: str | None = None,
         timestamp: str | None = None,
     ) -> str | None:
+        if not self.is_connected or not self.is_registered:
+            return None
         mid = message_id or "MSG_001"
         ts = timestamp or "12:00"
         payload = {
@@ -279,6 +296,8 @@ class DirectSession:
         return mid
 
     def send_read_ack(self, message_id: str, target: str) -> bool:
+        if not self.is_connected or not self.is_registered:
+            return False
         payload = {"message_id": message_id, "target": target}
         self.server.sio._trigger_event("read_ack", "/", self.sid, payload)
         return True
@@ -288,7 +307,7 @@ class DirectSession:
 
 
 def test_main_window_retries_pending_read_acks_on_reconnect():
-    """Verify pending ACKs retained during network failure are retried on reconnect (SP4)."""
+    """Verify pending ACKs are retried only after re-registration with new SID (SP4)."""
     try:
         import customtkinter as ctk
     except ImportError:
@@ -297,34 +316,91 @@ def test_main_window_retries_pending_read_acks_on_reconnect():
     root = ctk.CTk()
     root.withdraw()
     try:
-        session = SessionSpy(send_read_ack_result=False)
-        controller = GuiController(session)
-        controller.username = "Bob"
-        controller.online_users = ["Alice", "Bob"]
-        window = MainChatWindow(root, controller)
-        window.open_private_room("Alice", select=True)
+        spy = SocketIOServerSpy()
+        server = ChatServer(sio=spy.sio)
+        sessions: dict[str, DirectSession] = {}
 
-        payload = PrivateMessageServerPayload(
-            sender="Alice",
-            target="Bob",
-            message="Hello",
-            meta=MessageMeta(message_id="MSG_RETRY_1", timestamp="12:00"),
-        )
-        window._handle_incoming_private_message("Alice", payload)
+        orig_emit = spy.sio.emit
 
-        # Failed ACK is preserved in _unread_messages
-        assert "MSG_RETRY_1" in window._unread_messages.get("Alice", set())
-        assert "MSG_RETRY_1" not in window._acknowledged_messages
+        def direct_emit(
+            event: str,
+            data: Any = None,
+            to: Any = None,
+            room: Any = None,
+            **kwargs: Any,
+        ) -> None:
+            orig_emit(event, data, to=to, room=room, **kwargs)
+            target_sid = room or to
+            if target_sid and target_sid in sessions:
+                parsed = parse_server_event(event, data)
+                sessions[target_sid].events.append((event, parsed))
 
-        # Connection restored: controller notifies reconnect
-        session.send_read_ack_result = True
-        session.events.append((EVENT_CONNECT, None))
-        controller.poll_events()
+        spy.sio.emit = direct_emit
 
-        # ACK has now been sent and marked acknowledged
-        assert ("MSG_RETRY_1", "Alice") in session.sent_read_ack
-        assert "MSG_RETRY_1" in window._acknowledged_messages
-        assert "MSG_RETRY_1" not in window._unread_messages.get("Alice", set())
+        # Setup Alice and Bob connected to ChatServer
+        alice_sess = DirectSession(server, "sid_alice", "Alice")
+        bob_sess = DirectSession(server, "sid_bob_1", "Bob")
+        sessions["sid_alice"] = alice_sess
+        sessions["sid_bob_1"] = bob_sess
+
+        server.engine.register_user("sid_alice", "Alice")
+        server.engine.register_user("sid_bob_1", "Bob")
+
+        alice_ctrl = GuiController(alice_sess)
+        alice_ctrl.username = "Alice"
+        alice_ctrl.online_users = ["Alice", "Bob"]
+        alice_win = MainChatWindow(root, alice_ctrl)
+        alice_win.open_private_room("Bob", select=True)
+
+        bob_ctrl = GuiController(bob_sess)
+        bob_ctrl.username = "Bob"
+        bob_ctrl.online_users = ["Alice", "Bob"]
+        bob_win = MainChatWindow(root, bob_ctrl)
+
+        # 1. Alice sends message to Bob
+        alice_win.rooms["Bob"].on_send("Hello Bob!")
+        alice_ctrl.poll_events()
+        alice_bubble = alice_win.rooms["Bob"].bubbles["MSG_001"]
+        assert "Sent" in alice_bubble.status_label.cget("text")
+
+        # 2. Bob receives message while Alice tab is unselected -> queued in unread
+        bob_ctrl.poll_events()
+        assert "MSG_001" in bob_win._unread_messages.get("Alice", set())
+
+        # 3. Network drops: Bob disconnects from server
+        bob_sess.disconnect_socket()
+        assert not server.engine.is_registered("sid_bob_1")
+
+        # 4. Bob reconnects with a new Socket.IO SID 'sid_bob_2' (unregistered yet)
+        sessions["sid_bob_2"] = bob_sess
+        bob_sess.reconnect_socket("sid_bob_2")
+        assert bob_sess.is_connected is True
+        assert bob_sess.is_registered is False
+        assert not server.engine.is_registered("sid_bob_2")
+
+        # Unregistered SID failure mode: server rejects ACK attempt
+        res_unreg = server.engine.route_read_ack("sid_bob_2", "MSG_001", "Alice")
+        assert res_unreg.success is False
+        assert res_unreg.error == "Reader not registered"
+
+        # Bob views Alice's room while pending registration: ACK cannot send yet, retained
+        bob_win.open_private_room("Alice", select=True)
+        assert "MSG_001" in bob_win._unread_messages.get("Alice", set())
+        assert "MSG_001" not in bob_win._acknowledged_messages
+
+        # 5. Bob re-registers with new SID 'sid_bob_2'
+        bob_sess.reregister()
+        assert server.engine.is_registered("sid_bob_2")
+        bob_sess.is_registered = True
+
+        # 6. Bob polls events: receives register_ack -> triggers _retry_pending_acks
+        bob_ctrl.poll_events()
+        assert "MSG_001" in bob_win._acknowledged_messages
+        assert "MSG_001" not in bob_win._unread_messages.get("Alice", set())
+
+        # 7. Alice polls events: receives verified READ_ACK routed from sid_bob_2
+        alice_ctrl.poll_events()
+        assert "Read ✓✓" in alice_bubble.status_label.cget("text")
     finally:
         root.destroy()
 

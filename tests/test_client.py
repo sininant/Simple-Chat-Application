@@ -397,3 +397,45 @@ def test_client_session_receives_read_ack_event():
     assert isinstance(payload, ReadAckServerPayload)
     assert payload.message_id == "MSG_001"
     assert payload.reader == "Bob"
+
+
+def test_client_session_auto_reregisters_on_reconnect_and_guards_read_ack():
+    """Verify ClientSession automatically re-registers on reconnect and guards read_ack."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    # 1. Connect and register
+    spy.trigger("connect")
+    session.register("Alice")
+    spy.trigger("register_ack", {"success": True, "username": "Alice"})
+    assert session.is_registered is True
+    assert session.username == "Alice"
+
+    # 2. Connection drops
+    spy.trigger("disconnect")
+    assert session.is_connected is False
+    assert session.is_registered is False
+    assert session.username == "Alice"
+
+    # 3. Guard: cannot send read_ack while disconnected
+    assert session.send_read_ack("MSG_001", "Bob") is False
+
+    # 4. Socket reconnects: connect handler triggers auto re-registration
+    spy.emitted.clear()
+    spy.trigger("connect")
+    assert session.is_connected is True
+    assert session.is_registered is False
+
+    assert len(spy.emitted) == 1
+    assert spy.emitted[0][0] == "register"
+    assert spy.emitted[0][1]["username"] == "Alice"
+
+    # Guarded while pending server register_ack
+    assert session.send_read_ack("MSG_001", "Bob") is False
+
+    # 5. Server acknowledges re-registration
+    spy.trigger("register_ack", {"success": True, "username": "Alice"})
+    assert session.is_registered is True
+
+    # Now read_ack is permitted
+    assert session.send_read_ack("MSG_001", "Bob") is True
