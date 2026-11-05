@@ -34,6 +34,7 @@ class SocketIOServerSpy:
         self.sio = socketio.Server(async_mode="threading")
         self.emissions: list[dict[str, Any]] = []
         self.entered_rooms: list[tuple[str, str]] = []
+        self.left_rooms: list[tuple[str, str]] = []
 
         def spy_emit(
             event: str,
@@ -52,6 +53,12 @@ class SocketIOServerSpy:
             self.entered_rooms.append((sid, room))
 
         self.sio.enter_room = spy_enter_room  # type: ignore[assignment]
+
+        def spy_leave_room(sid: str, room: str, namespace: str | None = None) -> None:
+            del namespace
+            self.left_rooms.append((sid, room))
+
+        self.sio.leave_room = spy_leave_room  # type: ignore[assignment]
 
     def trigger(self, event: str, sid: str, data: Any = None) -> None:
         """Trigger an inbound Socket.IO event handler."""
@@ -540,6 +547,19 @@ def test_server_broadcasts_group_membership_after_a_member_disconnects():
             "to": None,
         }
     ]
+
+
+def test_server_removes_renamed_session_from_its_previous_socketio_group_room():
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    spy.trigger("register", "sid_alice", {"username": "Alice"})
+    spy.trigger(EVENT_CREATE_GROUP, "sid_alice", {"group_name": "StudyGroup"})
+    spy.clear()
+
+    spy.trigger("register", "sid_alice", {"username": "Bob"})
+
+    assert spy.left_rooms == [("sid_alice", "StudyGroup")]
 
 
 def test_server_private_message_routing_and_charlie_isolation():

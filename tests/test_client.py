@@ -245,6 +245,13 @@ def test_client_session_tracks_group_list_and_emits_voluntary_group_actions():
     """R8-R10: typed group updates drive explicit create and self-join requests."""
     spy = SocketIOClientSpy()
     session = ClientSession(sio=spy.sio)
+    spy.trigger("connect")
+    _ = session.get_next_event(block=False)
+    spy.trigger(
+        EVENT_REGISTER_ACK,
+        {"success": True, "username": "Alice", "message": "Registered successfully"},
+    )
+    _ = session.get_next_event(block=False)
 
     spy.trigger(
         EVENT_GROUP_LIST,
@@ -263,6 +270,15 @@ def test_client_session_tracks_group_list_and_emits_voluntary_group_actions():
         (EVENT_CREATE_GROUP, {"group_name": "StudyGroup"}),
         (EVENT_JOIN_GROUP, {"group_name": "StudyGroup"}),
     ]
+
+
+def test_client_session_rejects_group_actions_when_disconnected():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    assert session.create_group("StudyGroup") is False
+    assert session.join_group("StudyGroup") is False
+    assert spy.emitted == []
 
 
 def test_client_session_parses_group_errors():

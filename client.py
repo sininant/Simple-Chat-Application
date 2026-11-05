@@ -296,6 +296,9 @@ class ClientSession:
 
     def create_group(self, group_name: str) -> bool:
         """Request creation of a group with this client as the initial member (R8)."""
+        if not self.is_connected or not self.is_registered:
+            logger.warning("Cannot create group: client is not connected and registered")
+            return False
         try:
             payload = CreateGroupPayload(group_name=validate_group_name(group_name))
         except ProtocolValidationError as error:
@@ -306,6 +309,9 @@ class ClientSession:
 
     def join_group(self, group_name: str) -> bool:
         """Request that this client voluntarily joins an existing group (R10)."""
+        if not self.is_connected or not self.is_registered:
+            logger.warning("Cannot join group: client is not connected and registered")
+            return False
         try:
             payload = JoinGroupPayload(group_name=validate_group_name(group_name))
         except ProtocolValidationError as error:

@@ -220,6 +220,11 @@ class ChatEngine:
                 for name, members in sorted(self._groups.items())
             ]
 
+    def get_groups_for_user(self, username: str) -> list[str]:
+        """Return group rooms currently containing username, for transport cleanup."""
+        with self._lock:
+            return [name for name, members in self._groups.items() if username in members]
+
     # --- 1-to-1 Private Message Routing (R7) ---
 
     def route_private_message(
@@ -359,16 +364,25 @@ class ChatServer:
 
         @self.sio.event
         def register(sid: str, data: Any) -> None:
+            prior_username = self.engine.get_username(sid)
             try:
                 payload = parse_client_event(EVENT_REGISTER, data)
                 assert isinstance(payload, RegisterPayload)
+                prior_groups = (
+                    self.engine.get_groups_for_user(prior_username)
+                    if prior_username is not None and prior_username != payload.username
+                    else []
+                )
                 ack = self.engine.register_user(sid, payload.username, payload.avatar)
             except ProtocolValidationError as e:
                 ack = RegisterAckPayload(success=False, error=e.message)
+                prior_groups = []
 
             self.sio.emit(EVENT_REGISTER_ACK, ack.to_dict(), room=sid)
 
             if ack.success and ack.username:
+                for group_name in prior_groups:
+                    self.sio.leave_room(sid, group_name)
                 logger.info("User registered successfully: user=%s sid=%s", ack.username, sid)
                 self.broadcast_user_list()
                 self.broadcast_group_list()

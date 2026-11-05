@@ -716,7 +716,10 @@ class SidebarPanel:
         self.group_rows.clear()
         if not groups:
             self.group_placeholder = _require_ctk().CTkLabel(
-                self.groups, text="No groups yet. Create one to get started!", text_color=INK
+                self.groups,
+                text=error or "No groups yet. Create one to get started!",
+                text_color="#B22222" if error else INK,
+                wraplength=300,
             )
             self.group_placeholder.pack(pady=(12, 0))
             return
