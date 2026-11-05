@@ -93,10 +93,10 @@ See [docs/protocol.md](docs/protocol.md) for the agreed Socket.IO event contract
    .venv\Scripts\Activate.ps1
    ```
 
-3. Install the networking and desktop-client dependencies:
+3. Install the project dependencies:
 
    ```bash
-   pip install python-socketio customtkinter pillow
+   pip install -r requirements.txt
    ```
 
 4. On Computer A, start the Socket.IO server in one terminal:
