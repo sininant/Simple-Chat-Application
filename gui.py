@@ -594,11 +594,11 @@ class SidebarPanel:
 
         dialog = ui.CTkToplevel(self.frame.winfo_toplevel())
         self._active_dialog = dialog
-        dialog.title("Create New Group")
         dialog.withdraw()
         width, height = 630, 320
         dialog.geometry(f"{width}x{height}")
         dialog.resizable(False, False)
+        dialog.overrideredirect(True)
         dialog.transient(self.frame.winfo_toplevel())
 
         def _close_dialog() -> None:
@@ -616,6 +616,8 @@ class SidebarPanel:
         header = tk.Canvas(card, height=84, bg=WHITE, highlightthickness=0, bd=0)
         header.pack(fill="x")
         header.bind("<Configure>", lambda _event: self._draw_group_dialog_header(header))
+        header.bind("<ButtonPress-1>", lambda event: self._start_dialog_drag(dialog, event))
+        header.bind("<B1-Motion>", lambda event: self._drag_dialog(dialog, event))
 
         name_entry = ui.CTkEntry(
             card,
@@ -623,7 +625,8 @@ class SidebarPanel:
             height=60,
             font=(FONT, 19),
             fg_color=PINK_LIGHT,
-            border_width=0,
+            border_color=INK,
+            border_width=2,
             corner_radius=30,
         )
         name_entry.pack(fill="x", padx=46, pady=(46, 20))
@@ -639,6 +642,8 @@ class SidebarPanel:
             fg_color="#E0E0E0",
             hover_color="#D0D0D0",
             text_color=INK,
+            border_color=INK,
+            border_width=1,
             corner_radius=16,
             font=(FONT, 14, "bold"),
             command=_close_dialog,
@@ -652,7 +657,8 @@ class SidebarPanel:
             fg_color=BLUE,
             hover_color="#91D5DF",
             text_color=INK,
-            border_width=0,
+            border_color=INK,
+            border_width=1,
             corner_radius=18,
             font=(FONT, 18, "bold"),
             command=lambda: self._create_group(name_entry, dialog),
@@ -698,6 +704,7 @@ class SidebarPanel:
             fill=BLUE,
             outline=BLUE,
         )
+        canvas.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
         canvas.create_text(
             24,
             height // 2,
