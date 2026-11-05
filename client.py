@@ -20,6 +20,7 @@ import socketio
 from protocol import (
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
+    EVENT_READ_ACK,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
@@ -27,10 +28,13 @@ from protocol import (
     PrivateMessagePayload,
     PrivateMessageServerPayload,
     ProtocolValidationError,
+    ReadAckClientPayload,
+    ReadAckServerPayload,
     RegisterAckPayload,
     RegisterPayload,
     UserListPayload,
     parse_server_event,
+    validate_message_id,
     validate_message_text,
     validate_username,
 )
@@ -82,8 +86,12 @@ class ClientSession:
         def connect() -> None:
             with self._lock:
                 self._is_connected = True
+                username_to_reregister = self._username
             logger.info("Connected to server: %s", self.server_url)
             self.event_queue.put(("connect", None))
+            if username_to_reregister is not None:
+                logger.info("Auto re-registering on reconnect as: %s", username_to_reregister)
+                self.register(username_to_reregister)
 
         @self.sio.event
         def disconnect() -> None:
@@ -127,6 +135,15 @@ class ClientSession:
         def private_message_error(data: Any) -> None:
             self.event_queue.put((EVENT_PRIVATE_MSG_ERROR, data))
 
+        @self.sio.event
+        def read_ack(data: Any) -> None:
+            try:
+                payload = parse_server_event(EVENT_READ_ACK, data)
+                assert isinstance(payload, ReadAckServerPayload)
+                self.event_queue.put((EVENT_READ_ACK, payload))
+            except ProtocolValidationError as e:
+                logger.warning("Received invalid read_ack from server: %s", e)
+
         @self.sio.on("*")
         def catch_all(event: str, data: Any) -> None:
             # Pass unhandled server events through to the queue for downstream UI handlers.
@@ -137,6 +154,7 @@ class ClientSession:
                 EVENT_USER_LIST,
                 EVENT_PRIVATE_MSG,
                 EVENT_PRIVATE_MSG_ERROR,
+                EVENT_READ_ACK,
                 "connect",
                 "disconnect",
             }:
@@ -208,8 +226,8 @@ class ClientSession:
         Returns:
             The message_id if emission succeeded, or None if validation/emission failed.
         """
-        if not self.is_connected:
-            logger.warning("Cannot send private message: client is not connected")
+        if not self.is_connected or (self._username is not None and not self.is_registered):
+            logger.warning("Cannot send private message: client is not connected and registered")
             return None
 
         try:
@@ -235,6 +253,27 @@ class ClientSession:
 
         self.sio.emit(EVENT_PRIVATE_MSG, payload.to_dict())
         return msg_id
+
+    def send_read_ack(self, message_id: str, target: str) -> bool:
+        """Send a 1-to-1 read receipt acknowledgment over Socket.IO (SP4).
+
+        Returns:
+            True if emission succeeded, False if disconnected or validation failed.
+        """
+        if not self.is_connected or (self._username is not None and not self.is_registered):
+            logger.warning("Cannot send read_ack: client is not connected and registered")
+            return False
+
+        try:
+            clean_mid = validate_message_id(message_id, field_name="message_id")
+            clean_target = validate_username(target, field_name="target")
+            payload = ReadAckClientPayload(message_id=clean_mid, target=clean_target)
+        except ProtocolValidationError as e:
+            logger.warning("Invalid read_ack payload: %s", e)
+            return False
+
+        self.sio.emit(EVENT_READ_ACK, payload.to_dict())
+        return True
 
     def get_next_event(
         self, block: bool = False, timeout: float | None = None

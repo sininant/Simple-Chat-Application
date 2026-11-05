@@ -13,7 +13,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from socketserver import ThreadingMixIn
-from typing import Any
+from typing import Any, Generic, TypeVar
 from wsgiref.simple_server import WSGIServer, make_server
 
 import socketio
@@ -21,6 +21,7 @@ import socketio
 from protocol import (
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
+    EVENT_READ_ACK,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
@@ -28,6 +29,8 @@ from protocol import (
     PrivateMessagePayload,
     PrivateMessageServerPayload,
     ProtocolValidationError,
+    ReadAckClientPayload,
+    ReadAckServerPayload,
     RegisterAckPayload,
     RegisterPayload,
     UserListPayload,
@@ -37,19 +40,27 @@ from protocol import (
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
 
 @dataclass(frozen=True)
-class RouteResult:
-    """Encapsulates the result of routing a 1-to-1 private message."""
+class RouteResult(Generic[T]):
+    """Encapsulates the result of routing a 1-to-1 message or acknowledgment."""
 
     success: bool
     error: str | None = None
-    payload: PrivateMessageServerPayload | None = None
+    payload: T | None = None
     target_sid: str | None = None
 
     def __iter__(self):
         """Allow 4-element tuple unpacking for backwards compatibility."""
         return iter((self.success, self.error, self.payload, self.target_sid))
+
+
+# Specialized subclass for read acknowledgments (SP4)
+@dataclass(frozen=True)
+class ReadAckRouteResult(RouteResult[ReadAckServerPayload]):
+    """Encapsulates the result of routing a 1-to-1 read acknowledgment (SP4)."""
 
 
 # -----------------------------------------------------------------------------
@@ -69,6 +80,7 @@ class ChatEngine:
         self._lock = threading.RLock()
         self._sessions: dict[str, str] = {}  # sid -> username
         self._users: dict[str, str] = {}  # username -> sid
+        self._private_messages: dict[str, tuple[str, str]] = {}  # message_id -> (sender, target)
 
     # --- Session & Identity Management (R3, R4) ---
 
@@ -161,7 +173,54 @@ class ChatEngine:
                 message=message,
                 meta=meta,
             )
+            self._private_messages[meta.message_id] = (sender, target)
             return RouteResult(
+                success=True,
+                payload=server_payload,
+                target_sid=target_sid,
+            )
+
+    # --- 1-to-1 Read Receipt Routing (SP4) ---
+
+    def route_read_ack(
+        self,
+        reader_sid: str,
+        message_id: str,
+        target: str,
+    ) -> ReadAckRouteResult:
+        """Route a read receipt acknowledgment (SP4).
+
+        Enforces Server Trust Boundary and message ownership verification.
+
+        Returns:
+            ReadAckRouteResult: Encapsulates routing decision, verified reader, and target sid.
+        """
+        with self._lock:
+            reader = self._sessions.get(reader_sid)
+            if reader is None:
+                return ReadAckRouteResult(success=False, error="Reader not registered")
+
+            # Ownership verification: reject arbitrary or forged message ACKs (SP4)
+            ownership = self._private_messages.get(message_id)
+            if ownership is None:
+                return ReadAckRouteResult(success=False, error=f"Message '{message_id}' not found")
+
+            original_sender, original_recipient = ownership
+            if original_recipient != reader or original_sender != target:
+                return ReadAckRouteResult(
+                    success=False,
+                    error=f"Read ACK ownership mismatch for message '{message_id}'",
+                )
+
+            target_sid = self._users.get(target)
+            if target_sid is None:
+                return ReadAckRouteResult(success=False, error=f"Target user '{target}' is offline")
+
+            server_payload = ReadAckServerPayload(
+                message_id=message_id,
+                reader=reader,
+            )
+            return ReadAckRouteResult(
                 success=True,
                 payload=server_payload,
                 target_sid=target_sid,
@@ -267,6 +326,27 @@ class ChatServer:
             self.sio.emit(EVENT_PRIVATE_MSG, outbound_dict, room=result.target_sid)
             if result.target_sid != sid:
                 self.sio.emit(EVENT_PRIVATE_MSG, outbound_dict, room=sid)
+
+        @self.sio.event
+        def read_ack(sid: str, data: Any) -> None:
+            try:
+                payload = parse_client_event(EVENT_READ_ACK, data)
+                assert isinstance(payload, ReadAckClientPayload)
+            except ProtocolValidationError as e:
+                logger.warning("Invalid read_ack from sid=%s: %s", sid, e)
+                return
+
+            result = self.engine.route_read_ack(
+                reader_sid=sid,
+                message_id=payload.message_id,
+                target=payload.target,
+            )
+            if not result.success or result.payload is None or result.target_sid is None:
+                logger.warning("Failed to route read_ack from sid=%s: %s", sid, result.error)
+                return
+
+            # Deliver strictly to original sender (SP4)
+            self.sio.emit(EVENT_READ_ACK, result.payload.to_dict(), room=result.target_sid)
 
     # --- Broadcast Helpers (R4) ---
 
