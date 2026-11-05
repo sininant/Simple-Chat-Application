@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import threading
+from dataclasses import dataclass
 from socketserver import ThreadingMixIn
 from typing import Any
 from wsgiref.simple_server import WSGIServer, make_server
@@ -34,6 +35,20 @@ from protocol import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RouteResult:
+    """Encapsulates the result of routing a 1-to-1 private message."""
+
+    success: bool
+    error: str | None = None
+    payload: PrivateMessageServerPayload | None = None
+    target_sid: str | None = None
+
+    def __iter__(self):
+        """Allow 4-element tuple unpacking for backwards compatibility."""
+        return iter((self.success, self.error, self.payload, self.target_sid))
 
 
 # -----------------------------------------------------------------------------
@@ -124,20 +139,20 @@ class ChatEngine:
         target: str,
         message: str,
         meta: MessageMeta,
-    ) -> tuple[bool, str | None, PrivateMessageServerPayload | None, str | None]:
+    ) -> RouteResult:
         """Route a private message enforcing Server Trust Boundary and direct delivery (R7).
 
         Returns:
-            A tuple of (success, error_message, server_payload, target_sid).
+            RouteResult: Encapsulates routing decision, sanitized payload, and recipient sid.
         """
         with self._lock:
             sender = self._sessions.get(sender_sid)
             if sender is None:
-                return False, "Sender not registered", None, None
+                return RouteResult(success=False, error="Sender not registered")
 
             target_sid = self._users.get(target)
             if target_sid is None:
-                return False, f"User '{target}' is offline", None, None
+                return RouteResult(success=False, error=f"User '{target}' is offline")
 
             server_payload = PrivateMessageServerPayload(
                 sender=sender,
@@ -145,7 +160,11 @@ class ChatEngine:
                 message=message,
                 meta=meta,
             )
-            return True, None, server_payload, target_sid
+            return RouteResult(
+                success=True,
+                payload=server_payload,
+                target_sid=target_sid,
+            )
 
 
 # -----------------------------------------------------------------------------
@@ -224,20 +243,28 @@ class ChatServer:
                 logger.warning("Invalid private_message from sid=%s: %s", sid, e)
                 return
 
-            success, error, server_payload, target_sid = self.engine.route_private_message(
+            result = self.engine.route_private_message(
                 sender_sid=sid,
                 target=payload.target,
                 message=payload.message,
                 meta=payload.meta,
             )
-            if not success or server_payload is None or target_sid is None:
-                logger.warning("Failed to route private message from sid=%s: %s", sid, error)
+            if not result.success or result.payload is None or result.target_sid is None:
+                logger.warning("Failed to route private message from sid=%s: %s", sid, result.error)
+                self.sio.emit(
+                    "private_message_error",
+                    {
+                        "error": result.error or "Failed to deliver message",
+                        "target": payload.target,
+                    },
+                    room=sid,
+                )
                 return
 
-            outbound_dict = server_payload.to_dict()
+            outbound_dict = result.payload.to_dict()
             # Deliver strictly to target recipient and sender echo (R7)
-            self.sio.emit(EVENT_PRIVATE_MSG, outbound_dict, room=target_sid)
-            if target_sid != sid:
+            self.sio.emit(EVENT_PRIVATE_MSG, outbound_dict, room=result.target_sid)
+            if result.target_sid != sid:
                 self.sio.emit(EVENT_PRIVATE_MSG, outbound_dict, room=sid)
 
     # --- Broadcast Helpers (R4) ---

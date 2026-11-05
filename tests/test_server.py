@@ -14,7 +14,7 @@ from protocol import (
     EVENT_USER_LIST,
     MessageMeta,
 )
-from server import ChatEngine, ChatServer
+from server import ChatEngine, ChatServer, RouteResult
 
 # -----------------------------------------------------------------------------
 # Fixtures & Test Utilities
@@ -194,20 +194,26 @@ def test_chat_engine_route_private_message():
     meta = MessageMeta(message_id="MSG_001", timestamp="14:31")
 
     # Valid route Alice -> Bob
-    success, err, payload, target_sid = engine.route_private_message(
+    result = engine.route_private_message(
         sender_sid="sid_alice",
         target="Bob",
         message="Hi Bob!",
         meta=meta,
     )
+    assert isinstance(result, RouteResult)
+    assert result.success is True
+    assert result.error is None
+    assert result.target_sid == "sid_bob"
+    assert result.payload is not None
+    assert result.payload.sender == "Alice"
+    assert result.payload.target == "Bob"
+    assert result.payload.message == "Hi Bob!"
+    assert result.payload.meta.message_id == "MSG_001"
+
+    # Also supports tuple unpacking for backwards compatibility
+    success, err, payload, target_sid = result
     assert success is True
-    assert err is None
     assert target_sid == "sid_bob"
-    assert payload is not None
-    assert payload.sender == "Alice"
-    assert payload.target == "Bob"
-    assert payload.message == "Hi Bob!"
-    assert payload.meta.message_id == "MSG_001"
 
     # Route from unregistered sender sid fails
     success, err, payload, target_sid = engine.route_private_message(
@@ -365,13 +371,17 @@ def test_server_private_message_invalid_payloads_dropped():
     spy.trigger("register", "sid_alice", {"username": "Alice"})
     spy.clear()
 
-    # Target not online
+    # Target not online: drops message and emits private_message_error to sender
     spy.trigger(
         "private_message",
         "sid_alice",
         {"target": "OfflineBob", "message": "Hi", "message_id": "MSG_002", "timestamp": "14:32"},
     )
     assert len(spy.get_events(EVENT_PRIVATE_MSG)) == 0
+    errors = spy.get_events("private_message_error", room="sid_alice")
+    assert len(errors) == 1
+    assert errors[0]["data"]["error"] == "User 'OfflineBob' is offline"
+    assert errors[0]["data"]["target"] == "OfflineBob"
 
     # Unregistered sender
     spy.trigger(
