@@ -93,10 +93,10 @@ See [docs/protocol.md](docs/protocol.md) for the agreed Socket.IO event contract
    .venv\Scripts\Activate.ps1
    ```
 
-3. Install the planned networking and desktop-client dependencies:
+3. Install the project dependencies:
 
    ```bash
-   pip install python-socketio customtkinter pillow
+   pip install -r requirements.txt
    ```
 
 4. On Computer A, start the Socket.IO server in one terminal:
@@ -118,6 +118,18 @@ See [docs/protocol.md](docs/protocol.md) for the agreed Socket.IO event contract
    ```
 
    Replace `192.168.1.10` with the actual LAN IPv4 address of Computer A. Do not use `127.0.0.1` on Computer B because that address refers to Computer B itself.
+
+### Desktop GUI
+
+Start the desktop client with:
+
+```bash
+python gui.py
+```
+
+Enter the server host, port, and an unclaimed username. The login screen moves to the
+responsive chat layout after the server confirms registration. The interface polls
+`ClientSession` on the GUI event loop, so Socket.IO callbacks never mutate widgets directly.
 
 ## Planned project structure
 
