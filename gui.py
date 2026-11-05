@@ -32,8 +32,10 @@ except ImportError:  # pragma: no cover - exercised only on machines without GUI
 
 from client import ClientSession
 from protocol import (
+    EVENT_PRIVATE_MSG,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    PrivateMessageServerPayload,
     RegisterAckPayload,
     UserListPayload,
 )
@@ -57,9 +59,17 @@ class SessionPort(Protocol):
 
     def get_next_event(self, *, block: bool = False) -> tuple[str, Any] | None: ...
 
+    def send_private_message(
+        self,
+        target: str,
+        message: str,
+        message_id: str | None = None,
+        timestamp: str | None = None,
+    ) -> str | None: ...
+
 
 class GuiController:
-    """Headless adapter that owns GUI-facing login and presence state."""
+    """Headless adapter that owns GUI-facing login, presence, and chat message state."""
 
     def __init__(self, session: SessionPort, on_change: Callable[[], None] | None = None) -> None:
         self.session = session
@@ -68,6 +78,15 @@ class GuiController:
         self.avatar = "rabbit"
         self.online_users: list[str] = []
         self.login_error: str | None = None
+        self.private_messages: dict[str, list[PrivateMessageServerPayload]] = {}
+        self.on_private_message: Callable[[str, PrivateMessageServerPayload], None] | None = None
+
+    def send_private_message(self, target: str, message: str) -> str | None:
+        """Send a 1-to-1 private message through the underlying session adapter (R7)."""
+        send_fn = getattr(self.session, "send_private_message", None)
+        if send_fn is None:
+            return None
+        return send_fn(target, message)
 
     def connect_and_register(self, host: str, port: str, username: str) -> bool:
         """Connect and request registration, reporting synchronous errors inline."""
@@ -109,6 +128,14 @@ class GuiController:
                 changed = True
             elif event_name == EVENT_USER_LIST and isinstance(payload, UserListPayload):
                 self.online_users = list(payload.users)
+                changed = True
+            elif event_name == EVENT_PRIVATE_MSG and isinstance(
+                payload, PrivateMessageServerPayload
+            ):
+                peer = payload.target if payload.sender == self.username else payload.sender
+                self.private_messages.setdefault(peer, []).append(payload)
+                if self.on_private_message:
+                    self.on_private_message(peer, payload)
                 changed = True
         if changed:
             self._changed()
@@ -687,7 +714,14 @@ class SidebarPanel:
 class MessageBubble:
     """Reusable message row for a ChatWindow."""
 
-    def __init__(self, parent: Any, sender: str, message: str, own: bool = False) -> None:
+    def __init__(
+        self,
+        parent: Any,
+        sender: str,
+        message: str,
+        own: bool = False,
+        timestamp: str | None = None,
+    ) -> None:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, fg_color="transparent")
         bubble_shell = ui.CTkFrame(
@@ -698,9 +732,10 @@ class MessageBubble:
             corner_radius=16,
         )
         if not own:
+            sender_label = f"{sender} • {timestamp}" if timestamp else sender
             ui.CTkLabel(
                 self.frame,
-                text=sender,
+                text=sender_label,
                 text_color=INK,
                 font=(FONT, 12, "bold"),
                 anchor="w",
@@ -715,6 +750,14 @@ class MessageBubble:
         )
         bubble.pack(padx=12, pady=7)
         bubble_shell.pack(anchor="e" if own else "w", padx=8, pady=4)
+        if own and timestamp:
+            ui.CTkLabel(
+                self.frame,
+                text=timestamp,
+                text_color="#666666",
+                font=(FONT, 10),
+                anchor="e",
+            ).pack(anchor="e", padx=12, pady=(0, 2))
 
 
 class ChatBoxBar:
@@ -892,8 +935,14 @@ class ChatRoomTab:
         """Render a local demonstration message until private transport (R7) is wired."""
         self.add_message("You", message, own=True)
 
-    def add_message(self, sender: str, message: str, own: bool = False) -> None:
-        bubble = MessageBubble(self.window, sender, message, own)
+    def add_message(
+        self,
+        sender: str,
+        message: str,
+        own: bool = False,
+        timestamp: str | None = None,
+    ) -> None:
+        bubble = MessageBubble(self.window, sender, message, own, timestamp=timestamp)
         bubble.frame.pack(fill="x")
         self._scroll_to_latest()
 
@@ -967,7 +1016,13 @@ class MainChatWindow:
         if segmented_button is not None:
             segmented_button.grid_remove()
         self.rooms: dict[str, ChatRoomTab] = {}
+        self._rendered_messages: set[str] = set()
+        self.controller.on_private_message = self._handle_incoming_private_message
         self.frame.bind("<Configure>", self._resize_content)
+        # Process any messages received prior to MainChatWindow construction
+        for peer, msgs in list(self.controller.private_messages.items()):
+            for msg in msgs:
+                self._handle_incoming_private_message(peer, msg)
 
     def _resize_content(self, event: Any) -> None:
         """Keep the Figma proportions while still adapting to smaller windows."""
@@ -990,9 +1045,36 @@ class MainChatWindow:
             return
         if user not in self.rooms:
             tab = self.tabs.add(user)
-            self.rooms[user] = ChatRoomTab(tab, user)
+            self.rooms[user] = ChatRoomTab(
+                tab,
+                user,
+                on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
+            )
             self.rooms[user].frame.pack(fill="both", expand=True)
         self.tabs.set(user)
+
+    def _send_private_message(self, peer: str, message: str) -> None:
+        msg_id = self.controller.send_private_message(peer, message)
+        if msg_id is None:
+            # Fallback for offline or mock sessions without live server echo
+            self.rooms[peer].add_message("You", message, own=True)
+
+    def _handle_incoming_private_message(
+        self, peer: str, payload: PrivateMessageServerPayload
+    ) -> None:
+        if payload.meta.message_id in self._rendered_messages:
+            return
+        self._rendered_messages.add(payload.meta.message_id)
+        if peer not in self.rooms:
+            self.open_private_room(peer)
+        own = payload.sender == self.controller.username
+        display_sender = "You" if own else payload.sender
+        self.rooms[peer].add_message(
+            sender=display_sender,
+            message=payload.message,
+            own=own,
+            timestamp=payload.meta.timestamp,
+        )
 
 
 class ChatApplication:
