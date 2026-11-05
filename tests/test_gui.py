@@ -17,14 +17,19 @@ from protocol import (
 class SessionSpy:
     """Small public ClientSession-shaped fake with no GUI or network dependency."""
 
-    def __init__(self, events: list[tuple[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        events: list[tuple[str, Any]] | None = None,
+        connect_result: bool = True,
+    ) -> None:
         self.events = deque(events or [])
         self.connected_to: list[str] = []
         self.registered: list[str] = []
+        self.connect_result = connect_result
 
     def connect(self, server_url: str) -> bool:
         self.connected_to.append(server_url)
-        return True
+        return self.connect_result
 
     def register(self, username: str) -> bool:
         self.registered.append(username)
@@ -98,3 +103,31 @@ def test_controller_exposes_login_rejection_inline():
 
     assert controller.username is None
     assert controller.login_error == "Username already taken"
+
+
+def test_controller_rejects_missing_connection_fields_without_connecting():
+    session = SessionSpy()
+    controller = GuiController(session)
+
+    assert controller.connect_and_register("", "5000", "Alice") is False
+    assert controller.connect_and_register("127.0.0.1", "", "Alice") is False
+    assert controller.connect_and_register("127.0.0.1", "5000", "") is False
+    assert session.connected_to == []
+
+
+def test_controller_rejects_invalid_port_values():
+    session = SessionSpy()
+    controller = GuiController(session)
+
+    assert controller.connect_and_register("127.0.0.1", "abc", "Alice") is False
+    assert controller.connect_and_register("127.0.0.1", "0", "Alice") is False
+    assert controller.connect_and_register("127.0.0.1", "65536", "Alice") is False
+    assert session.connected_to == []
+
+
+def test_controller_reports_connection_failure():
+    session = SessionSpy(connect_result=False)
+    controller = GuiController(session)
+
+    assert controller.connect_and_register("127.0.0.1", "5000", "Alice") is False
+    assert controller.login_error == "Could not connect to the server."

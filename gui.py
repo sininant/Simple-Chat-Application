@@ -221,13 +221,14 @@ class LoginView:
             border_width=3,
             corner_radius=16,
             width=600,
-            height=650,
+            height=560,
         )
         self.frame.grid_columnconfigure(0, weight=1)
         self.frame.grid_propagate(False)
         self.host = host
         self.port = port
         self.avatar_photos = _load_avatar_photos()
+        self.avatar_photos_hover = _load_avatar_photos((122, 122))
         self.header = tk.Canvas(
             self.frame,
             height=68,
@@ -250,49 +251,24 @@ class LoginView:
             font=(FONT, 24),
         )
         self.username.grid(row=2, column=0, padx=54, pady=(0, 22), sticky="ew")
-        connection = ui.CTkFrame(self.frame, fg_color="transparent")
-        connection.grid(row=3, column=0, padx=54, pady=(0, 18), sticky="ew")
-        connection.grid_columnconfigure(0, weight=3)
-        connection.grid_columnconfigure(1, weight=1)
-        self.host_entry = ui.CTkEntry(
-            connection,
-            placeholder_text="Server host",
-            border_color=PINK,
-            border_width=2,
-            fg_color=WHITE,
-            height=36,
-            font=(FONT, 16),
-        )
-        self.host_entry.insert(0, host)
-        self.host_entry.grid(row=0, column=0, padx=(0, 8), sticky="ew")
-        self.port_entry = ui.CTkEntry(
-            connection,
-            placeholder_text="Port",
-            border_color=PINK,
-            border_width=2,
-            fg_color=WHITE,
-            height=36,
-            font=(FONT, 16),
-        )
-        self.port_entry.insert(0, port)
-        self.port_entry.grid(row=0, column=1, sticky="ew")
         ui.CTkLabel(
             self.frame,
             text="Choose your character",
             font=(FONT, 24, "bold"),
             text_color=INK,
             anchor="w",
-        ).grid(row=4, column=0, padx=54, pady=(0, 14), sticky="w")
+        ).grid(row=3, column=0, padx=54, pady=(0, 14), sticky="w")
         self.character = "rabbit"
+        self.hovered_character: str | None = None
         self.character_buttons: dict[str, Any] = {}
         character_row = ui.CTkFrame(self.frame, fg_color="transparent")
-        character_row.grid(row=5, column=0, padx=54, pady=(10, 10), sticky="ew")
+        character_row.grid(row=4, column=0, padx=54, pady=(10, 10), sticky="ew")
         character_row.grid_columnconfigure((0, 1, 2), weight=1)
         for index, name in enumerate(("cat", "dog", "rabbit")):
             canvas = tk.Canvas(
                 character_row,
-                width=120,
-                height=120,
+                width=128,
+                height=128,
                 bg=WHITE,
                 highlightthickness=0,
                 bd=0,
@@ -302,11 +278,11 @@ class LoginView:
             canvas.bind(
                 "<Button-1>", lambda _event, selected=name: self._choose_character(selected)
             )
+            canvas.bind("<Enter>", lambda _event, selected=name: self._hover_character(selected))
+            canvas.bind("<Leave>", lambda _event: self._hover_character(None))
             self.character_buttons[name] = canvas
-        self.selection_line = ui.CTkFrame(self.frame, fg_color=INK, height=4, corner_radius=2)
-        self.selection_line.grid(row=6, column=0, padx=56, pady=(10, 20), sticky="w")
         self.error = ui.CTkLabel(self.frame, text="", text_color="#C64B68", wraplength=300)
-        self.error.grid(row=7, column=0, padx=54, pady=(1, 1))
+        self.error.grid(row=5, column=0, padx=54, pady=(1, 1))
         ui.CTkButton(
             self.frame,
             text="Create",
@@ -315,31 +291,35 @@ class LoginView:
             text_color="white",
             height=44,
             font=(FONT, 24, "bold"),
-            command=lambda: on_connect(
-                self.host_entry.get(), self.port_entry.get(), self.username.get(), self.character
-            ),
-        ).grid(row=8, column=0, padx=54, pady=(20, 16), sticky="ew")
+            command=lambda: on_connect(self.host, self.port, self.username.get(), self.character),
+        ).grid(row=6, column=0, padx=54, pady=(20, 16), sticky="ew")
 
     def _choose_character(self, character: str) -> None:
         self.character = character
         for name, canvas in self.character_buttons.items():
             self._draw_avatar(canvas, name)
 
+    def _hover_character(self, character: str | None) -> None:
+        self.hovered_character = character
+        for name, canvas in self.character_buttons.items():
+            self._draw_avatar(canvas, name)
+
     def _draw_avatar(self, canvas: Any, name: str) -> None:
         canvas.delete("all")
         selected = name == self.character
+        hovered = name == self.hovered_character
         canvas.create_oval(
             2,
             2,
-            118,
-            118,
-            fill=PINK_LIGHT if selected else BACKGROUND,
+            126,
+            126,
+            fill=PINK_LIGHT if selected or hovered else BACKGROUND,
             outline=INK if selected else "",
             width=3,
         )
-        photo = self.avatar_photos.get(name)
+        photo = (self.avatar_photos_hover if hovered else self.avatar_photos).get(name)
         if photo:
-            canvas.create_image(60, 60, image=photo)
+            canvas.create_image(64, 64, image=photo)
 
     def _entry(self, label: str, value: str, row: int) -> Any:
         ui = _require_ctk()
@@ -449,7 +429,7 @@ class SidebarPanel:
                 self.friends_header, YELLOW, "Friends", "friends"
             ),
         )
-        self.users = ui.CTkFrame(self.friends_card, fg_color=BACKGROUND, corner_radius=0)
+        self.users = ui.CTkScrollableFrame(self.friends_card, fg_color=BACKGROUND, corner_radius=0)
         self.users.pack(fill="both", expand=True, padx=4, pady=(0, 4))
         self.community_card = ui.CTkFrame(
             self.frame,
@@ -486,7 +466,9 @@ class SidebarPanel:
             command=self._open_group_dialog,
         )
         self.new_group_button.place(relx=1.0, x=-10, y=9, anchor="ne")
-        self.groups = ui.CTkFrame(self.community_card, fg_color=BACKGROUND, corner_radius=10)
+        self.groups = ui.CTkScrollableFrame(
+            self.community_card, fg_color=BACKGROUND, corner_radius=10
+        )
         self.groups.pack(fill="both", expand=True, padx=4, pady=(0, 4))
         self.group_placeholder = ui.CTkLabel(
             self.groups,
@@ -713,6 +695,14 @@ class MessageBubble:
             border_width=2,
             corner_radius=16,
         )
+        if not own:
+            ui.CTkLabel(
+                self.frame,
+                text=sender,
+                text_color=INK,
+                font=(FONT, 12, "bold"),
+                anchor="w",
+            ).pack(anchor="w", padx=12, pady=(2, 0))
         bubble = ui.CTkLabel(
             bubble_shell,
             text=message,
@@ -925,19 +915,25 @@ class PopupDialog:
 class MainChatWindow:
     """Reusable responsive main view for authenticated sessions."""
 
-    def __init__(self, parent: Any, controller: GuiController) -> None:
+    def __init__(
+        self,
+        parent: Any,
+        controller: GuiController,
+        on_logout: Callable[[], None] | None = None,
+    ) -> None:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, fg_color=BACKGROUND)
         self.controller = controller
         self.content = ui.CTkFrame(self.frame, width=900, height=540, fg_color="transparent")
         self.content.place(relx=0.5, rely=0.5, anchor="center")
         self.content.grid_propagate(False)
-        self.content.grid_rowconfigure(0, weight=1)
+        self.content.grid_rowconfigure(0, weight=0)
+        self.content.grid_rowconfigure(1, weight=1)
         self.content.grid_columnconfigure(0, weight=0, minsize=330)
         self.content.grid_columnconfigure(1, weight=1)
         self.content.grid_columnconfigure(2, weight=0, minsize=80)
         self.logout_area = ui.CTkFrame(self.content, fg_color="transparent")
-        self.logout_area.grid(row=0, column=2, sticky="ne", padx=(18, 0), pady=3)
+        self.logout_area.grid(row=1, column=2, sticky="ne", padx=(18, 0), pady=3)
         self.logout = ui.CTkButton(
             self.logout_area,
             text="",
@@ -949,7 +945,7 @@ class MainChatWindow:
             hover_color="#FFC8B7EF",
             text_color=INK,
             corner_radius=8,
-            command=parent.destroy,
+            command=on_logout or parent.destroy,
         )
         self.logout.pack()
         ui.CTkLabel(
@@ -959,12 +955,12 @@ class MainChatWindow:
             text_color=INK,
         ).pack(pady=(4, 0))
         self.banner = AnnouncementBanner(self.content)
-        self.banner.frame.grid(row=1, column=0, columnspan=3, sticky="ew")
+        self.banner.frame.grid(row=0, column=0, columnspan=3, sticky="ew")
         self.banner.frame.grid_remove()
         self.sidebar = SidebarPanel(self.content, self.open_private_room)
-        self.sidebar.frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.sidebar.frame.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
         self.tabs = ui.CTkTabview(self.content, fg_color=PINK_LIGHT)
-        self.tabs.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        self.tabs.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
             segmented_button.grid_remove()
@@ -1035,7 +1031,7 @@ class ChatApplication:
     def _refresh(self) -> None:
         if self.controller.username and self.main is None:
             self.login.frame.place_forget()
-            self.main = MainChatWindow(self.root, self.controller)
+            self.main = MainChatWindow(self.root, self.controller, on_logout=self._close)
             self.main.frame.pack(fill="both", expand=True)
         if self.main:
             self.main.refresh()
