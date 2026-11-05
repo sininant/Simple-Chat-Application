@@ -33,6 +33,7 @@ except ImportError:  # pragma: no cover - exercised only on machines without GUI
 
 from client import ClientSession
 from protocol import (
+    EVENT_CONNECT,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
@@ -88,6 +89,7 @@ class GuiController:
         self.on_private_message: Callable[[str, PrivateMessageServerPayload], None] | None = None
         self.on_private_message_error: Callable[[str, str], None] | None = None
         self.on_read_ack: Callable[[str, str], None] | None = None
+        self.on_reconnect: Callable[[], None] | None = None
 
     def send_private_message(self, target: str, message: str) -> str | None:
         """Send a 1-to-1 private message through the underlying session adapter (R7)."""
@@ -161,6 +163,10 @@ class GuiController:
             elif event_name == EVENT_READ_ACK and isinstance(payload, ReadAckServerPayload):
                 if self.on_read_ack:
                     self.on_read_ack(payload.message_id, payload.reader)
+                changed = True
+            elif event_name in (EVENT_CONNECT, "connect"):
+                if self.on_reconnect:
+                    self.on_reconnect()
                 changed = True
         if changed:
             self._changed()
@@ -1120,6 +1126,7 @@ class MainChatWindow:
         self.controller.on_private_message = self._handle_incoming_private_message
         self.controller.on_private_message_error = self._handle_private_message_error
         self.controller.on_read_ack = self._handle_read_ack
+        self.controller.on_reconnect = self._retry_pending_acks
         self.frame.bind("<Configure>", self._resize_content)
         # Process any messages received prior to MainChatWindow construction
         for peer, msgs in list(self.controller.private_messages.items()):
@@ -1141,6 +1148,12 @@ class MainChatWindow:
         peers = [user for user in self.controller.online_users if user != self.controller.username]
         if peers and not self.rooms:
             self.open_private_room(peers[0])
+        self._retry_pending_acks()
+
+    def _retry_pending_acks(self) -> None:
+        """Retry sending pending read receipts for the active room upon reconnect or poll (SP4)."""
+        if self._active_room and self._unread_messages.get(self._active_room):
+            self._ack_unread_in_room(self._active_room)
 
     def open_private_room(self, user: str, select: bool = True) -> None:
         if user == self.controller.username:
@@ -1191,17 +1204,19 @@ class MainChatWindow:
 
     def _send_read_ack(self, message_id: str, target: str) -> None:
         if message_id in self._acknowledged_messages:
+            if target in self._unread_messages:
+                self._unread_messages[target].discard(message_id)
             return
         sent = self.controller.send_read_ack(message_id, target)
         if sent:
             self._acknowledged_messages.add(message_id)
+            if target in self._unread_messages:
+                self._unread_messages[target].discard(message_id)
         else:
             self._unread_messages.setdefault(target, set()).add(message_id)
 
     def _ack_unread_in_room(self, room_name: str) -> None:
         unreads = list(self._unread_messages.get(room_name, set()))
-        if room_name in self._unread_messages:
-            self._unread_messages[room_name].clear()
         for mid in unreads:
             self._send_read_ack(mid, room_name)
 

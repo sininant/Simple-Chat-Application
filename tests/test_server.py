@@ -246,6 +246,15 @@ def test_chat_engine_route_read_ack():
     engine = ChatEngine()
     engine.register_user("sid_alice", "Alice")
     engine.register_user("sid_bob", "Bob")
+    engine.register_user("sid_charlie", "Charlie")
+
+    # Alice sends message MSG_001 to Bob
+    engine.route_private_message(
+        sender_sid="sid_alice",
+        target="Bob",
+        message="Hello Bob",
+        meta=MessageMeta(message_id="MSG_001", timestamp="12:00"),
+    )
 
     # Bob reads Alice's message MSG_001
     result = engine.route_read_ack(
@@ -276,14 +285,60 @@ def test_chat_engine_route_read_ack():
     assert res_unreg.error == "Reader not registered"
     assert res_unreg.payload is None
 
+    # Unknown message fails (SP4 ownership verification)
+    res_unknown = engine.route_read_ack(
+        reader_sid="sid_bob",
+        message_id="MSG_UNKNOWN",
+        target="Alice",
+    )
+    assert res_unknown.success is False
+    assert res_unknown.error == "Message 'MSG_UNKNOWN' not found"
+
+    # Ownership mismatch: Alice sent MSG_002 to Charlie; Bob cannot ACK it
+    engine.route_private_message(
+        sender_sid="sid_alice",
+        target="Charlie",
+        message="Hello Charlie",
+        meta=MessageMeta(message_id="MSG_002", timestamp="12:01"),
+    )
+    res_mismatch = engine.route_read_ack(
+        reader_sid="sid_bob",
+        message_id="MSG_002",
+        target="Alice",
+    )
+    assert res_mismatch.success is False
+    assert res_mismatch.error == "Read ACK ownership mismatch for message 'MSG_002'"
+
+    # Sender mismatch: Charlie sent MSG_003 to Bob; Bob cannot ACK it to Alice
+    engine.route_private_message(
+        sender_sid="sid_charlie",
+        target="Bob",
+        message="Hi Bob",
+        meta=MessageMeta(message_id="MSG_003", timestamp="12:02"),
+    )
+    res_sender_mismatch = engine.route_read_ack(
+        reader_sid="sid_bob",
+        message_id="MSG_003",
+        target="Alice",
+    )
+    assert res_sender_mismatch.success is False
+    assert res_sender_mismatch.error == "Read ACK ownership mismatch for message 'MSG_003'"
+
     # Offline target fails
+    engine.route_private_message(
+        sender_sid="sid_alice",
+        target="Bob",
+        message="Hello",
+        meta=MessageMeta(message_id="MSG_OFFLINE", timestamp="12:03"),
+    )
+    engine.unregister_user("sid_alice")
     res_offline = engine.route_read_ack(
         reader_sid="sid_bob",
-        message_id="MSG_001",
-        target="OfflineCharlie",
+        message_id="MSG_OFFLINE",
+        target="Alice",
     )
     assert res_offline.success is False
-    assert res_offline.error == "Target user 'OfflineCharlie' is offline"
+    assert res_offline.error == "Target user 'Alice' is offline"
     assert res_offline.payload is None
 
 
@@ -455,6 +510,14 @@ def test_server_read_ack_routing_and_isolation():
     server.engine.register_user("sid_alice", "Alice")
     server.engine.register_user("sid_bob", "Bob")
     server.engine.register_user("sid_charlie", "Charlie")
+
+    # Alice sends message MSG_001 to Bob
+    server.engine.route_private_message(
+        sender_sid="sid_alice",
+        target="Bob",
+        message="Hello Bob",
+        meta=MessageMeta(message_id="MSG_001", timestamp="12:00"),
+    )
 
     # Bob reads Alice's message MSG_001
     read_ack_payload = {

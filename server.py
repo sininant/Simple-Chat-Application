@@ -80,6 +80,7 @@ class ChatEngine:
         self._lock = threading.RLock()
         self._sessions: dict[str, str] = {}  # sid -> username
         self._users: dict[str, str] = {}  # username -> sid
+        self._private_messages: dict[str, tuple[str, str]] = {}  # message_id -> (sender, target)
 
     # --- Session & Identity Management (R3, R4) ---
 
@@ -172,6 +173,7 @@ class ChatEngine:
                 message=message,
                 meta=meta,
             )
+            self._private_messages[meta.message_id] = (sender, target)
             return RouteResult(
                 success=True,
                 payload=server_payload,
@@ -186,7 +188,9 @@ class ChatEngine:
         message_id: str,
         target: str,
     ) -> ReadAckRouteResult:
-        """Route a read receipt acknowledgment enforcing Server Trust Boundary (SP4).
+        """Route a read receipt acknowledgment (SP4).
+
+        Enforces Server Trust Boundary and message ownership verification.
 
         Returns:
             ReadAckRouteResult: Encapsulates routing decision, verified reader, and target sid.
@@ -195,6 +199,18 @@ class ChatEngine:
             reader = self._sessions.get(reader_sid)
             if reader is None:
                 return ReadAckRouteResult(success=False, error="Reader not registered")
+
+            # Ownership verification: reject arbitrary or forged message ACKs (SP4)
+            ownership = self._private_messages.get(message_id)
+            if ownership is None:
+                return ReadAckRouteResult(success=False, error=f"Message '{message_id}' not found")
+
+            original_sender, original_recipient = ownership
+            if original_recipient != reader or original_sender != target:
+                return ReadAckRouteResult(
+                    success=False,
+                    error=f"Read ACK ownership mismatch for message '{message_id}'",
+                )
 
             target_sid = self._users.get(target)
             if target_sid is None:

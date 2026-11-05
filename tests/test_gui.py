@@ -5,8 +5,11 @@ from __future__ import annotations
 from collections import deque
 from typing import Any
 
-from gui import GuiController
+import pytest
+
+from gui import GuiController, MainChatWindow
 from protocol import (
+    EVENT_CONNECT,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
@@ -17,7 +20,10 @@ from protocol import (
     ReadAckServerPayload,
     RegisterAckPayload,
     UserListPayload,
+    parse_server_event,
 )
+from server import ChatServer
+from tests.test_server import SocketIOServerSpy
 
 
 class SessionSpy:
@@ -27,6 +33,7 @@ class SessionSpy:
         self,
         events: list[tuple[str, Any]] | None = None,
         connect_result: bool = True,
+        send_read_ack_result: bool = True,
     ) -> None:
         self.events = deque(events or [])
         self.connected_to: list[str] = []
@@ -34,6 +41,7 @@ class SessionSpy:
         self.sent_private: list[tuple[str, str, str | None, str | None]] = []
         self.sent_read_ack: list[tuple[str, str]] = []
         self.connect_result = connect_result
+        self.send_read_ack_result = send_read_ack_result
 
     def connect(self, server_url: str) -> bool:
         self.connected_to.append(server_url)
@@ -54,8 +62,10 @@ class SessionSpy:
         return message_id or "MSG_TEST"
 
     def send_read_ack(self, message_id: str, target: str) -> bool:
-        self.sent_read_ack.append((message_id, target))
-        return True
+        if self.send_read_ack_result:
+            self.sent_read_ack.append((message_id, target))
+            return True
+        return False
 
     def get_next_event(self, *, block: bool = False) -> tuple[str, Any] | None:
         del block
@@ -240,41 +250,163 @@ def test_controller_polls_and_notifies_read_ack():
     assert acks[0] == ("MSG_001", "Bob")
 
 
+class DirectSession:
+    """In-memory session adapter connecting GuiController directly to ChatServer."""
+
+    def __init__(self, server: ChatServer, sid: str, username: str) -> None:
+        self.server = server
+        self.sid = sid
+        self.username = username
+        self.events: deque[tuple[str, Any]] = deque()
+        self.is_connected = True
+
+    def send_private_message(
+        self,
+        target: str,
+        message: str,
+        message_id: str | None = None,
+        timestamp: str | None = None,
+    ) -> str | None:
+        mid = message_id or "MSG_001"
+        ts = timestamp or "12:00"
+        payload = {
+            "target": target,
+            "message": message,
+            "message_id": mid,
+            "timestamp": ts,
+        }
+        self.server.sio._trigger_event("private_message", "/", self.sid, payload)
+        return mid
+
+    def send_read_ack(self, message_id: str, target: str) -> bool:
+        payload = {"message_id": message_id, "target": target}
+        self.server.sio._trigger_event("read_ack", "/", self.sid, payload)
+        return True
+
+    def get_next_event(self, *, block: bool = False) -> tuple[str, Any] | None:
+        return self.events.popleft() if self.events else None
+
+
+def test_main_window_retries_pending_read_acks_on_reconnect():
+    """Verify pending ACKs retained during network failure are retried on reconnect (SP4)."""
+    try:
+        import customtkinter as ctk
+    except ImportError:
+        pytest.skip("customtkinter is required for UI tests")
+
+    root = ctk.CTk()
+    root.withdraw()
+    try:
+        session = SessionSpy(send_read_ack_result=False)
+        controller = GuiController(session)
+        controller.username = "Bob"
+        controller.online_users = ["Alice", "Bob"]
+        window = MainChatWindow(root, controller)
+        window.open_private_room("Alice", select=True)
+
+        payload = PrivateMessageServerPayload(
+            sender="Alice",
+            target="Bob",
+            message="Hello",
+            meta=MessageMeta(message_id="MSG_RETRY_1", timestamp="12:00"),
+        )
+        window._handle_incoming_private_message("Alice", payload)
+
+        # Failed ACK is preserved in _unread_messages
+        assert "MSG_RETRY_1" in window._unread_messages.get("Alice", set())
+        assert "MSG_RETRY_1" not in window._acknowledged_messages
+
+        # Connection restored: controller notifies reconnect
+        session.send_read_ack_result = True
+        session.events.append((EVENT_CONNECT, None))
+        controller.poll_events()
+
+        # ACK has now been sent and marked acknowledged
+        assert ("MSG_RETRY_1", "Alice") in session.sent_read_ack
+        assert "MSG_RETRY_1" in window._acknowledged_messages
+        assert "MSG_RETRY_1" not in window._unread_messages.get("Alice", set())
+    finally:
+        root.destroy()
+
+
 def test_end_to_end_private_message_and_read_ack_flow():
-    """Verify end-to-end flow: Alice sends message -> Bob reads ->
-    READ_ACK -> Alice updates to 'Read ✓✓'.
+    """Verify true end-to-end UI flow:
+    Alice sends message via ChatServer -> Bob receives in background ->
+    Bob exercises MainChatWindow room viewing -> ChatServer routes verified
+    READ_ACK back to Alice -> Alice's MessageBubble updates to 'Read ✓✓'.
     """
-    # 1. Alice connects and sends a message to Bob
-    alice_session = SessionSpy()
-    alice_controller = GuiController(alice_session)
-    alice_controller.username = "Alice"
-    msg_id = alice_controller.send_private_message("Bob", "Hello Bob!")
-    assert msg_id is not None
+    try:
+        import customtkinter as ctk
+    except ImportError:
+        pytest.skip("customtkinter is required for end-to-end UI flow test")
 
-    # 2. Bob's session receives Alice's incoming private message
-    bob_session = SessionSpy()
-    bob_controller = GuiController(bob_session)
-    bob_controller.username = "Bob"
-    incoming_payload = PrivateMessageServerPayload(
-        sender="Alice",
-        target="Bob",
-        message="Hello Bob!",
-        meta=MessageMeta(message_id=msg_id, timestamp="14:30"),
-    )
-    bob_session.events.append((EVENT_PRIVATE_MSG, incoming_payload))
-    bob_controller.poll_events()
-    assert msg_id in [m.meta.message_id for m in bob_controller.private_messages["Alice"]]
+    root = ctk.CTk()
+    root.withdraw()
+    try:
+        spy = SocketIOServerSpy()
+        server = ChatServer(sio=spy.sio)
+        sessions: dict[str, DirectSession] = {}
 
-    # 3. Bob views Alice's room and triggers READ_ACK
-    assert bob_controller.send_read_ack(msg_id, "Alice") is True
-    assert (msg_id, "Alice") in bob_session.sent_read_ack
+        orig_emit = spy.sio.emit
 
-    # 4. Server routes READ_ACK back to Alice
-    ack_payload = ReadAckServerPayload(message_id=msg_id, reader="Bob")
-    alice_session.events.append((EVENT_READ_ACK, ack_payload))
-    read_receipts: list[tuple[str, str]] = []
-    alice_controller.on_read_ack = lambda mid, reader: read_receipts.append((mid, reader))
-    alice_controller.poll_events()
+        def direct_emit(
+            event: str,
+            data: Any = None,
+            to: Any = None,
+            room: Any = None,
+            **kwargs: Any,
+        ) -> None:
+            orig_emit(event, data, to=to, room=room, **kwargs)
+            target_sid = room or to
+            if target_sid and target_sid in sessions:
+                parsed = parse_server_event(event, data)
+                sessions[target_sid].events.append((event, parsed))
 
-    # 5. Alice receives READ_ACK for msg_id from Bob
-    assert (msg_id, "Bob") in read_receipts
+        spy.sio.emit = direct_emit
+
+        # Setup Alice and Bob in server engine
+        alice_sess = DirectSession(server, "sid_alice", "Alice")
+        bob_sess = DirectSession(server, "sid_bob", "Bob")
+        sessions["sid_alice"] = alice_sess
+        sessions["sid_bob"] = bob_sess
+
+        server.engine.register_user("sid_alice", "Alice")
+        server.engine.register_user("sid_bob", "Bob")
+
+        # 1. Initialize Alice's controller & MainChatWindow
+        alice_ctrl = GuiController(alice_sess)
+        alice_ctrl.username = "Alice"
+        alice_ctrl.online_users = ["Alice", "Bob"]
+        alice_win = MainChatWindow(root, alice_ctrl)
+        alice_win.open_private_room("Bob", select=True)
+
+        # 2. Initialize Bob's controller & MainChatWindow (Bob has not opened Alice's room yet)
+        bob_ctrl = GuiController(bob_sess)
+        bob_ctrl.username = "Bob"
+        bob_ctrl.online_users = ["Alice", "Bob"]
+        bob_win = MainChatWindow(root, bob_ctrl)
+
+        # 3. Alice sends a private message to Bob through MainChatWindow
+        alice_win.rooms["Bob"].on_send("Hello Bob!")
+        # Alice polls events to process server echo
+        alice_ctrl.poll_events()
+        assert "MSG_001" in alice_win.rooms["Bob"].bubbles
+        alice_bubble = alice_win.rooms["Bob"].bubbles["MSG_001"]
+        assert "Sent" in alice_bubble.status_label.cget("text")
+        assert "Read ✓✓" not in alice_bubble.status_label.cget("text")
+
+        # 4. Bob receives Alice's message in background (room not viewed yet)
+        bob_ctrl.poll_events()
+        assert "MSG_001" in bob_win._unread_messages.get("Alice", set())
+
+        # 5. Bob exercises viewing Alice's room in MainChatWindow
+        bob_win.open_private_room("Alice", select=True)
+
+        # 6. ChatServer receives Bob's READ_ACK, verifies ownership, and routes to Alice
+        alice_ctrl.poll_events()
+
+        # 7. Alice's MessageBubble label is now updated to 'Read ✓✓'
+        updated_text = alice_bubble.status_label.cget("text")
+        assert "Read ✓✓" in updated_text
+    finally:
+        root.destroy()
