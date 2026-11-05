@@ -594,11 +594,11 @@ class SidebarPanel:
 
         dialog = ui.CTkToplevel(self.frame.winfo_toplevel())
         self._active_dialog = dialog
+        dialog.title("Create New Group")
         dialog.withdraw()
         width, height = 630, 320
         dialog.geometry(f"{width}x{height}")
         dialog.resizable(False, False)
-        dialog.overrideredirect(True)
         dialog.transient(self.frame.winfo_toplevel())
 
         def _close_dialog() -> None:
@@ -616,8 +616,6 @@ class SidebarPanel:
         header = tk.Canvas(card, height=84, bg=WHITE, highlightthickness=0, bd=0)
         header.pack(fill="x")
         header.bind("<Configure>", lambda _event: self._draw_group_dialog_header(header))
-        header.bind("<ButtonPress-1>", lambda event: self._start_dialog_drag(dialog, event))
-        header.bind("<B1-Motion>", lambda event: self._drag_dialog(dialog, event))
 
         name_entry = ui.CTkEntry(
             card,
