@@ -11,19 +11,26 @@ import argparse
 import logging
 import queue
 import threading
+import uuid
+from datetime import datetime
 from typing import Any
 
 import socketio
 
 from protocol import (
+    EVENT_PRIVATE_MSG,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    MessageMeta,
+    PrivateMessagePayload,
+    PrivateMessageServerPayload,
     ProtocolValidationError,
     RegisterAckPayload,
     RegisterPayload,
     UserListPayload,
     parse_server_event,
+    validate_message_text,
     validate_username,
 )
 
@@ -106,12 +113,27 @@ class ClientSession:
                 self._online_users = list(payload.users)
             self.event_queue.put((EVENT_USER_LIST, payload))
 
+        @self.sio.event
+        def private_message(data: Any) -> None:
+            try:
+                payload = parse_server_event(EVENT_PRIVATE_MSG, data)
+                assert isinstance(payload, PrivateMessageServerPayload)
+                self.event_queue.put((EVENT_PRIVATE_MSG, payload))
+            except ProtocolValidationError as e:
+                logger.warning("Received invalid private_message from server: %s", e)
+
         @self.sio.on("*")
         def catch_all(event: str, data: Any) -> None:
             # Pass unhandled server events through to the queue for downstream UI handlers.
-            # Downstream features (#7, #9, #11) should register explicit typed handlers
+            # Downstream features (#9, #11) should register explicit typed handlers
             # via parse_server_event.
-            if event not in {EVENT_REGISTER_ACK, EVENT_USER_LIST, "connect", "disconnect"}:
+            if event not in {
+                EVENT_REGISTER_ACK,
+                EVENT_USER_LIST,
+                EVENT_PRIVATE_MSG,
+                "connect",
+                "disconnect",
+            }:
                 self.event_queue.put((event, data))
 
     # --- Connection & Session Operations ---
@@ -167,6 +189,42 @@ class ClientSession:
         payload = RegisterPayload(username=clean_username)
         self.sio.emit(EVENT_REGISTER, payload.to_dict())
         return True
+
+    def send_private_message(
+        self,
+        target: str,
+        message: str,
+        message_id: str | None = None,
+        timestamp: str | None = None,
+    ) -> str | None:
+        """Send a 1-to-1 private message to target peer over Socket.IO (R7).
+
+        Returns:
+            The message_id if emission succeeded, or None if validation/emission failed.
+        """
+        try:
+            clean_target = validate_username(target, field_name="target")
+            clean_message = validate_message_text(message)
+        except ProtocolValidationError as e:
+            logger.warning("Invalid private message input: %s", e)
+            return None
+
+        msg_id = message_id or f"MSG_{uuid.uuid4().hex[:8]}"
+        ts = timestamp or datetime.now().strftime("%H:%M")
+
+        try:
+            meta = MessageMeta(message_id=msg_id, timestamp=ts)
+            payload = PrivateMessagePayload(
+                target=clean_target,
+                message=clean_message,
+                meta=meta,
+            )
+        except ProtocolValidationError as e:
+            logger.warning("Private message metadata validation failed: %s", e)
+            return None
+
+        self.sio.emit(EVENT_PRIVATE_MSG, payload.to_dict())
+        return msg_id
 
     def get_next_event(
         self, block: bool = False, timeout: float | None = None

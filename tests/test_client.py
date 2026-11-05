@@ -6,9 +6,11 @@ import socketio
 
 from client import ClientSession
 from protocol import (
+    EVENT_PRIVATE_MSG,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    PrivateMessageServerPayload,
     RegisterAckPayload,
     UserListPayload,
 )
@@ -230,3 +232,86 @@ def test_client_session_get_next_event_empty_returns_none():
     session = ClientSession()
     assert session.get_next_event(block=False) is None
     assert session.get_next_event(block=True, timeout=0.01) is None
+
+
+def test_client_session_send_private_message_emits_payload():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    msg_id = session.send_private_message(
+        target="Bob",
+        message="Hello Bob!",
+        message_id="MSG_CUSTOM",
+        timestamp="14:31",
+    )
+    assert msg_id == "MSG_CUSTOM"
+    assert len(spy.emitted) == 1
+    event_name, data = spy.emitted[0]
+    assert event_name == EVENT_PRIVATE_MSG
+    assert data["target"] == "Bob"
+    assert data["message"] == "Hello Bob!"
+    assert data["message_id"] == "MSG_CUSTOM"
+    assert data["timestamp"] == "14:31"
+
+
+def test_client_session_send_private_message_auto_generates_id_and_timestamp():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    msg_id = session.send_private_message(target="Bob", message="Auto values")
+    assert msg_id is not None
+    assert msg_id.startswith("MSG_")
+    assert len(spy.emitted) == 1
+    _, data = spy.emitted[0]
+    assert data["target"] == "Bob"
+    assert data["message"] == "Auto values"
+    assert data["message_id"] == msg_id
+    assert len(data["timestamp"]) == 5  # "HH:MM"
+
+
+def test_client_session_send_private_message_validation_failure():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    # Empty message
+    assert session.send_private_message(target="Bob", message="") is None
+    # Whitespace message
+    assert session.send_private_message(target="Bob", message="   ") is None
+    # Invalid target (special characters)
+    assert session.send_private_message(target="Invalid@User", message="Hi") is None
+
+    assert len(spy.emitted) == 0
+
+
+def test_client_session_receives_private_message_event():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    server_data = {
+        "sender": "Alice",
+        "target": "Bob",
+        "message": "Hi there!",
+        "message_id": "MSG_005",
+        "timestamp": "14:35",
+    }
+    spy.trigger(EVENT_PRIVATE_MSG, server_data)
+
+    event = session.get_next_event(block=False)
+    assert event is not None
+    event_name, payload = event
+    assert event_name == EVENT_PRIVATE_MSG
+    assert isinstance(payload, PrivateMessageServerPayload)
+    assert payload.sender == "Alice"
+    assert payload.target == "Bob"
+    assert payload.message == "Hi there!"
+    assert payload.meta.message_id == "MSG_005"
+    assert payload.meta.timestamp == "14:35"
+
+
+def test_client_session_receives_invalid_private_message_dropped():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    # Malformed data missing sender
+    spy.trigger(EVENT_PRIVATE_MSG, {"target": "Bob", "message": "No sender"})
+    assert session.get_next_event(block=False) is None
