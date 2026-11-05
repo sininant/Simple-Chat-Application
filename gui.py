@@ -687,7 +687,7 @@ class SidebarPanel:
         height = max(canvas.winfo_height(), 10)
         canvas.delete("all")
         canvas.create_rectangle(0, 0, width, height, fill=BLUE, outline=BLUE)
-        canvas.create_line(0, height - 1, width, height - 1, fill=INK, width=1)
+        canvas.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
         canvas.create_text(
             24,
             height // 2,
