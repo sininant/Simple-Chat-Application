@@ -159,7 +159,15 @@ def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
         path = root / "assets" / f"icon_{name}.png"
         if path.is_file():
             image = Image.open(path).convert("RGBA")
-            icons[name] = ctk.CTkImage(light_image=image, dark_image=image, size=size)
+            intrinsic_sizes = {
+                "friends": (25, 25),
+                "community": (30, 15),
+                "chat": (25, 25),
+                "notification": (17, 20),
+                "logout": (23, 23),
+            }
+            icon_size = intrinsic_sizes.get(name, size)
+            icons[name] = ctk.CTkImage(light_image=image, dark_image=image, size=icon_size)
     return icons
 
 
@@ -209,7 +217,7 @@ class LoginView:
             border_width=2,
             fg_color="white",
             height=42,
-            font=(FONT, 15),
+            font=(FONT, 24),
         )
         self.username.grid(row=2, column=0, padx=54, pady=(0, 22), sticky="ew")
         ui.CTkLabel(
@@ -360,7 +368,7 @@ class SidebarPanel:
         self.frame = ui.CTkFrame(parent, fg_color="transparent")
         self.on_chat = on_chat
         self.avatar = _load_avatars().get("rabbit")
-        self.icons = _load_icons()
+        self.icons = _load_icons((36, 36))
         self.friends_card = ui.CTkFrame(
             self.frame, fg_color=BACKGROUND, border_color=INK, border_width=2, corner_radius=14
         )
@@ -374,35 +382,39 @@ class SidebarPanel:
             text_color=INK,
             fg_color=YELLOW,
             corner_radius=10,
+            anchor="w",
         )
-        friends_heading.pack(fill="x", padx=2, pady=2)
+        friends_heading.pack(fill="x", padx=2, pady=2, ipadx=26)
         self.users = ui.CTkScrollableFrame(self.friends_card, fg_color=BACKGROUND, height=220)
         self.users.pack(fill="both", expand=True, padx=8, pady=8)
         self.community_card = ui.CTkFrame(
             self.frame, fg_color=BACKGROUND, border_color=INK, border_width=2, corner_radius=14
         )
         self.community_card.pack(fill="both", expand=True, pady=(14, 0))
+        community_header = ui.CTkFrame(self.community_card, fg_color=BLUE, corner_radius=10)
+        community_header.pack(fill="x", padx=2, pady=(8, 2))
         community_heading = ui.CTkLabel(
-            self.community_card,
+            community_header,
             text="Community",
             image=self.icons.get("community"),
             compound="left",
             font=(FONT, 18, "bold"),
             text_color=INK,
             fg_color=BLUE,
-            corner_radius=10,
+            anchor="w",
         )
-        community_heading.pack(fill="x", padx=2, pady=(8, 2))
+        community_heading.pack(side="left", fill="x", expand=True, padx=(26, 6), pady=4)
         ui.CTkButton(
-            self.community_card,
+            community_header,
             text="＋ New Group",
+            font=(FONT, 14),
             width=120,
             fg_color="white",
             border_color=INK,
             border_width=1,
             text_color=INK,
             command=_noop,
-        ).pack(anchor="e", padx=12, pady=(10, 4))
+        ).pack(side="right", padx=(4, 12), pady=4)
         ui.CTkLabel(self.community_card, text="Group rooms will appear here.", text_color=INK).pack(
             pady=(8, 16)
         )
@@ -480,13 +492,13 @@ class ChatRoomTab:
         self.header.pack(fill="x", padx=6, pady=(6, 0))
         ui.CTkLabel(
             self.header,
-            text=f"▤  {room_name}",
+            text=room_name,
             image=_load_icons().get("chat"),
             compound="left",
             font=(FONT, 20, "bold"),
             text_color=INK,
             anchor="w",
-        ).pack(fill="x", padx=14, pady=9)
+        ).pack(fill="x", padx=22, pady=9)
         self.window = ui.CTkScrollableFrame(self.frame, fg_color=BACKGROUND)
         self.window.pack(fill="both", expand=True, padx=8, pady=(8, 4))
         self.on_send = on_send or self._send_local
