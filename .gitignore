@@ -28,5 +28,6 @@ downloads/
 .DS_Store
 .idea/
 .vscode/
+pyrightconfig.json
 *.swp
 *~
