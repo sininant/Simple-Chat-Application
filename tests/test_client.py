@@ -2,7 +2,7 @@
 
 from typing import Any
 
-import pytest  
+import pytest
 import socketio
 
 from client import ClientSession
