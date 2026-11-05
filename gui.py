@@ -135,8 +135,10 @@ class LoginView:
             text="Create User",
             font=("Avenir", 24, "bold"),
             text_color=INK,
+            fg_color=PINK,
+            corner_radius=12,
         )
-        heading.grid(row=0, column=0, columnspan=2, padx=28, pady=(24, 20))
+        heading.grid(row=0, column=0, columnspan=2, padx=2, pady=2, sticky="ew")
         self.username = self._entry("Name", "", 1)
         ui.CTkLabel(self.frame, text="Choose your character", text_color=INK, anchor="w").grid(
             row=2, column=0, columnspan=2, padx=28, pady=(12, 2), sticky="w"
@@ -356,12 +358,24 @@ class MainChatWindow:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, fg_color=BACKGROUND)
         self.controller = controller
+        self.frame.grid_columnconfigure(0, weight=0)
         self.frame.grid_columnconfigure(1, weight=1)
         self.frame.grid_rowconfigure(2, weight=1)
         self.title = ui.CTkLabel(
             self.frame, text="Logged in", font=("Avenir", 22, "bold"), text_color=INK
         )
-        self.title.grid(row=0, column=0, columnspan=2, sticky="w", padx=18, pady=(14, 6))
+        self.title.grid(row=0, column=0, sticky="w", padx=18, pady=(14, 6))
+        self.logout = ui.CTkButton(
+            self.frame,
+            text="⇥\nLogout",
+            width=70,
+            height=58,
+            fg_color="#FFC8B7",
+            hover_color="#F3AE9A",
+            text_color=INK,
+            command=parent.destroy,
+        )
+        self.logout.grid(row=0, column=1, sticky="e", padx=18, pady=(10, 6))
         self.banner = AnnouncementBanner(self.frame)
         self.banner.frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=18, pady=6)
         self.banner.frame.grid_remove()
@@ -375,6 +389,9 @@ class MainChatWindow:
         name = self.controller.username or "…"
         self.title.configure(text=f"Logged in as: {name} (Online)")
         self.sidebar.set_users(self.controller.online_users, self.controller.username)
+        peers = [user for user in self.controller.online_users if user != self.controller.username]
+        if peers and not self.rooms:
+            self.open_private_room(peers[0])
 
     def open_private_room(self, user: str) -> None:
         if user == self.controller.username:
