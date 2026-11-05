@@ -1136,7 +1136,7 @@ class MainChatWindow:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, fg_color=BACKGROUND)
         self.controller = controller
-        self.content = ui.CTkFrame(self.frame, width=900, height=540, fg_color="transparent")
+        self.content = ui.CTkFrame(self.frame, width=900, height=554, fg_color="transparent")
         self.content.place(relx=0.5, rely=0.5, anchor="center")
         self.content.grid_propagate(False)
         self.content.grid_rowconfigure(0, weight=0)
@@ -1177,11 +1177,15 @@ class MainChatWindow:
             self.open_group_room,
         )
         self.sidebar.frame.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
-        self.tabs = ui.CTkTabview(self.content, fg_color=BACKGROUND)
+        self.tabs = ui.CTkTabview(
+            self.content, fg_color=BACKGROUND, corner_radius=0, border_width=0
+        )
         self.tabs.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
             segmented_button.grid_remove()
+        for row in range(3):
+            self.tabs.grid_rowconfigure(row, minsize=0)
         self.rooms: dict[str, ChatRoomTab] = {}
         self._active_room: str | None = None
         self._rendered_messages: set[str] = set()
@@ -1200,7 +1204,7 @@ class MainChatWindow:
     def _resize_content(self, event: Any) -> None:
         """Keep the Figma proportions while still adapting to smaller windows."""
         width = min(920, max(720, int(event.width * 0.82)))
-        height = min(560, max(460, int(event.height * 0.78)))
+        height = min(574, max(554, int(event.height * 0.78)))
         self.content.configure(width=width, height=height)
 
     def refresh(self) -> None:
