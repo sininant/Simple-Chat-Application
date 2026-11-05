@@ -108,16 +108,18 @@ def _require_ctk() -> Any:
     return ctk
 
 
-def _load_avatar() -> Any | None:
-    """Load the project's supplied avatar when available, without making it required."""
+def _load_avatars() -> dict[str, Any]:
+    """Load the supplied character PNGs, returning an empty map when unavailable."""
     if ctk is None or Image is None:
-        return None
+        return {}
     root = Path(__file__).resolve().parent
-    path = root / "assets" / "avatar.png"
-    if path.is_file():
-        image = Image.open(path)
-        return ctk.CTkImage(light_image=image, dark_image=image, size=(32, 32))
-    return None
+    avatars: dict[str, Any] = {}
+    for name in ("cat", "dog", "rabbit"):
+        path = root / "assets" / f"avatar_{name}.png"
+        if path.is_file():
+            image = Image.open(path)
+            avatars[name] = ctk.CTkImage(light_image=image, dark_image=image, size=(58, 58))
+    return avatars
 
 
 class LoginView:
@@ -127,6 +129,7 @@ class LoginView:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, fg_color=BACKGROUND, border_color=INK, border_width=2)
         self.frame.grid_columnconfigure(1, weight=1)
+        self.avatars = _load_avatars()
         heading = ui.CTkLabel(
             self.frame,
             text="Create User",
@@ -142,10 +145,11 @@ class LoginView:
         self.character_buttons: dict[str, Any] = {}
         character_row = ui.CTkFrame(self.frame, fg_color="transparent")
         character_row.grid(row=3, column=0, columnspan=2, padx=28, pady=(2, 12), sticky="ew")
-        for index, (name, emoji) in enumerate((("cat", "🐱"), ("dog", "🐶"), ("rabbit", "🐰"))):
+        for index, name in enumerate(("cat", "dog", "rabbit")):
             button = ui.CTkButton(
                 character_row,
-                text=f"{emoji}\n{name.title()}",
+                text=name.title(),
+                image=self.avatars.get(name),
                 width=78,
                 height=62,
                 fg_color=PINK_LIGHT if name == self.character else "white",
@@ -216,7 +220,7 @@ class SidebarPanel:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, fg_color=BACKGROUND, border_color=INK, border_width=2)
         self.on_chat = on_chat
-        self.avatar = _load_avatar()
+        self.avatar = _load_avatars().get("rabbit")
         friends_heading = ui.CTkLabel(
             self.frame,
             text="☻  Friends",
