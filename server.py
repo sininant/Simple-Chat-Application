@@ -56,6 +56,7 @@ class ChatEngine:
         """Register a unique username for a connected client session.
 
         Enforces non-empty, unpadded alphanumeric format and uniqueness.
+        Validates username as a defensive domain invariant for direct engine usage.
         """
         try:
             username = validate_username(username)
@@ -111,10 +112,6 @@ class ChatEngine:
         with self._lock:
             return sorted(self._users.keys())
 
-    def get_user_list_payload(self) -> UserListPayload:
-        """Generate the UserListPayload broadcast model."""
-        return UserListPayload(users=self.get_online_users())
-
 
 # -----------------------------------------------------------------------------
 # Multi-Threaded WSGI Server
@@ -152,9 +149,10 @@ class ChatServer:
         def connect(sid: str, environ: dict[str, Any]) -> None:
             logger.info("Connection established: sid=%s", sid)
             # Emit initial user roster to the connecting client
+            initial_roster = UserListPayload(users=self.engine.get_online_users())
             self.sio.emit(
                 EVENT_USER_LIST,
-                self.engine.get_user_list_payload().to_dict(),
+                initial_roster.to_dict(),
                 room=sid,
             )
 
@@ -186,7 +184,7 @@ class ChatServer:
 
     def broadcast_user_list(self) -> None:
         """Broadcast updated connected user roster to all clients (R4)."""
-        payload = self.engine.get_user_list_payload()
+        payload = UserListPayload(users=self.engine.get_online_users())
         self.sio.emit(EVENT_USER_LIST, payload.to_dict())
 
     # --- HTTP/WSGI Server Lifecycle ---

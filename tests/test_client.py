@@ -2,7 +2,6 @@
 
 from typing import Any
 
-import pytest
 import socketio
 
 from client import ClientSession
@@ -10,7 +9,6 @@ from protocol import (
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
-    ProtocolValidationError,
     RegisterAckPayload,
     UserListPayload,
 )
@@ -92,7 +90,8 @@ def test_client_session_register_emits_payload():
     spy = SocketIOClientSpy()
     session = ClientSession(sio=spy.sio)
 
-    session.register("Alice")
+    result = session.register("Alice")
+    assert result is True
 
     assert len(spy.emitted) == 1
     event, data = spy.emitted[0]
@@ -101,16 +100,62 @@ def test_client_session_register_emits_payload():
 
 
 def test_client_session_register_rejects_invalid_username():
+    """Invalid username fails validation, enqueues failed ACK, and returns False without raising."""
     spy = SocketIOClientSpy()
     session = ClientSession(sio=spy.sio)
 
-    with pytest.raises(ProtocolValidationError):
-        session.register("Alice with spaces")
-
-    with pytest.raises(ProtocolValidationError):
-        session.register("")
-
+    # 1. Invalid username with spaces
+    result = session.register("Alice with spaces")
+    assert result is False
     assert len(spy.emitted) == 0
+
+    event = session.get_next_event(block=False)
+    assert event is not None
+    event_name, payload = event
+    assert event_name == EVENT_REGISTER_ACK
+    assert isinstance(payload, RegisterAckPayload)
+    assert payload.success is False
+    assert payload.error is not None
+
+    # 2. Empty username
+    result_empty = session.register("")
+    assert result_empty is False
+    assert len(spy.emitted) == 0
+
+    event_empty = session.get_next_event(block=False)
+    assert event_empty is not None
+    assert event_empty[0] == EVENT_REGISTER_ACK
+    assert isinstance(event_empty[1], RegisterAckPayload)
+    assert event_empty[1].success is False
+
+
+def test_client_session_failed_reregistration_preserves_existing_user():
+    """If already registered, a failed re-registration does not clear local identity."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    # First successful registration
+    spy.trigger(
+        EVENT_REGISTER_ACK,
+        {"success": True, "username": "Alice", "message": "Registered successfully"},
+    )
+    assert session.is_registered is True
+    assert session.username == "Alice"
+    _ = session.get_next_event(block=False)
+
+    # Failed subsequent registration attempt (e.g. duplicate username on server)
+    spy.trigger(
+        EVENT_REGISTER_ACK,
+        {"success": False, "error": "Username already taken"},
+    )
+    # Local state must remain registered as Alice
+    assert session.is_registered is True
+    assert session.username == "Alice"
+
+    event = session.get_next_event(block=False)
+    assert event is not None
+    assert event[0] == EVENT_REGISTER_ACK
+    assert event[1].success is False
 
 
 def test_client_session_register_ack_success():

@@ -19,6 +19,7 @@ from protocol import (
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    ProtocolValidationError,
     RegisterAckPayload,
     RegisterPayload,
     UserListPayload,
@@ -39,6 +40,11 @@ class ClientSession:
 
     Wraps socketio.Client(), manages session lifecycle and active presence,
     and forwards incoming server events into a thread-safe queue.Queue for GUI polling.
+
+    Note on event parsing: Core lifecycle and presence events (register_ack, user_list)
+    are strictly parsed via protocol.py schemas. Downstream issue owners (e.g. #7 private
+    messages, #9 groups, #11 stickers) should register explicit typed handlers using
+    protocol.parse_server_event rather than relying solely on raw catch_all dictionaries.
     """
 
     def __init__(
@@ -87,7 +93,7 @@ class ClientSession:
                 if payload.success and payload.username:
                     self._is_registered = True
                     self._username = payload.username
-                else:
+                elif not self._is_registered:
                     self._is_registered = False
                     self._username = None
             self.event_queue.put((EVENT_REGISTER_ACK, payload))
@@ -102,7 +108,9 @@ class ClientSession:
 
         @self.sio.on("*")
         def catch_all(event: str, data: Any) -> None:
-            # Pass unhandled server events through to the queue for downstream UI handlers
+            # Pass unhandled server events through to the queue for downstream UI handlers.
+            # Downstream features (#7, #9, #11) should register explicit typed handlers
+            # via parse_server_event.
             if event not in {EVENT_REGISTER_ACK, EVENT_USER_LIST, "connect", "disconnect"}:
                 self.event_queue.put((event, data))
 
@@ -141,11 +149,24 @@ class ClientSession:
                 self._is_connected = False
                 self._is_registered = False
 
-    def register(self, username: str) -> None:
-        """Send a registration request with the desired username (R3)."""
-        username = validate_username(username)
-        payload = RegisterPayload(username=username)
+    def register(self, username: str) -> bool:
+        """Send a registration request with the desired username (R3).
+
+        Validates the username format against protocol specifications.
+        If invalid, avoids raising a synchronous exception on the calling (e.g. GUI) thread,
+        instead enqueuing a synthetic failed RegisterAckPayload and returning False.
+        """
+        try:
+            clean_username = validate_username(username)
+        except ProtocolValidationError as e:
+            self.event_queue.put(
+                (EVENT_REGISTER_ACK, RegisterAckPayload(success=False, error=e.message))
+            )
+            return False
+
+        payload = RegisterPayload(username=clean_username)
         self.sio.emit(EVENT_REGISTER, payload.to_dict())
+        return True
 
     def get_next_event(
         self, block: bool = False, timeout: float | None = None
