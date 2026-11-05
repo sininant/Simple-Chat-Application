@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import threading
+from dataclasses import dataclass
 from socketserver import ThreadingMixIn
 from typing import Any
 from wsgiref.simple_server import WSGIServer, make_server
@@ -18,9 +19,14 @@ from wsgiref.simple_server import WSGIServer, make_server
 import socketio
 
 from protocol import (
+    EVENT_PRIVATE_MSG,
+    EVENT_PRIVATE_MSG_ERROR,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    MessageMeta,
+    PrivateMessagePayload,
+    PrivateMessageServerPayload,
     ProtocolValidationError,
     RegisterAckPayload,
     RegisterPayload,
@@ -30,6 +36,20 @@ from protocol import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RouteResult:
+    """Encapsulates the result of routing a 1-to-1 private message."""
+
+    success: bool
+    error: str | None = None
+    payload: PrivateMessageServerPayload | None = None
+    target_sid: str | None = None
+
+    def __iter__(self):
+        """Allow 4-element tuple unpacking for backwards compatibility."""
+        return iter((self.success, self.error, self.payload, self.target_sid))
 
 
 # -----------------------------------------------------------------------------
@@ -112,6 +132,41 @@ class ChatEngine:
         with self._lock:
             return sorted(self._users.keys())
 
+    # --- 1-to-1 Private Message Routing (R7) ---
+
+    def route_private_message(
+        self,
+        sender_sid: str,
+        target: str,
+        message: str,
+        meta: MessageMeta,
+    ) -> RouteResult:
+        """Route a private message enforcing Server Trust Boundary and direct delivery (R7).
+
+        Returns:
+            RouteResult: Encapsulates routing decision, sanitized payload, and recipient sid.
+        """
+        with self._lock:
+            sender = self._sessions.get(sender_sid)
+            if sender is None:
+                return RouteResult(success=False, error="Sender not registered")
+
+            target_sid = self._users.get(target)
+            if target_sid is None:
+                return RouteResult(success=False, error=f"User '{target}' is offline")
+
+            server_payload = PrivateMessageServerPayload(
+                sender=sender,
+                target=target,
+                message=message,
+                meta=meta,
+            )
+            return RouteResult(
+                success=True,
+                payload=server_payload,
+                target_sid=target_sid,
+            )
+
 
 # -----------------------------------------------------------------------------
 # Multi-Threaded WSGI Server
@@ -179,6 +234,39 @@ class ChatServer:
             if ack.success and ack.username:
                 logger.info("User registered successfully: user=%s sid=%s", ack.username, sid)
                 self.broadcast_user_list()
+
+        @self.sio.event
+        def private_message(sid: str, data: Any) -> None:
+            try:
+                payload = parse_client_event(EVENT_PRIVATE_MSG, data)
+                assert isinstance(payload, PrivateMessagePayload)
+            except ProtocolValidationError as e:
+                logger.warning("Invalid private_message from sid=%s: %s", sid, e)
+                return
+
+            result = self.engine.route_private_message(
+                sender_sid=sid,
+                target=payload.target,
+                message=payload.message,
+                meta=payload.meta,
+            )
+            if not result.success or result.payload is None or result.target_sid is None:
+                logger.warning("Failed to route private message from sid=%s: %s", sid, result.error)
+                self.sio.emit(
+                    EVENT_PRIVATE_MSG_ERROR,
+                    {
+                        "error": result.error or "Failed to deliver message",
+                        "target": payload.target,
+                    },
+                    room=sid,
+                )
+                return
+
+            outbound_dict = result.payload.to_dict()
+            # Deliver strictly to target recipient and sender echo (R7)
+            self.sio.emit(EVENT_PRIVATE_MSG, outbound_dict, room=result.target_sid)
+            if result.target_sid != sid:
+                self.sio.emit(EVENT_PRIVATE_MSG, outbound_dict, room=sid)
 
     # --- Broadcast Helpers (R4) ---
 

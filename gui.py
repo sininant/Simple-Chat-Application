@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -32,8 +33,11 @@ except ImportError:  # pragma: no cover - exercised only on machines without GUI
 
 from client import ClientSession
 from protocol import (
+    EVENT_PRIVATE_MSG,
+    EVENT_PRIVATE_MSG_ERROR,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    PrivateMessageServerPayload,
     RegisterAckPayload,
     UserListPayload,
 )
@@ -57,9 +61,17 @@ class SessionPort(Protocol):
 
     def get_next_event(self, *, block: bool = False) -> tuple[str, Any] | None: ...
 
+    def send_private_message(
+        self,
+        target: str,
+        message: str,
+        message_id: str | None = None,
+        timestamp: str | None = None,
+    ) -> str | None: ...
+
 
 class GuiController:
-    """Headless adapter that owns GUI-facing login and presence state."""
+    """Headless adapter that owns GUI-facing login, presence, and chat message state."""
 
     def __init__(self, session: SessionPort, on_change: Callable[[], None] | None = None) -> None:
         self.session = session
@@ -68,6 +80,16 @@ class GuiController:
         self.avatar = "rabbit"
         self.online_users: list[str] = []
         self.login_error: str | None = None
+        self.private_messages: dict[str, list[PrivateMessageServerPayload]] = {}
+        self.on_private_message: Callable[[str, PrivateMessageServerPayload], None] | None = None
+        self.on_private_message_error: Callable[[str, str], None] | None = None
+
+    def send_private_message(self, target: str, message: str) -> str | None:
+        """Send a 1-to-1 private message through the underlying session adapter (R7)."""
+        send_fn = getattr(self.session, "send_private_message", None)
+        if send_fn is None:
+            return None
+        return send_fn(target, message)
 
     def connect_and_register(self, host: str, port: str, username: str) -> bool:
         """Connect and request registration, reporting synchronous errors inline."""
@@ -109,6 +131,20 @@ class GuiController:
                 changed = True
             elif event_name == EVENT_USER_LIST and isinstance(payload, UserListPayload):
                 self.online_users = list(payload.users)
+                changed = True
+            elif event_name == EVENT_PRIVATE_MSG and isinstance(
+                payload, PrivateMessageServerPayload
+            ):
+                peer = payload.target if payload.sender == self.username else payload.sender
+                self.private_messages.setdefault(peer, []).append(payload)
+                if self.on_private_message:
+                    self.on_private_message(peer, payload)
+                changed = True
+            elif event_name == EVENT_PRIVATE_MSG_ERROR and isinstance(payload, dict):
+                error_msg = str(payload.get("error", "Failed to deliver message"))
+                target_peer = str(payload.get("target", ""))
+                if self.on_private_message_error:
+                    self.on_private_message_error(target_peer, error_msg)
                 changed = True
         if changed:
             self._changed()
@@ -483,15 +519,33 @@ class SidebarPanel:
     def _open_group_dialog(self) -> None:
         """Open the local create-group dialog until server group wiring is added."""
         ui = _require_ctk()
+        if (
+            hasattr(self, "_active_dialog")
+            and self._active_dialog
+            and self._active_dialog.winfo_exists()
+        ):
+            self._active_dialog.lift()
+            self._active_dialog.focus_force()
+            return
+
         dialog = ui.CTkToplevel(self.frame.winfo_toplevel())
+        self._active_dialog = dialog
+        dialog.title("Create New Group")
         dialog.withdraw()
-        dialog.overrideredirect(True)
-        width, height = 470, 250
+        width, height = 470, 260
         dialog.geometry(f"{width}x{height}")
         dialog.resizable(False, False)
         dialog.transient(self.frame.winfo_toplevel())
-        dialog.grab_set()
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+
+        def _close_dialog() -> None:
+            try:
+                dialog.grab_release()
+            except Exception:
+                pass
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", _close_dialog)
+        dialog.bind("<Escape>", lambda _event: _close_dialog())
 
         card = ui.CTkFrame(
             dialog, fg_color=WHITE, border_color=INK, border_width=2, corner_radius=14
@@ -500,8 +554,6 @@ class SidebarPanel:
         header = tk.Canvas(card, height=58, bg=WHITE, highlightthickness=0, bd=0)
         header.pack(fill="x")
         header.bind("<Configure>", lambda _event: self._draw_group_dialog_header(header))
-        header.bind("<ButtonPress-1>", lambda event: self._start_dialog_drag(dialog, event))
-        header.bind("<B1-Motion>", lambda event: self._drag_dialog(dialog, event))
 
         name_entry = ui.CTkEntry(
             card,
@@ -513,12 +565,29 @@ class SidebarPanel:
             border_width=1,
             corner_radius=19,
         )
-        name_entry.pack(fill="x", padx=38, pady=(22, 14))
+        name_entry.pack(fill="x", padx=38, pady=(18, 10))
+
+        btn_row = ui.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(fill="x", padx=38, pady=(4, 10))
+
         ui.CTkButton(
-            card,
+            btn_row,
+            text="Cancel",
+            width=100,
+            height=44,
+            fg_color="#E0E0E0",
+            hover_color="#D0D0D0",
+            text_color=INK,
+            corner_radius=12,
+            font=(FONT, 14, "bold"),
+            command=_close_dialog,
+        ).pack(side="left", padx=(0, 10))
+
+        ui.CTkButton(
+            btn_row,
             text="Create",
             width=180,
-            height=50,
+            height=44,
             fg_color=BLUE,
             hover_color="#91D5DF",
             text_color=INK,
@@ -527,17 +596,24 @@ class SidebarPanel:
             corner_radius=12,
             font=(FONT, 16, "bold"),
             command=lambda: self._create_group(name_entry, dialog),
-        ).pack()
-        name_entry.focus_set()
-        dialog.after(0, lambda: self._center_group_dialog(dialog, width, height))
+        ).pack(side="right", fill="x", expand=True)
 
-    def _center_group_dialog(self, dialog: Any, width: int, height: int) -> None:
+        name_entry.bind("<Return>", lambda _event: self._create_group(name_entry, dialog))
+        dialog.after(50, lambda: self._center_group_dialog(dialog, width, height, name_entry))
+
+    def _center_group_dialog(self, dialog: Any, width: int, height: int, entry: Any = None) -> None:
         parent = self.frame.winfo_toplevel()
         parent.update_idletasks()
         x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
         y = parent.winfo_rooty() + (parent.winfo_height() - height) // 2
         dialog.geometry(f"{width}x{height}+{max(x, 0)}+{max(y, 0)}")
         dialog.deiconify()
+        try:
+            dialog.grab_set()
+        except Exception:
+            pass
+        if entry is not None:
+            entry.focus_force()
 
     def _start_dialog_drag(self, dialog: Any, event: Any) -> None:
         dialog._drag_offset = (event.x_root - dialog.winfo_x(), event.y_root - dialog.winfo_y())
@@ -581,6 +657,10 @@ class SidebarPanel:
         if not name:
             return
         if name in self.group_rows:
+            try:
+                dialog.grab_release()
+            except Exception:
+                pass
             dialog.destroy()
             return
         self.group_placeholder.pack_forget()
@@ -602,6 +682,10 @@ class SidebarPanel:
         row.pack(fill="x", padx=0, pady=0)
         _require_ctk().CTkFrame(self.groups, height=2, fg_color=INK).pack(fill="x")
         self.group_rows[name] = row
+        try:
+            dialog.grab_release()
+        except Exception:
+            pass
         dialog.destroy()
 
     def _draw_card_header(self, canvas: Any, fill: str, title: str, icon_name: str) -> None:
@@ -687,7 +771,14 @@ class SidebarPanel:
 class MessageBubble:
     """Reusable message row for a ChatWindow."""
 
-    def __init__(self, parent: Any, sender: str, message: str, own: bool = False) -> None:
+    def __init__(
+        self,
+        parent: Any,
+        sender: str,
+        message: str,
+        own: bool = False,
+        timestamp: str | None = None,
+    ) -> None:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, fg_color="transparent")
         bubble_shell = ui.CTkFrame(
@@ -698,9 +789,10 @@ class MessageBubble:
             corner_radius=16,
         )
         if not own:
+            sender_label = f"{sender} • {timestamp}" if timestamp else sender
             ui.CTkLabel(
                 self.frame,
-                text=sender,
+                text=sender_label,
                 text_color=INK,
                 font=(FONT, 12, "bold"),
                 anchor="w",
@@ -715,6 +807,14 @@ class MessageBubble:
         )
         bubble.pack(padx=12, pady=7)
         bubble_shell.pack(anchor="e" if own else "w", padx=8, pady=4)
+        if own and timestamp:
+            ui.CTkLabel(
+                self.frame,
+                text=timestamp,
+                text_color="#666666",
+                font=(FONT, 10),
+                anchor="e",
+            ).pack(anchor="e", padx=12, pady=(0, 2))
 
 
 class ChatBoxBar:
@@ -892,8 +992,14 @@ class ChatRoomTab:
         """Render a local demonstration message until private transport (R7) is wired."""
         self.add_message("You", message, own=True)
 
-    def add_message(self, sender: str, message: str, own: bool = False) -> None:
-        bubble = MessageBubble(self.window, sender, message, own)
+    def add_message(
+        self,
+        sender: str,
+        message: str,
+        own: bool = False,
+        timestamp: str | None = None,
+    ) -> None:
+        bubble = MessageBubble(self.window, sender, message, own, timestamp=timestamp)
         bubble.frame.pack(fill="x")
         self._scroll_to_latest()
 
@@ -967,7 +1073,14 @@ class MainChatWindow:
         if segmented_button is not None:
             segmented_button.grid_remove()
         self.rooms: dict[str, ChatRoomTab] = {}
+        self._rendered_messages: set[str] = set()
+        self.controller.on_private_message = self._handle_incoming_private_message
+        self.controller.on_private_message_error = self._handle_private_message_error
         self.frame.bind("<Configure>", self._resize_content)
+        # Process any messages received prior to MainChatWindow construction
+        for peer, msgs in list(self.controller.private_messages.items()):
+            for msg in msgs:
+                self._handle_incoming_private_message(peer, msg)
 
     def _resize_content(self, event: Any) -> None:
         """Keep the Figma proportions while still adapting to smaller windows."""
@@ -985,14 +1098,53 @@ class MainChatWindow:
         if peers and not self.rooms:
             self.open_private_room(peers[0])
 
-    def open_private_room(self, user: str) -> None:
+    def open_private_room(self, user: str, select: bool = True) -> None:
         if user == self.controller.username:
             return
         if user not in self.rooms:
             tab = self.tabs.add(user)
-            self.rooms[user] = ChatRoomTab(tab, user)
+            self.rooms[user] = ChatRoomTab(
+                tab,
+                user,
+                on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
+            )
             self.rooms[user].frame.pack(fill="both", expand=True)
-        self.tabs.set(user)
+        if select:
+            self.tabs.set(user)
+
+    def _send_private_message(self, peer: str, message: str) -> None:
+        msg_id = self.controller.send_private_message(peer, message)
+        if msg_id is None:
+            # Fallback for offline or mock sessions without live server echo
+            current_time = datetime.now().strftime("%H:%M")
+            self.rooms[peer].add_message("You", message, own=True, timestamp=current_time)
+
+    def _handle_incoming_private_message(
+        self, peer: str, payload: PrivateMessageServerPayload
+    ) -> None:
+        if payload.meta.message_id in self._rendered_messages:
+            return
+        self._rendered_messages.add(payload.meta.message_id)
+        if peer not in self.rooms:
+            self.open_private_room(peer, select=False)
+        own = payload.sender == self.controller.username
+        display_sender = "You" if own else payload.sender
+        self.rooms[peer].add_message(
+            sender=display_sender,
+            message=payload.message,
+            own=own,
+            timestamp=payload.meta.timestamp,
+        )
+
+    def _handle_private_message_error(self, target: str, error: str) -> None:
+        if target and target in self.rooms:
+            current_time = datetime.now().strftime("%H:%M")
+            self.rooms[target].add_message(
+                sender="System",
+                message=f"⚠️ {error}",
+                own=False,
+                timestamp=current_time,
+            )
 
 
 class ChatApplication:

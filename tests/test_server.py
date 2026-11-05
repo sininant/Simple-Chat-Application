@@ -9,10 +9,13 @@ import socketio
 
 from client import ClientSession
 from protocol import (
+    EVENT_PRIVATE_MSG,
+    EVENT_PRIVATE_MSG_ERROR,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    MessageMeta,
 )
-from server import ChatEngine, ChatServer
+from server import ChatEngine, ChatServer, RouteResult
 
 # -----------------------------------------------------------------------------
 # Fixtures & Test Utilities
@@ -184,6 +187,60 @@ def test_chat_engine_concurrency():
     assert len(engine.get_online_users()) == 20
 
 
+def test_chat_engine_route_private_message():
+    engine = ChatEngine()
+    engine.register_user("sid_alice", "Alice")
+    engine.register_user("sid_bob", "Bob")
+
+    meta = MessageMeta(message_id="MSG_001", timestamp="14:31")
+
+    # Valid route Alice -> Bob
+    result = engine.route_private_message(
+        sender_sid="sid_alice",
+        target="Bob",
+        message="Hi Bob!",
+        meta=meta,
+    )
+    assert isinstance(result, RouteResult)
+    assert result.success is True
+    assert result.error is None
+    assert result.target_sid == "sid_bob"
+    assert result.payload is not None
+    assert result.payload.sender == "Alice"
+    assert result.payload.target == "Bob"
+    assert result.payload.message == "Hi Bob!"
+    assert result.payload.meta.message_id == "MSG_001"
+
+    # Also supports tuple unpacking for backwards compatibility
+    success, err, payload, target_sid = result
+    assert success is True
+    assert target_sid == "sid_bob"
+
+    # Route from unregistered sender sid fails
+    success, err, payload, target_sid = engine.route_private_message(
+        sender_sid="sid_unknown",
+        target="Bob",
+        message="Hi",
+        meta=meta,
+    )
+    assert success is False
+    assert err == "Sender not registered"
+    assert payload is None
+    assert target_sid is None
+
+    # Route to offline recipient fails
+    success, err, payload, target_sid = engine.route_private_message(
+        sender_sid="sid_alice",
+        target="OfflineCharlie",
+        message="Hi",
+        meta=meta,
+    )
+    assert success is False
+    assert err == "User 'OfflineCharlie' is offline"
+    assert payload is None
+    assert target_sid is None
+
+
 # -----------------------------------------------------------------------------
 # 2. ChatServer Integration & Event Routing Tests
 # -----------------------------------------------------------------------------
@@ -260,6 +317,88 @@ def test_server_disconnect_cleanup_and_broadcast():
     spy.clear()
     spy.trigger("disconnect", "sid_random")
     assert len(spy.get_events(EVENT_USER_LIST, room=None)) == 0
+
+
+def test_server_private_message_routing_and_charlie_isolation():
+    """Verify that private messages between Alice and Bob are never delivered to Charlie (R7)."""
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    # Register 3 users: Alice, Bob, Charlie
+    spy.trigger("register", "sid_alice", {"username": "Alice"})
+    spy.trigger("register", "sid_bob", {"username": "Bob"})
+    spy.trigger("register", "sid_charlie", {"username": "Charlie"})
+    spy.clear()
+
+    # Alice sends a private message to Bob (with an attempted spoofed sender)
+    msg_data = {
+        "target": "Bob",
+        "message": "Secret message for Bob",
+        "message_id": "MSG_001",
+        "timestamp": "14:31",
+        "sender": "SpoofedCharlie",  # Attack attempt: must be ignored by server
+    }
+    spy.trigger("private_message", "sid_alice", msg_data)
+
+    # 1. Target recipient (Bob) must receive the message with verified sender "Alice"
+    bob_events = spy.get_events(EVENT_PRIVATE_MSG, room="sid_bob")
+    assert len(bob_events) == 1
+    assert bob_events[0]["data"]["sender"] == "Alice"
+    assert bob_events[0]["data"]["target"] == "Bob"
+    assert bob_events[0]["data"]["message"] == "Secret message for Bob"
+    assert bob_events[0]["data"]["message_id"] == "MSG_001"
+    assert bob_events[0]["data"]["timestamp"] == "14:31"
+
+    # 2. Sender (Alice) must receive the echo confirmation
+    alice_events = spy.get_events(EVENT_PRIVATE_MSG, room="sid_alice")
+    assert len(alice_events) == 1
+    assert alice_events[0]["data"]["sender"] == "Alice"
+    assert alice_events[0]["data"]["target"] == "Bob"
+
+    # 3. Third party (Charlie) must receive ZERO events (Strict Isolation R7)
+    charlie_events = spy.get_events(EVENT_PRIVATE_MSG, room="sid_charlie")
+    assert len(charlie_events) == 0
+
+    # 4. No global broadcast should occur (room must be specific sid)
+    broadcast_events = [e for e in spy.get_events(EVENT_PRIVATE_MSG) if e["room"] is None]
+    assert len(broadcast_events) == 0
+
+
+def test_server_private_message_invalid_payloads_dropped():
+    """Verify malformed or unauthenticated private messages are dropped safely."""
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    spy.trigger("register", "sid_alice", {"username": "Alice"})
+    spy.clear()
+
+    # Target not online: drops message and emits private_message_error to sender
+    spy.trigger(
+        "private_message",
+        "sid_alice",
+        {"target": "OfflineBob", "message": "Hi", "message_id": "MSG_002", "timestamp": "14:32"},
+    )
+    assert len(spy.get_events(EVENT_PRIVATE_MSG)) == 0
+    errors = spy.get_events(EVENT_PRIVATE_MSG_ERROR, room="sid_alice")
+    assert len(errors) == 1
+    assert errors[0]["data"]["error"] == "User 'OfflineBob' is offline"
+    assert errors[0]["data"]["target"] == "OfflineBob"
+
+    # Unregistered sender
+    spy.trigger(
+        "private_message",
+        "sid_unregistered",
+        {"target": "Alice", "message": "Hi", "message_id": "MSG_003", "timestamp": "14:33"},
+    )
+    assert len(spy.get_events(EVENT_PRIVATE_MSG)) == 0
+
+    # Malformed payload (missing message_id)
+    spy.trigger(
+        "private_message",
+        "sid_alice",
+        {"target": "Alice", "message": "Hi"},
+    )
+    assert len(spy.get_events(EVENT_PRIVATE_MSG)) == 0
 
 
 def test_live_server_client_roundtrip():
