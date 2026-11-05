@@ -1,10 +1,13 @@
 """Unit and integration tests for Socket.IO server and ChatEngine (R2, R3, R4)."""
 
 import threading
+import time
 from typing import Any
 
+import pytest
 import socketio
 
+from client import ClientSession
 from protocol import (
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
@@ -257,3 +260,35 @@ def test_server_disconnect_cleanup_and_broadcast():
     spy.clear()
     spy.trigger("disconnect", "sid_random")
     assert len(spy.get_events(EVENT_USER_LIST, room=None)) == 0
+
+
+def test_live_server_client_roundtrip():
+    """Verify live TCP socket connect, registration, and disconnect over socket."""
+    server = ChatServer()
+    try:
+        httpd = server.create_http_server("127.0.0.1", 0)
+    except OSError:
+        pytest.skip("Local socket binding not permitted in this environment")
+
+    port = httpd.server_port
+    server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    server_thread.start()
+
+    session = ClientSession(f"http://127.0.0.1:{port}")
+    try:
+        connected = session.connect(transports=["polling"])
+        if not connected:
+            pytest.skip("Local socket connection not permitted in this environment")
+
+        session.register("LiveAlice")
+        time.sleep(0.2)
+
+        assert session.is_registered is True
+        assert session.username == "LiveAlice"
+        assert "LiveAlice" in session.online_users
+
+        session.disconnect()
+        assert session.is_connected is False
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

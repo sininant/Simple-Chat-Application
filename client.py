@@ -108,7 +108,11 @@ class ClientSession:
 
     # --- Connection & Session Operations ---
 
-    def connect(self, server_url: str | None = None) -> bool:
+    def connect(
+        self,
+        server_url: str | None = None,
+        transports: list[str] | None = None,
+    ) -> bool:
         """Connect to the Socket.IO server at server_url."""
         if server_url:
             self.server_url = server_url
@@ -116,7 +120,10 @@ class ClientSession:
             if self._is_connected:
                 return True
         try:
-            self.sio.connect(self.server_url)
+            kwargs: dict[str, Any] = {}
+            if transports is not None:
+                kwargs["transports"] = transports
+            self.sio.connect(self.server_url, **kwargs)
             return True
         except Exception as e:
             logger.error("Failed to connect to %s: %s", self.server_url, e)
