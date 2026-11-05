@@ -8,6 +8,7 @@ from typing import Any
 from gui import GuiController
 from protocol import (
     EVENT_PRIVATE_MSG,
+    EVENT_PRIVATE_MSG_ERROR,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
     MessageMeta,
@@ -194,3 +195,17 @@ def test_controller_polls_and_records_own_echo_private_messages():
     # Even though Alice sent it, the conversation room must be Bob
     assert "Bob" in controller.private_messages
     assert controller.private_messages["Bob"] == [payload]
+
+
+def test_controller_polls_and_notifies_private_message_error():
+    error_data = {"error": "User 'Bob' is offline", "target": "Bob"}
+    session = SessionSpy([(EVENT_PRIVATE_MSG_ERROR, error_data)])
+    controller = GuiController(session)
+
+    errors: list[tuple[str, str]] = []
+    controller.on_private_message_error = lambda target, err: errors.append((target, err))
+
+    controller.poll_events()
+
+    assert len(errors) == 1
+    assert errors[0] == ("Bob", "User 'Bob' is offline")

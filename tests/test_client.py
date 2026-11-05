@@ -7,6 +7,7 @@ import socketio
 from client import ClientSession
 from protocol import (
     EVENT_PRIVATE_MSG,
+    EVENT_PRIVATE_MSG_ERROR,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
@@ -234,9 +235,20 @@ def test_client_session_get_next_event_empty_returns_none():
     assert session.get_next_event(block=True, timeout=0.01) is None
 
 
+def test_client_session_send_private_message_fails_when_disconnected():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    # Disconnected session must return None immediately
+    assert session.is_connected is False
+    assert session.send_private_message(target="Bob", message="Hello Bob!") is None
+    assert len(spy.emitted) == 0
+
+
 def test_client_session_send_private_message_emits_payload():
     spy = SocketIOClientSpy()
     session = ClientSession(sio=spy.sio)
+    spy.trigger("connect")
 
     msg_id = session.send_private_message(
         target="Bob",
@@ -257,6 +269,7 @@ def test_client_session_send_private_message_emits_payload():
 def test_client_session_send_private_message_auto_generates_id_and_timestamp():
     spy = SocketIOClientSpy()
     session = ClientSession(sio=spy.sio)
+    spy.trigger("connect")
 
     msg_id = session.send_private_message(target="Bob", message="Auto values")
     assert msg_id is not None
@@ -272,6 +285,7 @@ def test_client_session_send_private_message_auto_generates_id_and_timestamp():
 def test_client_session_send_private_message_validation_failure():
     spy = SocketIOClientSpy()
     session = ClientSession(sio=spy.sio)
+    spy.trigger("connect")
 
     # Empty message
     assert session.send_private_message(target="Bob", message="") is None
@@ -315,3 +329,16 @@ def test_client_session_receives_invalid_private_message_dropped():
     # Malformed data missing sender
     spy.trigger(EVENT_PRIVATE_MSG, {"target": "Bob", "message": "No sender"})
     assert session.get_next_event(block=False) is None
+
+
+def test_client_session_receives_private_message_error_event():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    error_data = {"error": "User 'Bob' is offline", "target": "Bob"}
+    spy.trigger(EVENT_PRIVATE_MSG_ERROR, error_data)
+
+    event = session.get_next_event(block=False)
+    assert event is not None
+    assert event[0] == EVENT_PRIVATE_MSG_ERROR
+    assert event[1] == error_data

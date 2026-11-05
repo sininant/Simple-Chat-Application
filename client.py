@@ -19,6 +19,7 @@ import socketio
 
 from protocol import (
     EVENT_PRIVATE_MSG,
+    EVENT_PRIVATE_MSG_ERROR,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
@@ -122,6 +123,10 @@ class ClientSession:
             except ProtocolValidationError as e:
                 logger.warning("Received invalid private_message from server: %s", e)
 
+        @self.sio.event
+        def private_message_error(data: Any) -> None:
+            self.event_queue.put((EVENT_PRIVATE_MSG_ERROR, data))
+
         @self.sio.on("*")
         def catch_all(event: str, data: Any) -> None:
             # Pass unhandled server events through to the queue for downstream UI handlers.
@@ -131,6 +136,7 @@ class ClientSession:
                 EVENT_REGISTER_ACK,
                 EVENT_USER_LIST,
                 EVENT_PRIVATE_MSG,
+                EVENT_PRIVATE_MSG_ERROR,
                 "connect",
                 "disconnect",
             }:
@@ -202,6 +208,10 @@ class ClientSession:
         Returns:
             The message_id if emission succeeded, or None if validation/emission failed.
         """
+        if not self.is_connected:
+            logger.warning("Cannot send private message: client is not connected")
+            return None
+
         try:
             clean_target = validate_username(target, field_name="target")
             clean_message = validate_message_text(message)

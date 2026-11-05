@@ -34,6 +34,7 @@ except ImportError:  # pragma: no cover - exercised only on machines without GUI
 from client import ClientSession
 from protocol import (
     EVENT_PRIVATE_MSG,
+    EVENT_PRIVATE_MSG_ERROR,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
     PrivateMessageServerPayload,
@@ -81,6 +82,7 @@ class GuiController:
         self.login_error: str | None = None
         self.private_messages: dict[str, list[PrivateMessageServerPayload]] = {}
         self.on_private_message: Callable[[str, PrivateMessageServerPayload], None] | None = None
+        self.on_private_message_error: Callable[[str, str], None] | None = None
 
     def send_private_message(self, target: str, message: str) -> str | None:
         """Send a 1-to-1 private message through the underlying session adapter (R7)."""
@@ -137,6 +139,12 @@ class GuiController:
                 self.private_messages.setdefault(peer, []).append(payload)
                 if self.on_private_message:
                     self.on_private_message(peer, payload)
+                changed = True
+            elif event_name == EVENT_PRIVATE_MSG_ERROR and isinstance(payload, dict):
+                error_msg = str(payload.get("error", "Failed to deliver message"))
+                target_peer = str(payload.get("target", ""))
+                if self.on_private_message_error:
+                    self.on_private_message_error(target_peer, error_msg)
                 changed = True
         if changed:
             self._changed()
@@ -1067,6 +1075,7 @@ class MainChatWindow:
         self.rooms: dict[str, ChatRoomTab] = {}
         self._rendered_messages: set[str] = set()
         self.controller.on_private_message = self._handle_incoming_private_message
+        self.controller.on_private_message_error = self._handle_private_message_error
         self.frame.bind("<Configure>", self._resize_content)
         # Process any messages received prior to MainChatWindow construction
         for peer, msgs in list(self.controller.private_messages.items()):
@@ -1126,6 +1135,16 @@ class MainChatWindow:
             own=own,
             timestamp=payload.meta.timestamp,
         )
+
+    def _handle_private_message_error(self, target: str, error: str) -> None:
+        if target and target in self.rooms:
+            current_time = datetime.now().strftime("%H:%M")
+            self.rooms[target].add_message(
+                sender="System",
+                message=f"⚠️ {error}",
+                own=False,
+                timestamp=current_time,
+            )
 
 
 class ChatApplication:

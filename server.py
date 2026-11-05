@@ -20,6 +20,7 @@ import socketio
 
 from protocol import (
     EVENT_PRIVATE_MSG,
+    EVENT_PRIVATE_MSG_ERROR,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
@@ -252,7 +253,7 @@ class ChatServer:
             if not result.success or result.payload is None or result.target_sid is None:
                 logger.warning("Failed to route private message from sid=%s: %s", sid, result.error)
                 self.sio.emit(
-                    "private_message_error",
+                    EVENT_PRIVATE_MSG_ERROR,
                     {
                         "error": result.error or "Failed to deliver message",
                         "target": payload.target,

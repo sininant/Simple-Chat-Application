@@ -10,6 +10,7 @@ import socketio
 from client import ClientSession
 from protocol import (
     EVENT_PRIVATE_MSG,
+    EVENT_PRIVATE_MSG_ERROR,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
     MessageMeta,
@@ -378,7 +379,7 @@ def test_server_private_message_invalid_payloads_dropped():
         {"target": "OfflineBob", "message": "Hi", "message_id": "MSG_002", "timestamp": "14:32"},
     )
     assert len(spy.get_events(EVENT_PRIVATE_MSG)) == 0
-    errors = spy.get_events("private_message_error", room="sid_alice")
+    errors = spy.get_events(EVENT_PRIVATE_MSG_ERROR, room="sid_alice")
     assert len(errors) == 1
     assert errors[0]["data"]["error"] == "User 'OfflineBob' is offline"
     assert errors[0]["data"]["target"] == "OfflineBob"

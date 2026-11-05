@@ -25,6 +25,7 @@ EVENT_USER_LIST = "user_list"
 
 # 1-to-1 Private Chat (R5, R6, R7)
 EVENT_PRIVATE_MSG = "private_message"
+EVENT_PRIVATE_MSG_ERROR = "private_message_error"
 
 # Group Chat & Management (R8, R9, R10, R11)
 EVENT_CREATE_GROUP = "create_group"
