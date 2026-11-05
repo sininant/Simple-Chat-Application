@@ -18,9 +18,13 @@ from wsgiref.simple_server import WSGIServer, make_server
 import socketio
 
 from protocol import (
+    EVENT_PRIVATE_MSG,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    MessageMeta,
+    PrivateMessagePayload,
+    PrivateMessageServerPayload,
     ProtocolValidationError,
     RegisterAckPayload,
     RegisterPayload,
@@ -112,6 +116,37 @@ class ChatEngine:
         with self._lock:
             return sorted(self._users.keys())
 
+    # --- 1-to-1 Private Message Routing (R7) ---
+
+    def route_private_message(
+        self,
+        sender_sid: str,
+        target: str,
+        message: str,
+        meta: MessageMeta,
+    ) -> tuple[bool, str | None, PrivateMessageServerPayload | None, str | None]:
+        """Route a private message enforcing Server Trust Boundary and direct delivery (R7).
+
+        Returns:
+            A tuple of (success, error_message, server_payload, target_sid).
+        """
+        with self._lock:
+            sender = self._sessions.get(sender_sid)
+            if sender is None:
+                return False, "Sender not registered", None, None
+
+            target_sid = self._users.get(target)
+            if target_sid is None:
+                return False, f"User '{target}' is offline", None, None
+
+            server_payload = PrivateMessageServerPayload(
+                sender=sender,
+                target=target,
+                message=message,
+                meta=meta,
+            )
+            return True, None, server_payload, target_sid
+
 
 # -----------------------------------------------------------------------------
 # Multi-Threaded WSGI Server
@@ -179,6 +214,31 @@ class ChatServer:
             if ack.success and ack.username:
                 logger.info("User registered successfully: user=%s sid=%s", ack.username, sid)
                 self.broadcast_user_list()
+
+        @self.sio.event
+        def private_message(sid: str, data: Any) -> None:
+            try:
+                payload = parse_client_event(EVENT_PRIVATE_MSG, data)
+                assert isinstance(payload, PrivateMessagePayload)
+            except ProtocolValidationError as e:
+                logger.warning("Invalid private_message from sid=%s: %s", sid, e)
+                return
+
+            success, error, server_payload, target_sid = self.engine.route_private_message(
+                sender_sid=sid,
+                target=payload.target,
+                message=payload.message,
+                meta=payload.meta,
+            )
+            if not success or server_payload is None or target_sid is None:
+                logger.warning("Failed to route private message from sid=%s: %s", sid, error)
+                return
+
+            outbound_dict = server_payload.to_dict()
+            # Deliver strictly to target recipient and sender echo (R7)
+            self.sio.emit(EVENT_PRIVATE_MSG, outbound_dict, room=target_sid)
+            if target_sid != sid:
+                self.sio.emit(EVENT_PRIVATE_MSG, outbound_dict, room=sid)
 
     # --- Broadcast Helpers (R4) ---
 
