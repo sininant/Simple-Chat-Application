@@ -259,6 +259,7 @@ class LoginView:
             anchor="w",
         ).grid(row=3, column=0, padx=54, pady=(0, 14), sticky="w")
         self.character = "rabbit"
+        self.selected_character: str | None = None
         self.hovered_character: str | None = None
         self.character_buttons: dict[str, Any] = {}
         character_row = ui.CTkFrame(self.frame, fg_color="transparent")
@@ -296,6 +297,7 @@ class LoginView:
 
     def _choose_character(self, character: str) -> None:
         self.character = character
+        self.selected_character = character
         for name, canvas in self.character_buttons.items():
             self._draw_avatar(canvas, name)
 
@@ -306,7 +308,7 @@ class LoginView:
 
     def _draw_avatar(self, canvas: Any, name: str) -> None:
         canvas.delete("all")
-        selected = name == self.character
+        selected = name == self.selected_character
         hovered = name == self.hovered_character
         canvas.create_oval(
             2,
