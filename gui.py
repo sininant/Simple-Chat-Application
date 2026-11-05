@@ -611,9 +611,7 @@ class SidebarPanel:
         dialog.protocol("WM_DELETE_WINDOW", _close_dialog)
         dialog.bind("<Escape>", lambda _event: _close_dialog())
 
-        card = ui.CTkFrame(
-            dialog, fg_color=WHITE, border_color=INK, border_width=2, corner_radius=14
-        )
+        card = ui.CTkFrame(dialog, fg_color=WHITE, border_width=0, corner_radius=14)
         card.pack(fill="both", expand=True)
         header = tk.Canvas(card, height=84, bg=WHITE, highlightthickness=0, bd=0)
         header.pack(fill="x")
@@ -625,8 +623,7 @@ class SidebarPanel:
             height=60,
             font=(FONT, 19),
             fg_color=PINK_LIGHT,
-            border_color=INK,
-            border_width=2,
+            border_width=0,
             corner_radius=30,
         )
         name_entry.pack(fill="x", padx=46, pady=(46, 20))
@@ -655,8 +652,7 @@ class SidebarPanel:
             fg_color=BLUE,
             hover_color="#91D5DF",
             text_color=INK,
-            border_color=INK,
-            border_width=1,
+            border_width=0,
             corner_radius=18,
             font=(FONT, 18, "bold"),
             command=lambda: self._create_group(name_entry, dialog),
@@ -702,7 +698,6 @@ class SidebarPanel:
             fill=BLUE,
             outline=BLUE,
         )
-        canvas.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
         canvas.create_text(
             24,
             height // 2,
