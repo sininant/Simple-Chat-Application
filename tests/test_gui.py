@@ -238,3 +238,43 @@ def test_controller_polls_and_notifies_read_ack():
 
     assert len(acks) == 1
     assert acks[0] == ("MSG_001", "Bob")
+
+
+def test_end_to_end_private_message_and_read_ack_flow():
+    """Verify end-to-end flow: Alice sends message -> Bob reads ->
+    READ_ACK -> Alice updates to 'Read ✓✓'.
+    """
+    # 1. Alice connects and sends a message to Bob
+    alice_session = SessionSpy()
+    alice_controller = GuiController(alice_session)
+    alice_controller.username = "Alice"
+    msg_id = alice_controller.send_private_message("Bob", "Hello Bob!")
+    assert msg_id is not None
+
+    # 2. Bob's session receives Alice's incoming private message
+    bob_session = SessionSpy()
+    bob_controller = GuiController(bob_session)
+    bob_controller.username = "Bob"
+    incoming_payload = PrivateMessageServerPayload(
+        sender="Alice",
+        target="Bob",
+        message="Hello Bob!",
+        meta=MessageMeta(message_id=msg_id, timestamp="14:30"),
+    )
+    bob_session.events.append((EVENT_PRIVATE_MSG, incoming_payload))
+    bob_controller.poll_events()
+    assert msg_id in [m.meta.message_id for m in bob_controller.private_messages["Alice"]]
+
+    # 3. Bob views Alice's room and triggers READ_ACK
+    assert bob_controller.send_read_ack(msg_id, "Alice") is True
+    assert (msg_id, "Alice") in bob_session.sent_read_ack
+
+    # 4. Server routes READ_ACK back to Alice
+    ack_payload = ReadAckServerPayload(message_id=msg_id, reader="Bob")
+    alice_session.events.append((EVENT_READ_ACK, ack_payload))
+    read_receipts: list[tuple[str, str]] = []
+    alice_controller.on_read_ack = lambda mid, reader: read_receipts.append((mid, reader))
+    alice_controller.poll_events()
+
+    # 5. Alice receives READ_ACK for msg_id from Bob
+    assert (msg_id, "Bob") in read_receipts

@@ -13,7 +13,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from socketserver import ThreadingMixIn
-from typing import Any
+from typing import Any, Generic, TypeVar
 from wsgiref.simple_server import WSGIServer, make_server
 
 import socketio
@@ -40,14 +40,16 @@ from protocol import (
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
 
 @dataclass(frozen=True)
-class RouteResult:
-    """Encapsulates the result of routing a 1-to-1 private message."""
+class RouteResult(Generic[T]):
+    """Encapsulates the result of routing a 1-to-1 message or acknowledgment."""
 
     success: bool
     error: str | None = None
-    payload: PrivateMessageServerPayload | None = None
+    payload: T | None = None
     target_sid: str | None = None
 
     def __iter__(self):
@@ -55,18 +57,10 @@ class RouteResult:
         return iter((self.success, self.error, self.payload, self.target_sid))
 
 
+# Specialized subclass for read acknowledgments (SP4)
 @dataclass(frozen=True)
-class ReadAckRouteResult:
+class ReadAckRouteResult(RouteResult[ReadAckServerPayload]):
     """Encapsulates the result of routing a 1-to-1 read acknowledgment (SP4)."""
-
-    success: bool
-    error: str | None = None
-    payload: ReadAckServerPayload | None = None
-    target_sid: str | None = None
-
-    def __iter__(self):
-        """Allow 4-element tuple unpacking for backwards compatibility."""
-        return iter((self.success, self.error, self.payload, self.target_sid))
 
 
 # -----------------------------------------------------------------------------

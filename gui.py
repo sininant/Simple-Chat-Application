@@ -1113,6 +1113,7 @@ class MainChatWindow:
         if segmented_button is not None:
             segmented_button.grid_remove()
         self.rooms: dict[str, ChatRoomTab] = {}
+        self._active_room: str | None = None
         self._rendered_messages: set[str] = set()
         self._unread_messages: dict[str, set[str]] = {}
         self._acknowledged_messages: set[str] = set()
@@ -1154,6 +1155,7 @@ class MainChatWindow:
             self.rooms[user].frame.pack(fill="both", expand=True)
         if select:
             self.tabs.set(user)
+            self._active_room = user
             self._ack_unread_in_room(user)
 
     def _send_private_message(self, peer: str, message: str) -> None:
@@ -1181,8 +1183,8 @@ class MainChatWindow:
             message_id=payload.meta.message_id,
         )
         if not own:
-            active_tab = getattr(self.tabs, "get", lambda: None)()
-            if active_tab == peer:
+            # Check user's actively selected room rather than relying on tabs.get()
+            if self._active_room == peer:
                 self._send_read_ack(payload.meta.message_id, peer)
             else:
                 self._unread_messages.setdefault(peer, set()).add(payload.meta.message_id)
@@ -1190,8 +1192,11 @@ class MainChatWindow:
     def _send_read_ack(self, message_id: str, target: str) -> None:
         if message_id in self._acknowledged_messages:
             return
-        self._acknowledged_messages.add(message_id)
-        self.controller.send_read_ack(message_id, target)
+        sent = self.controller.send_read_ack(message_id, target)
+        if sent:
+            self._acknowledged_messages.add(message_id)
+        else:
+            self._unread_messages.setdefault(target, set()).add(message_id)
 
     def _ack_unread_in_room(self, room_name: str) -> None:
         unreads = list(self._unread_messages.get(room_name, set()))
