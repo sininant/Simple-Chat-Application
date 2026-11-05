@@ -28,11 +28,12 @@ from protocol import (
 )
 
 BACKGROUND = "#FFFCF8"
-PINK = "#F796B7"
-PINK_LIGHT = "#FBEAF1"
-YELLOW = "#FFE8A3"
-BLUE = "#B9E4EE"
-INK = "#604E45"
+PINK = "#FF9FBF"
+PINK_LIGHT = "#FCECF5"
+YELLOW = "#FFE79F"
+BLUE = "#BAE7EF"
+INK = "#5C4B41"
+FONT = "Josefin Sans"
 
 
 class SessionPort(Protocol):
@@ -127,18 +128,24 @@ class LoginView:
 
     def __init__(self, parent: Any, on_connect: Callable[[str, str, str], None]) -> None:
         ui = _require_ctk()
-        self.frame = ui.CTkFrame(parent, fg_color=BACKGROUND, border_color=INK, border_width=2)
+        self.frame = ui.CTkFrame(
+            parent,
+            fg_color=BACKGROUND,
+            border_color=INK,
+            border_width=2,
+            corner_radius=16,
+        )
         self.frame.grid_columnconfigure(1, weight=1)
         self.avatars = _load_avatars()
         heading = ui.CTkLabel(
             self.frame,
             text="Create User",
-            font=("Avenir", 24, "bold"),
+            font=(FONT, 24, "bold"),
             text_color=INK,
             fg_color=PINK,
-            corner_radius=12,
+            corner_radius=14,
         )
-        heading.grid(row=0, column=0, columnspan=2, padx=2, pady=2, sticky="ew")
+        heading.grid(row=0, column=0, columnspan=2, padx=0, pady=0, sticky="ew")
         self.username = self._entry("Name", "", 1)
         ui.CTkLabel(self.frame, text="Choose your character", text_color=INK, anchor="w").grid(
             row=2, column=0, columnspan=2, padx=28, pady=(12, 2), sticky="w"
@@ -230,7 +237,7 @@ class SidebarPanel:
         friends_heading = ui.CTkLabel(
             self.friends_card,
             text="☻  Friends",
-            font=("Avenir", 20, "bold"),
+            font=(FONT, 20, "bold"),
             text_color=INK,
             fg_color=YELLOW,
             corner_radius=10,
@@ -245,7 +252,7 @@ class SidebarPanel:
         community_heading = ui.CTkLabel(
             self.community_card,
             text="♣  Community",
-            font=("Avenir", 18, "bold"),
+            font=(FONT, 18, "bold"),
             text_color=INK,
             fg_color=BLUE,
             corner_radius=10,
@@ -339,7 +346,7 @@ class ChatRoomTab:
         ui.CTkLabel(
             self.header,
             text=f"▤  {room_name}",
-            font=("Avenir", 20, "bold"),
+            font=(FONT, 20, "bold"),
             text_color=INK,
             anchor="w",
         ).pack(fill="x", padx=14, pady=9)
@@ -391,7 +398,7 @@ class MainChatWindow:
         self.frame.grid_columnconfigure(1, weight=1)
         self.frame.grid_rowconfigure(2, weight=1)
         self.title = ui.CTkLabel(
-            self.frame, text="Logged in", font=("Avenir", 22, "bold"), text_color=INK
+            self.frame, text="Logged in", font=(FONT, 22, "bold"), text_color=INK
         )
         self.title.grid(row=0, column=0, sticky="w", padx=18, pady=(14, 6))
         self.logout = ui.CTkButton(
