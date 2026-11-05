@@ -8,16 +8,27 @@ This keeps the interface safe to import and test without a display server.
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
 try:  # Keep headless CI able to import the controller without GUI dependencies installed.
+    import tkinter as tk
+
     import customtkinter as ctk
-    from PIL import Image
+    from dotenv import load_dotenv
+    from PIL import Image, ImageTk
 except ImportError:  # pragma: no cover - exercised only on machines without GUI extras
     ctk = None  # type: ignore[assignment]
+    tk = None  # type: ignore[assignment]
     Image = None  # type: ignore[assignment,misc]
+    ImageTk = None  # type: ignore[assignment,misc]
+
+    def load_dotenv(dotenv_path: Any = None) -> None:
+        del dotenv_path
+        return None
+
 
 from client import ClientSession
 from protocol import (
@@ -33,6 +44,7 @@ PINK_LIGHT = "#FCECF5"
 YELLOW = "#FFE79F"
 BLUE = "#BAE7EF"
 INK = "#5C4B41"
+WHITE = "#FFFFFF"
 FONT = "Josefin Sans"
 
 
@@ -109,7 +121,7 @@ def _require_ctk() -> Any:
     return ctk
 
 
-def _load_avatars() -> dict[str, Any]:
+def _load_avatars(size: tuple[int, int] = (120, 120)) -> dict[str, Any]:
     """Load the supplied character PNGs, returning an empty map when unavailable."""
     if ctk is None or Image is None:
         return {}
@@ -119,76 +131,149 @@ def _load_avatars() -> dict[str, Any]:
         path = root / "assets" / f"avatar_{name}.png"
         if path.is_file():
             image = Image.open(path)
-            avatars[name] = ctk.CTkImage(light_image=image, dark_image=image, size=(58, 58))
+            avatars[name] = ctk.CTkImage(light_image=image, dark_image=image, size=size)
     return avatars
+
+
+def _load_avatar_photos(size: tuple[int, int] = (112, 112)) -> dict[str, Any]:
+    """Load avatar photos for Canvas rendering without widget-level image clipping."""
+    if Image is None or ImageTk is None:
+        return {}
+    root = Path(__file__).resolve().parent
+    photos: dict[str, Any] = {}
+    for name in ("cat", "dog", "rabbit"):
+        path = root / "assets" / f"avatar_{name}.png"
+        if path.is_file():
+            image = Image.open(path).convert("RGBA").resize(size)
+            photos[name] = ImageTk.PhotoImage(image)
+    return photos
+
+
+def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
+    """Load the supplied UI icons as CustomTkinter images."""
+    if ctk is None or Image is None:
+        return {}
+    root = Path(__file__).resolve().parent
+    icons: dict[str, Any] = {}
+    for name in ("friends", "community", "chat", "notification", "logout"):
+        path = root / "assets" / f"icon_{name}.png"
+        if path.is_file():
+            image = Image.open(path).convert("RGBA")
+            icons[name] = ctk.CTkImage(light_image=image, dark_image=image, size=size)
+    return icons
 
 
 class LoginView:
     """Reusable Create User card for R3, styled after the supplied design."""
 
-    def __init__(self, parent: Any, on_connect: Callable[[str, str, str], None]) -> None:
+    def __init__(
+        self,
+        parent: Any,
+        on_connect: Callable[[str, str, str], None],
+        host: str = "127.0.0.1",
+        port: str = "5000",
+    ) -> None:
         ui = _require_ctk()
+        if tk is None:
+            raise RuntimeError("This Python installation does not include Tk support")
         self.frame = ui.CTkFrame(
             parent,
-            fg_color=BACKGROUND,
+            fg_color=WHITE,
             border_color=INK,
-            border_width=2,
+            border_width=3,
             corner_radius=16,
+            width=600,
+            height=560,
         )
-        self.frame.grid_columnconfigure(1, weight=1)
-        self.avatars = _load_avatars()
-        heading = ui.CTkLabel(
+        self.frame.grid_columnconfigure(0, weight=1)
+        self.frame.grid_propagate(False)
+        self.host = host
+        self.port = port
+        self.avatar_photos = _load_avatar_photos()
+        self.header = tk.Canvas(
             self.frame,
-            text="Create User",
+            height=68,
+            bg=BACKGROUND,
+            highlightthickness=0,
+            bd=0,
+        )
+        self.header.grid(row=0, column=0, columnspan=2, padx=0, pady=0, sticky="ew")
+        self.header.bind("<Configure>", self._draw_header)
+        ui.CTkLabel(
+            self.frame, text="Name", font=(FONT, 24, "bold"), text_color=INK, anchor="w"
+        ).grid(row=1, column=0, padx=60, pady=(24, 8), sticky="w")
+        self.username = ui.CTkEntry(
+            self.frame,
+            placeholder_text="Username",
+            border_color=PINK,
+            border_width=2,
+            fg_color="white",
+            height=42,
+            font=(FONT, 15),
+        )
+        self.username.grid(row=2, column=0, padx=54, pady=(0, 22), sticky="ew")
+        ui.CTkLabel(
+            self.frame,
+            text="Choose your character",
             font=(FONT, 24, "bold"),
             text_color=INK,
-            fg_color=PINK,
-            corner_radius=14,
-        )
-        heading.grid(row=0, column=0, columnspan=2, padx=0, pady=0, sticky="ew")
-        self.username = self._entry("Name", "", 1)
-        ui.CTkLabel(self.frame, text="Choose your character", text_color=INK, anchor="w").grid(
-            row=2, column=0, columnspan=2, padx=28, pady=(12, 2), sticky="w"
-        )
+            anchor="w",
+        ).grid(row=3, column=0, padx=54, pady=(0, 14), sticky="w")
         self.character = "rabbit"
         self.character_buttons: dict[str, Any] = {}
         character_row = ui.CTkFrame(self.frame, fg_color="transparent")
-        character_row.grid(row=3, column=0, columnspan=2, padx=28, pady=(2, 12), sticky="ew")
+        character_row.grid(row=4, column=0, padx=54, pady=(10, 10), sticky="ew")
+        character_row.grid_columnconfigure((0, 1, 2), weight=1)
         for index, name in enumerate(("cat", "dog", "rabbit")):
-            button = ui.CTkButton(
+            canvas = tk.Canvas(
                 character_row,
-                text=name.title(),
-                image=self.avatars.get(name),
-                width=78,
-                height=62,
-                fg_color=PINK_LIGHT if name == self.character else "white",
-                hover_color="#F7D4E1",
-                text_color=INK,
-                command=lambda selected=name: self._choose_character(selected),
+                width=120,
+                height=120,
+                bg=WHITE,
+                highlightthickness=0,
+                bd=0,
             )
-            button.grid(row=0, column=index, padx=4, sticky="ew")
-            self.character_buttons[name] = button
-        connection_label = ui.CTkLabel(
-            self.frame, text="Server connection", text_color=INK, anchor="w"
-        )
-        connection_label.grid(row=4, column=0, columnspan=2, padx=28, pady=(2, 2), sticky="w")
-        self.host = self._entry("Host", "127.0.0.1", 5)
-        self.port = self._entry("Port", "5000", 6)
+            canvas.grid(row=0, column=index, padx=3, sticky="ew")
+            self._draw_avatar(canvas, name)
+            canvas.bind(
+                "<Button-1>", lambda _event, selected=name: self._choose_character(selected)
+            )
+            self.character_buttons[name] = canvas
+        self.selection_line = ui.CTkFrame(self.frame, fg_color=INK, height=4, corner_radius=2)
+        self.selection_line.grid(row=5, column=0, padx=56, pady=(10, 20), sticky="w")
         self.error = ui.CTkLabel(self.frame, text="", text_color="#C64B68", wraplength=300)
-        self.error.grid(row=7, column=0, columnspan=2, padx=28, pady=(10, 4))
+        self.error.grid(row=6, column=0, padx=54, pady=(1, 1))
         ui.CTkButton(
             self.frame,
             text="Create",
             fg_color=PINK,
             hover_color="#DF6D98",
-            text_color=INK,
-            command=lambda: on_connect(self.host.get(), self.port.get(), self.username.get()),
-        ).grid(row=8, column=0, columnspan=2, padx=28, pady=(10, 24), sticky="ew")
+            text_color="white",
+            height=44,
+            font=(FONT, 24, "bold"),
+            command=lambda: on_connect(self.host, self.port, self.username.get()),
+        ).grid(row=7, column=0, padx=54, pady=(24, 16), sticky="ew")
 
     def _choose_character(self, character: str) -> None:
         self.character = character
-        for name, button in self.character_buttons.items():
-            button.configure(fg_color=PINK_LIGHT if name == character else "white")
+        for name, canvas in self.character_buttons.items():
+            self._draw_avatar(canvas, name)
+
+    def _draw_avatar(self, canvas: Any, name: str) -> None:
+        canvas.delete("all")
+        selected = name == self.character
+        canvas.create_oval(
+            2,
+            2,
+            118,
+            118,
+            fill=PINK_LIGHT if selected else BACKGROUND,
+            outline=INK if selected else "",
+            width=3,
+        )
+        photo = self.avatar_photos.get(name)
+        if photo:
+            canvas.create_image(60, 60, image=photo)
 
     def _entry(self, label: str, value: str, row: int) -> Any:
         ui = _require_ctk()
@@ -201,6 +286,44 @@ class LoginView:
         entry.grid(row=row, column=1, padx=(0, 28), pady=8, sticky="ew")
         return entry
 
+    def _draw_header(self, _event: Any = None) -> None:
+        """Draw a pink header with rounded top corners and a straight bottom edge."""
+        width = max(self.header.winfo_width(), 10)
+        height = max(self.header.winfo_height(), 10)
+        self.header.delete("all")
+
+        def draw_top(fill: str, x: int, y: int, right: int, bottom: int, radius: int) -> None:
+            self.header.create_rectangle(x, y + radius, right, bottom, fill=fill, outline=fill)
+            self.header.create_rectangle(
+                x + radius, y, right - radius, bottom, fill=fill, outline=fill
+            )
+            self.header.create_arc(
+                x, y, x + radius * 2, y + radius * 2, start=90, extent=90, fill=fill, outline=fill
+            )
+            self.header.create_arc(
+                right - radius * 2,
+                y,
+                right,
+                y + radius * 2,
+                start=0,
+                extent=90,
+                fill=fill,
+                outline=fill,
+            )
+
+        radius = min(18, width // 8, height // 2)
+        draw_top(INK, 0, 0, width, height, radius)
+        inset = 2
+        draw_top(PINK, inset, inset, width - inset, height - inset, max(radius - inset, 1))
+        self.header.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
+        self.header.create_text(
+            width // 2,
+            height // 2 - 2,
+            text="Create User",
+            fill=INK,
+            font=(FONT, 32, "bold"),
+        )
+
     def show_error(self, message: str | None) -> None:
         self.error.configure(text=message or "")
 
@@ -211,7 +334,14 @@ class AnnouncementBanner:
     def __init__(self, parent: Any) -> None:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, fg_color=YELLOW)
-        self.label = ui.CTkLabel(self.frame, text="", text_color=INK, anchor="w")
+        self.label = ui.CTkLabel(
+            self.frame,
+            text="",
+            image=_load_icons().get("notification"),
+            compound="left",
+            text_color=INK,
+            anchor="w",
+        )
         self.label.pack(side="left", fill="x", expand=True, padx=14, pady=7)
         ui.CTkButton(self.frame, text="Hide", width=55, command=self.frame.grid_remove).pack(
             side="right", padx=8, pady=4
@@ -230,13 +360,16 @@ class SidebarPanel:
         self.frame = ui.CTkFrame(parent, fg_color="transparent")
         self.on_chat = on_chat
         self.avatar = _load_avatars().get("rabbit")
+        self.icons = _load_icons()
         self.friends_card = ui.CTkFrame(
             self.frame, fg_color=BACKGROUND, border_color=INK, border_width=2, corner_radius=14
         )
         self.friends_card.pack(fill="both", expand=True)
         friends_heading = ui.CTkLabel(
             self.friends_card,
-            text="☻  Friends",
+            text="Friends",
+            image=self.icons.get("friends"),
+            compound="left",
             font=(FONT, 20, "bold"),
             text_color=INK,
             fg_color=YELLOW,
@@ -251,7 +384,9 @@ class SidebarPanel:
         self.community_card.pack(fill="both", expand=True, pady=(14, 0))
         community_heading = ui.CTkLabel(
             self.community_card,
-            text="♣  Community",
+            text="Community",
+            image=self.icons.get("community"),
+            compound="left",
             font=(FONT, 18, "bold"),
             text_color=INK,
             fg_color=BLUE,
@@ -346,6 +481,8 @@ class ChatRoomTab:
         ui.CTkLabel(
             self.header,
             text=f"▤  {room_name}",
+            image=_load_icons().get("chat"),
+            compound="left",
             font=(FONT, 20, "bold"),
             text_color=INK,
             anchor="w",
@@ -403,7 +540,9 @@ class MainChatWindow:
         self.title.grid(row=0, column=0, sticky="w", padx=18, pady=(14, 6))
         self.logout = ui.CTkButton(
             self.frame,
-            text="⇥\nLogout",
+            text="Logout",
+            image=_load_icons().get("logout"),
+            compound="top",
             width=70,
             height=58,
             fg_color="#FFC8B7",
@@ -442,7 +581,15 @@ class MainChatWindow:
 class ChatApplication:
     """Application composition root and Tk ``after`` event poller."""
 
-    def __init__(self, session: ClientSession | None = None) -> None:
+    def __init__(
+        self,
+        session: ClientSession | None = None,
+        host: str | None = None,
+        port: str | None = None,
+    ) -> None:
+        load_dotenv(dotenv_path=Path(__file__).resolve().with_name(".env"))
+        host = host or os.getenv("CHAT_SERVER_HOST", "127.0.0.1")
+        port = port or os.getenv("CHAT_SERVER_PORT", "5000")
         ui = _require_ctk()
         ui.set_appearance_mode("light")
         self.root = ui.CTk()
@@ -451,7 +598,7 @@ class ChatApplication:
         self.root.geometry("1080x700")
         self.root.configure(fg_color=BACKGROUND)
         self.controller = GuiController(session or ClientSession(), self._refresh)
-        self.login = LoginView(self.root, self._connect)
+        self.login = LoginView(self.root, self._connect, host=host, port=port)
         self.login.frame.place(relx=0.5, rely=0.5, anchor="center")
         self.main: MainChatWindow | None = None
         self.root.protocol("WM_DELETE_WINDOW", self._close)
@@ -488,8 +635,10 @@ class ChatApplication:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Simple Chat Application GUI")
-    parser.parse_args()
-    ChatApplication().run()
+    parser.add_argument("--host", default=None, help="Override CHAT_SERVER_HOST from .env")
+    parser.add_argument("--port", default=None, help="Override CHAT_SERVER_PORT from .env")
+    args = parser.parse_args()
+    ChatApplication(host=args.host, port=args.port).run()
 
 
 if __name__ == "__main__":
