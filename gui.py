@@ -1258,6 +1258,9 @@ class MainChatWindow:
             self.rooms[group_name].frame.pack(fill="both", expand=True)
         self.tabs.set(group_name)
         self._active_room = group_name
+        segmented_button = getattr(self.tabs, "_segmented_button", None)
+        if segmented_button is not None:
+            segmented_button.grid_forget()
 
     def _send_private_message(self, peer: str, message: str) -> None:
         msg_id = self.controller.send_private_message(peer, message)
