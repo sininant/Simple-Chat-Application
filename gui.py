@@ -483,16 +483,142 @@ class SidebarPanel:
             border_color=INK,
             border_width=1,
             text_color=INK,
-            state="disabled",
+            command=self._open_group_dialog,
         )
         self.new_group_button.place(relx=1.0, x=-10, y=9, anchor="ne")
         self.groups = ui.CTkFrame(self.community_card, fg_color=BACKGROUND, corner_radius=10)
         self.groups.pack(fill="both", expand=True, padx=4, pady=(0, 4))
-        ui.CTkLabel(
+        self.group_placeholder = ui.CTkLabel(
             self.groups,
             text="Group rooms will appear here.",
             text_color=INK,
-        ).pack(pady=(12, 0))
+        )
+        self.group_placeholder.pack(pady=(12, 0))
+        self.group_rows: dict[str, Any] = {}
+
+    def _open_group_dialog(self) -> None:
+        """Open the local create-group dialog until server group wiring is added."""
+        ui = _require_ctk()
+        dialog = ui.CTkToplevel(self.frame.winfo_toplevel())
+        dialog.withdraw()
+        dialog.overrideredirect(True)
+        width, height = 470, 250
+        dialog.geometry(f"{width}x{height}")
+        dialog.resizable(False, False)
+        dialog.transient(self.frame.winfo_toplevel())
+        dialog.grab_set()
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+
+        card = ui.CTkFrame(
+            dialog, fg_color=WHITE, border_color=INK, border_width=2, corner_radius=14
+        )
+        card.pack(fill="both", expand=True)
+        header = tk.Canvas(card, height=58, bg=WHITE, highlightthickness=0, bd=0)
+        header.pack(fill="x")
+        header.bind("<Configure>", lambda _event: self._draw_group_dialog_header(header))
+        header.bind("<ButtonPress-1>", lambda event: self._start_dialog_drag(dialog, event))
+        header.bind("<B1-Motion>", lambda event: self._drag_dialog(dialog, event))
+
+        name_entry = ui.CTkEntry(
+            card,
+            placeholder_text="Enter Group Name",
+            height=38,
+            font=(FONT, 18),
+            fg_color=PINK_LIGHT,
+            border_color=INK,
+            border_width=1,
+            corner_radius=19,
+        )
+        name_entry.pack(fill="x", padx=38, pady=(22, 14))
+        ui.CTkButton(
+            card,
+            text="Create",
+            width=180,
+            height=50,
+            fg_color=BLUE,
+            hover_color="#91D5DF",
+            text_color=INK,
+            border_color=INK,
+            border_width=1,
+            corner_radius=12,
+            font=(FONT, 16, "bold"),
+            command=lambda: self._create_group(name_entry, dialog),
+        ).pack()
+        name_entry.focus_set()
+        dialog.after(0, lambda: self._center_group_dialog(dialog, width, height))
+
+    def _center_group_dialog(self, dialog: Any, width: int, height: int) -> None:
+        parent = self.frame.winfo_toplevel()
+        parent.update_idletasks()
+        x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - height) // 2
+        dialog.geometry(f"{width}x{height}+{max(x, 0)}+{max(y, 0)}")
+        dialog.deiconify()
+
+    def _start_dialog_drag(self, dialog: Any, event: Any) -> None:
+        dialog._drag_offset = (event.x_root - dialog.winfo_x(), event.y_root - dialog.winfo_y())
+
+    def _drag_dialog(self, dialog: Any, event: Any) -> None:
+        offset_x, offset_y = getattr(dialog, "_drag_offset", (0, 0))
+        dialog.geometry(f"+{event.x_root - offset_x}+{event.y_root - offset_y}")
+
+    def _draw_group_dialog_header(self, canvas: Any) -> None:
+        width = max(canvas.winfo_width(), 10)
+        height = max(canvas.winfo_height(), 10)
+        canvas.delete("all")
+        radius = min(14, height // 2)
+        canvas.create_rectangle(0, radius, width, height, fill=BLUE, outline=BLUE)
+        canvas.create_rectangle(radius, 0, width - radius, height, fill=BLUE, outline=BLUE)
+        canvas.create_arc(
+            0, 0, radius * 2, radius * 2, start=90, extent=90, fill=BLUE, outline=BLUE
+        )
+        canvas.create_arc(
+            width - radius * 2,
+            0,
+            width,
+            radius * 2,
+            start=0,
+            extent=90,
+            fill=BLUE,
+            outline=BLUE,
+        )
+        canvas.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
+        canvas.create_text(
+            24,
+            height // 2,
+            text="Create New Group",
+            fill=INK,
+            font=(FONT, 24, "bold"),
+            anchor="w",
+        )
+
+    def _create_group(self, entry: Any, dialog: Any) -> None:
+        name = entry.get().strip()
+        if not name:
+            return
+        if name in self.group_rows:
+            dialog.destroy()
+            return
+        self.group_placeholder.pack_forget()
+        row = _require_ctk().CTkButton(
+            self.groups,
+            text=name,
+            image=self.avatars.get("dog"),
+            compound="left",
+            anchor="w",
+            border_spacing=14,
+            height=52,
+            corner_radius=0,
+            font=(FONT, 16, "bold"),
+            fg_color=PINK_LIGHT,
+            hover_color=PINK_LIGHT,
+            text_color=INK,
+            command=lambda group=name: self.on_chat(group),
+        )
+        row.pack(fill="x", padx=0, pady=0)
+        _require_ctk().CTkFrame(self.groups, height=2, fg_color=INK).pack(fill="x")
+        self.group_rows[name] = row
+        dialog.destroy()
 
     def _draw_card_header(self, canvas: Any, fill: str, title: str, icon_name: str) -> None:
         """Draw a rounded top header without changing the card body."""
@@ -839,6 +965,9 @@ class MainChatWindow:
         self.sidebar.frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         self.tabs = ui.CTkTabview(self.content, fg_color=PINK_LIGHT)
         self.tabs.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        segmented_button = getattr(self.tabs, "_segmented_button", None)
+        if segmented_button is not None:
+            segmented_button.grid_remove()
         self.rooms: dict[str, ChatRoomTab] = {}
         self.frame.bind("<Configure>", self._resize_content)
 
