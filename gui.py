@@ -34,11 +34,15 @@ except ImportError:  # pragma: no cover - exercised only on machines without GUI
 from client import ClientSession
 from protocol import (
     EVENT_CONNECT,
+    EVENT_GROUP_ERROR,
+    EVENT_GROUP_LIST,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    GroupErrorPayload,
+    GroupListPayload,
     PrivateMessageServerPayload,
     ReadAckServerPayload,
     RegisterAckPayload,
@@ -74,6 +78,10 @@ class SessionPort(Protocol):
 
     def send_read_ack(self, message_id: str, target: str) -> bool: ...
 
+    def create_group(self, group_name: str) -> bool: ...
+
+    def join_group(self, group_name: str) -> bool: ...
+
 
 class GuiController:
     """Headless adapter that owns GUI-facing login, presence, and chat message state."""
@@ -85,6 +93,8 @@ class GuiController:
         self.avatar = "rabbit"
         self.online_users: list[str] = []
         self.online_avatars: dict[str, str] = {}
+        self.groups: list[dict[str, Any]] = []
+        self.group_error: str | None = None
         self.login_error: str | None = None
         self.private_messages: dict[str, list[PrivateMessageServerPayload]] = {}
         self.on_private_message: Callable[[str, PrivateMessageServerPayload], None] | None = None
@@ -105,6 +115,16 @@ class GuiController:
         if send_fn is None:
             return False
         return send_fn(message_id, target)
+
+    def create_group(self, group_name: str) -> bool:
+        """Request a group whose initial member is the local user (R8)."""
+        create_fn = getattr(self.session, "create_group", None)
+        return bool(create_fn and create_fn(group_name))
+
+    def join_group(self, group_name: str) -> bool:
+        """Request that the local user voluntarily joins a group (R10)."""
+        join_fn = getattr(self.session, "join_group", None)
+        return bool(join_fn and join_fn(group_name))
 
     def connect_and_register(
         self, host: str, port: str, username: str, avatar: str = "rabbit"
@@ -151,6 +171,13 @@ class GuiController:
             elif event_name == EVENT_USER_LIST and isinstance(payload, UserListPayload):
                 self.online_users = list(payload.users)
                 self.online_avatars = dict(payload.avatars)
+                changed = True
+            elif event_name == EVENT_GROUP_LIST and isinstance(payload, GroupListPayload):
+                self.groups = [group.to_dict() for group in payload.groups]
+                self.group_error = None
+                changed = True
+            elif event_name == EVENT_GROUP_ERROR and isinstance(payload, GroupErrorPayload):
+                self.group_error = payload.error
                 changed = True
             elif event_name == EVENT_PRIVATE_MSG and isinstance(
                 payload, PrivateMessageServerPayload
@@ -463,12 +490,22 @@ class AnnouncementBanner:
 
 
 class SidebarPanel:
-    """Reusable responsive presence and group placeholder panel."""
+    """Reusable responsive presence and server-backed group discovery panel."""
 
-    def __init__(self, parent: Any, on_chat: Callable[[str], None]) -> None:
+    def __init__(
+        self,
+        parent: Any,
+        on_chat: Callable[[str], None],
+        on_create_group: Callable[[str], bool],
+        on_join_group: Callable[[str], bool],
+        on_open_group: Callable[[str], None],
+    ) -> None:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, width=380, fg_color="transparent")
         self.on_chat = on_chat
+        self.on_create_group = on_create_group
+        self.on_join_group = on_join_group
+        self.on_open_group = on_open_group
         self.avatars = _load_avatars((42, 42))
         self.avatar = self.avatars.get("rabbit")
         self.icons = _load_icons((30, 30))
@@ -543,7 +580,7 @@ class SidebarPanel:
         self.group_rows: dict[str, Any] = {}
 
     def _open_group_dialog(self) -> None:
-        """Open the local create-group dialog until server group wiring is added."""
+        """Open the dialog for a server-backed group creation request."""
         ui = _require_ctk()
         if (
             hasattr(self, "_active_dialog")
@@ -676,39 +713,67 @@ class SidebarPanel:
 
     def _create_group(self, entry: Any, dialog: Any) -> None:
         name = entry.get().strip()
-        if not name:
+        if not name or not self.on_create_group(name):
             return
-        if name in self.group_rows:
-            try:
-                dialog.grab_release()
-            except Exception:
-                pass
-            dialog.destroy()
-            return
-        self.group_placeholder.pack_forget()
-        row = _require_ctk().CTkButton(
-            self.groups,
-            text=name,
-            image=self.avatars.get("dog"),
-            compound="left",
-            anchor="w",
-            border_spacing=14,
-            height=52,
-            corner_radius=0,
-            font=(FONT, 16, "bold"),
-            fg_color=PINK_LIGHT,
-            hover_color=PINK_LIGHT,
-            text_color=INK,
-            command=lambda group=name: self.on_chat(group),
-        )
-        row.pack(fill="x", padx=0, pady=0)
-        _require_ctk().CTkFrame(self.groups, height=2, fg_color=INK).pack(fill="x")
-        self.group_rows[name] = row
         try:
             dialog.grab_release()
         except Exception:
             pass
         dialog.destroy()
+
+    def set_groups(
+        self, groups: list[dict[str, Any]], current_user: str | None, error: str | None = None
+    ) -> None:
+        """Render current member lists with an explicit Join or Open action (R9/R10)."""
+        for child in self.groups.winfo_children():
+            child.destroy()
+        self.group_rows.clear()
+        if not groups:
+            self.group_placeholder = _require_ctk().CTkLabel(
+                self.groups, text="No groups yet. Create one to get started!", text_color=INK
+            )
+            self.group_placeholder.pack(pady=(12, 0))
+            return
+
+        for group in groups:
+            name = str(group["group_name"])
+            members = list(group["members"])
+            joined = current_user in members
+            row = _require_ctk().CTkFrame(self.groups, fg_color=PINK_LIGHT, corner_radius=8)
+            row.pack(fill="x", padx=4, pady=3)
+            _require_ctk().CTkLabel(
+                row, text=name, font=(FONT, 15, "bold"), text_color=INK, anchor="w"
+            ).pack(fill="x", padx=10, pady=(7, 0))
+            _require_ctk().CTkLabel(
+                row,
+                text="Members: " + ", ".join(members),
+                font=(FONT, 11),
+                text_color=INK,
+                anchor="w",
+                wraplength=220,
+            ).pack(fill="x", padx=10, pady=(1, 7))
+            action = "Open" if joined else "Join"
+            command = (
+                (lambda group_name=name: self.on_open_group(group_name))
+                if joined
+                else (lambda group_name=name: self.on_join_group(group_name))
+            )
+            _require_ctk().CTkButton(
+                row,
+                text=action,
+                width=66,
+                height=27,
+                corner_radius=13,
+                fg_color=BLUE,
+                hover_color="#91D5DF",
+                text_color=INK,
+                command=command,
+            ).place(relx=1.0, x=-9, y=9, anchor="ne")
+            self.group_rows[name] = row
+        if error:
+            _require_ctk().CTkLabel(
+                self.groups, text=error, text_color="#B22222", wraplength=300
+            ).pack(fill="x", padx=8, pady=(6, 2))
 
     def _draw_card_header(self, canvas: Any, fill: str, title: str, icon_name: str) -> None:
         """Draw a rounded top header without changing the card body."""
@@ -1115,7 +1180,13 @@ class MainChatWindow:
         self.banner = AnnouncementBanner(self.content)
         self.banner.frame.grid(row=0, column=0, columnspan=3, sticky="ew")
         self.banner.frame.grid_remove()
-        self.sidebar = SidebarPanel(self.content, self.open_private_room)
+        self.sidebar = SidebarPanel(
+            self.content,
+            self.open_private_room,
+            self.controller.create_group,
+            self.controller.join_group,
+            self.open_group_room,
+        )
         self.sidebar.frame.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
         self.tabs = ui.CTkTabview(self.content, fg_color=BACKGROUND)
         self.tabs.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
@@ -1149,6 +1220,9 @@ class MainChatWindow:
             self.controller.username,
             self.controller.online_avatars,
             self._active_room,
+        )
+        self.sidebar.set_groups(
+            self.controller.groups, self.controller.username, self.controller.group_error
         )
         peers = [user for user in self.controller.online_users if user != self.controller.username]
         if peers and not self.rooms:
@@ -1186,6 +1260,15 @@ class MainChatWindow:
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
             segmented_button.grid_forget()
+
+    def open_group_room(self, group_name: str) -> None:
+        """Open a joined Group Room; group message transport is introduced in R11."""
+        if group_name not in self.rooms:
+            tab = self.tabs.add(group_name)
+            self.rooms[group_name] = ChatRoomTab(tab, group_name, on_send=lambda _message: None)
+            self.rooms[group_name].frame.pack(fill="both", expand=True)
+        self.tabs.set(group_name)
+        self._active_room = group_name
 
     def _send_private_message(self, peer: str, message: str) -> None:
         msg_id = self.controller.send_private_message(peer, message)
