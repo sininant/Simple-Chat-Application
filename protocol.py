@@ -31,6 +31,7 @@ EVENT_PRIVATE_MSG_ERROR = "private_message_error"
 EVENT_CREATE_GROUP = "create_group"
 EVENT_JOIN_GROUP = "join_group"
 EVENT_GROUP_LIST = "group_list"
+EVENT_GROUP_ERROR = "group_error"
 EVENT_GROUP_MSG = "group_message"
 
 # Special Points (SP1 - SP4)
@@ -467,6 +468,24 @@ class GroupListPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class GroupErrorPayload:
+    """Server -> Requesting Client: Explain a rejected group request."""
+
+    error: str
+
+    @classmethod
+    def from_dict(cls, data: Any) -> Self:
+        d = _ensure_dict(data)
+        error = d.get("error")
+        if not isinstance(error, str) or not error:
+            raise ProtocolValidationError("Group error must be a non-empty string", field="error")
+        return cls(error=error)
+
+    def to_dict(self) -> dict[str, str]:
+        return {"error": self.error}
+
+
+@dataclass(frozen=True, slots=True)
 class GroupMessagePayload:
     """Client -> Server: Post message to a joined group room (R11)."""
 
@@ -668,6 +687,7 @@ ServerPayload = (
     | UserListPayload
     | PrivateMessageServerPayload
     | GroupListPayload
+    | GroupErrorPayload
     | GroupMessageServerPayload
     | StickerMessageServerPayload
     | AnnouncementPayload
@@ -689,6 +709,7 @@ SERVER_EVENT_PAYLOAD_MAP: dict[str, type] = {
     EVENT_USER_LIST: UserListPayload,
     EVENT_PRIVATE_MSG: PrivateMessageServerPayload,
     EVENT_GROUP_LIST: GroupListPayload,
+    EVENT_GROUP_ERROR: GroupErrorPayload,
     EVENT_GROUP_MSG: GroupMessageServerPayload,
     EVENT_STICKER_MSG: StickerMessageServerPayload,
     EVENT_ANNOUNCEMENT: AnnouncementPayload,

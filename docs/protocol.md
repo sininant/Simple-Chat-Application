@@ -55,6 +55,7 @@ the rabbit character for every listed user.
 | `create_group` | Client -> Server | `{"group_name": "StudyGroup"}` | Creates a new chat group; server adds creator via `sio.enter_room(sid, group_name)` as sole initial member (`R8`), then broadcasts `group_list`. |
 | `join_group` | Client -> Server | `{"group_name": "StudyGroup"}` | Client voluntarily joins an existing group (`R10`); server adds user to room via `sio.enter_room(sid, group_name)` and broadcasts updated `group_list`. |
 | `group_list` | Server -> All Clients | `{"groups": [{"group_name": "StudyGroup", "members": ["Alice", "Bob"]}]}` | Broadcast listing all existing groups and their current member lists (`R9`). |
+| `group_error` | Server -> Requesting Client | `{"error": "Group name already exists"}` | Rejects an invalid, duplicate, or otherwise unavailable group create/join request. |
 | `group_message` | Client -> Server | `{"group_name": "StudyGroup", "message": "Hello all!", "message_id": "MSG_002", "timestamp": "14:32"}` | Client sends a message to a joined group (`R11`). |
 | `group_message` | Server -> Group Room | `{"sender": "Alice", "group_name": "StudyGroup", "message": "Hello all!", "message_id": "MSG_002", "timestamp": "14:32"}` | Server emits message exclusively to members in that room (`sio.emit(..., room=group_name)`) (`R11`). |
 
