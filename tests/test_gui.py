@@ -72,6 +72,22 @@ def test_controller_applies_queued_login_and_presence_events():
     assert controller.login_error is None
 
 
+def test_controller_adds_the_registered_user_before_the_first_presence_update():
+    session = SessionSpy(
+        [
+            (
+                EVENT_REGISTER_ACK,
+                RegisterAckPayload(success=True, username="Alice", message="Welcome"),
+            )
+        ]
+    )
+    controller = GuiController(session)
+
+    controller.poll_events()
+
+    assert controller.online_users == ["Alice"]
+
+
 def test_controller_exposes_login_rejection_inline():
     session = SessionSpy(
         [(EVENT_REGISTER_ACK, RegisterAckPayload(success=False, error="Username already taken"))]

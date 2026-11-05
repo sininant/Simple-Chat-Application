@@ -40,7 +40,7 @@ from protocol import (
 
 BACKGROUND = "#FFFCF8"
 PINK = "#FF9FBF"
-PINK_LIGHT = "#FCECF5"
+PINK_LIGHT = "#F9EEF4"
 YELLOW = "#FFE79F"
 BLUE = "#BAE7EF"
 INK = "#5C4B41"
@@ -65,6 +65,7 @@ class GuiController:
         self.session = session
         self.on_change = on_change
         self.username: str | None = None
+        self.avatar = "rabbit"
         self.online_users: list[str] = []
         self.login_error: str | None = None
 
@@ -100,6 +101,8 @@ class GuiController:
             if event_name == EVENT_REGISTER_ACK and isinstance(payload, RegisterAckPayload):
                 if payload.success:
                     self.username = payload.username
+                    if payload.username not in self.online_users:
+                        self.online_users.append(payload.username)
                     self.login_error = None
                 else:
                     self.login_error = payload.error or "Login was rejected."
@@ -155,7 +158,16 @@ def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
         return {}
     root = Path(__file__).resolve().parent
     icons: dict[str, Any] = {}
-    for name in ("friends", "community", "chat", "notification", "logout"):
+    for name in (
+        "friends",
+        "community",
+        "chat",
+        "notification",
+        "logout",
+        "sticker",
+        "send",
+        "microphone",
+    ):
         path = root / "assets" / f"icon_{name}.png"
         if path.is_file():
             image = Image.open(path).convert("RGBA")
@@ -165,10 +177,28 @@ def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
                 "chat": (25, 25),
                 "notification": (17, 20),
                 "logout": (23, 23),
+                "sticker": (24, 24),
+                "send": (28, 24),
+                "microphone": (20, 24),
             }
             icon_size = intrinsic_sizes.get(name, size)
             icons[name] = ctk.CTkImage(light_image=image, dark_image=image, size=icon_size)
     return icons
+
+
+def _load_icon_photos() -> dict[str, Any]:
+    """Load exact-size icon photos for Tk Canvas headers."""
+    if Image is None or ImageTk is None:
+        return {}
+    root = Path(__file__).resolve().parent
+    sizes = {"friends": (25, 25), "community": (30, 15), "chat": (25, 25)}
+    photos: dict[str, Any] = {}
+    for name, size in sizes.items():
+        path = root / "assets" / f"icon_{name}.png"
+        if path.is_file():
+            image = Image.open(path).convert("RGBA").resize(size)
+            photos[name] = ImageTk.PhotoImage(image)
+    return photos
 
 
 class LoginView:
@@ -177,7 +207,7 @@ class LoginView:
     def __init__(
         self,
         parent: Any,
-        on_connect: Callable[[str, str, str], None],
+        on_connect: Callable[[str, str, str, str], None],
         host: str = "127.0.0.1",
         port: str = "5000",
     ) -> None:
@@ -191,7 +221,7 @@ class LoginView:
             border_width=3,
             corner_radius=16,
             width=600,
-            height=560,
+            height=650,
         )
         self.frame.grid_columnconfigure(0, weight=1)
         self.frame.grid_propagate(False)
@@ -220,17 +250,43 @@ class LoginView:
             font=(FONT, 24),
         )
         self.username.grid(row=2, column=0, padx=54, pady=(0, 22), sticky="ew")
+        connection = ui.CTkFrame(self.frame, fg_color="transparent")
+        connection.grid(row=3, column=0, padx=54, pady=(0, 18), sticky="ew")
+        connection.grid_columnconfigure(0, weight=3)
+        connection.grid_columnconfigure(1, weight=1)
+        self.host_entry = ui.CTkEntry(
+            connection,
+            placeholder_text="Server host",
+            border_color=PINK,
+            border_width=2,
+            fg_color=WHITE,
+            height=36,
+            font=(FONT, 16),
+        )
+        self.host_entry.insert(0, host)
+        self.host_entry.grid(row=0, column=0, padx=(0, 8), sticky="ew")
+        self.port_entry = ui.CTkEntry(
+            connection,
+            placeholder_text="Port",
+            border_color=PINK,
+            border_width=2,
+            fg_color=WHITE,
+            height=36,
+            font=(FONT, 16),
+        )
+        self.port_entry.insert(0, port)
+        self.port_entry.grid(row=0, column=1, sticky="ew")
         ui.CTkLabel(
             self.frame,
             text="Choose your character",
             font=(FONT, 24, "bold"),
             text_color=INK,
             anchor="w",
-        ).grid(row=3, column=0, padx=54, pady=(0, 14), sticky="w")
+        ).grid(row=4, column=0, padx=54, pady=(0, 14), sticky="w")
         self.character = "rabbit"
         self.character_buttons: dict[str, Any] = {}
         character_row = ui.CTkFrame(self.frame, fg_color="transparent")
-        character_row.grid(row=4, column=0, padx=54, pady=(10, 10), sticky="ew")
+        character_row.grid(row=5, column=0, padx=54, pady=(10, 10), sticky="ew")
         character_row.grid_columnconfigure((0, 1, 2), weight=1)
         for index, name in enumerate(("cat", "dog", "rabbit")):
             canvas = tk.Canvas(
@@ -248,9 +304,9 @@ class LoginView:
             )
             self.character_buttons[name] = canvas
         self.selection_line = ui.CTkFrame(self.frame, fg_color=INK, height=4, corner_radius=2)
-        self.selection_line.grid(row=5, column=0, padx=56, pady=(10, 20), sticky="w")
+        self.selection_line.grid(row=6, column=0, padx=56, pady=(10, 20), sticky="w")
         self.error = ui.CTkLabel(self.frame, text="", text_color="#C64B68", wraplength=300)
-        self.error.grid(row=6, column=0, padx=54, pady=(1, 1))
+        self.error.grid(row=7, column=0, padx=54, pady=(1, 1))
         ui.CTkButton(
             self.frame,
             text="Create",
@@ -259,8 +315,10 @@ class LoginView:
             text_color="white",
             height=44,
             font=(FONT, 24, "bold"),
-            command=lambda: on_connect(self.host, self.port, self.username.get()),
-        ).grid(row=7, column=0, padx=54, pady=(24, 16), sticky="ew")
+            command=lambda: on_connect(
+                self.host_entry.get(), self.port_entry.get(), self.username.get(), self.character
+            ),
+        ).grid(row=8, column=0, padx=54, pady=(20, 16), sticky="ew")
 
     def _choose_character(self, character: str) -> None:
         self.character = character
@@ -365,75 +423,155 @@ class SidebarPanel:
 
     def __init__(self, parent: Any, on_chat: Callable[[str], None]) -> None:
         ui = _require_ctk()
-        self.frame = ui.CTkFrame(parent, fg_color="transparent")
+        self.frame = ui.CTkFrame(parent, width=380, fg_color="transparent")
         self.on_chat = on_chat
-        self.avatar = _load_avatars().get("rabbit")
-        self.icons = _load_icons((36, 36))
+        self.avatars = _load_avatars((42, 42))
+        self.avatar = self.avatars.get("rabbit")
+        self.icons = _load_icons((30, 30))
+        self.icon_photos = _load_icon_photos()
         self.friends_card = ui.CTkFrame(
-            self.frame, fg_color=BACKGROUND, border_color=INK, border_width=2, corner_radius=14
+            self.frame,
+            height=270,
+            fg_color=WHITE,
+            border_color=INK,
+            border_width=2,
+            corner_radius=14,
         )
-        self.friends_card.pack(fill="both", expand=True)
-        friends_heading = ui.CTkLabel(
-            self.friends_card,
-            text="Friends",
-            image=self.icons.get("friends"),
-            compound="left",
-            font=(FONT, 20, "bold"),
-            text_color=INK,
-            fg_color=YELLOW,
-            corner_radius=10,
-            anchor="w",
+        self.friends_card.pack(fill="x")
+        self.friends_card.pack_propagate(False)
+        self.friends_header = tk.Canvas(
+            self.friends_card, height=48, bg=BACKGROUND, highlightthickness=0, bd=0
         )
-        friends_heading.pack(fill="x", padx=2, pady=2, ipadx=26)
-        self.users = ui.CTkScrollableFrame(self.friends_card, fg_color=BACKGROUND, height=220)
-        self.users.pack(fill="both", expand=True, padx=8, pady=8)
+        self.friends_header.pack(fill="x")
+        self.friends_header.bind(
+            "<Configure>",
+            lambda _event: self._draw_card_header(
+                self.friends_header, YELLOW, "Friends", "friends"
+            ),
+        )
+        self.users = ui.CTkFrame(self.friends_card, fg_color=BACKGROUND, corner_radius=0)
+        self.users.pack(fill="both", expand=True, padx=4, pady=(0, 4))
         self.community_card = ui.CTkFrame(
-            self.frame, fg_color=BACKGROUND, border_color=INK, border_width=2, corner_radius=14
+            self.frame,
+            height=270,
+            fg_color=WHITE,
+            border_color=INK,
+            border_width=2,
+            corner_radius=14,
         )
-        self.community_card.pack(fill="both", expand=True, pady=(14, 0))
-        community_header = ui.CTkFrame(self.community_card, fg_color=BLUE, corner_radius=10)
-        community_header.pack(fill="x", padx=2, pady=(8, 2))
-        community_heading = ui.CTkLabel(
-            community_header,
-            text="Community",
-            image=self.icons.get("community"),
-            compound="left",
-            font=(FONT, 18, "bold"),
-            text_color=INK,
-            fg_color=BLUE,
-            anchor="w",
+        self.community_card.pack(fill="x", pady=(14, 0))
+        self.community_card.pack_propagate(False)
+        self.community_header = tk.Canvas(
+            self.community_card, height=48, bg=BACKGROUND, highlightthickness=0, bd=0
         )
-        community_heading.pack(side="left", fill="x", expand=True, padx=(26, 6), pady=4)
-        ui.CTkButton(
-            community_header,
+        self.community_header.pack(fill="x")
+        self.community_header.bind(
+            "<Configure>",
+            lambda _event: self._draw_card_header(
+                self.community_header, BLUE, "Community", "community"
+            ),
+        )
+        self.new_group_button = ui.CTkButton(
+            self.community_card,
             text="＋ New Group",
-            font=(FONT, 14),
-            width=120,
-            fg_color="white",
+            font=(FONT, 13),
+            width=114,
+            height=30,
+            corner_radius=15,
+            bg_color=BLUE,
+            fg_color=WHITE,
             border_color=INK,
             border_width=1,
             text_color=INK,
-            command=_noop,
-        ).pack(side="right", padx=(4, 12), pady=4)
-        ui.CTkLabel(self.community_card, text="Group rooms will appear here.", text_color=INK).pack(
-            pady=(8, 16)
+            state="disabled",
+        )
+        self.new_group_button.place(relx=1.0, x=-10, y=9, anchor="ne")
+        self.groups = ui.CTkFrame(self.community_card, fg_color=BACKGROUND, corner_radius=10)
+        self.groups.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        ui.CTkLabel(
+            self.groups,
+            text="Group rooms will appear here.",
+            text_color=INK,
+        ).pack(pady=(12, 0))
+
+    def _draw_card_header(self, canvas: Any, fill: str, title: str, icon_name: str) -> None:
+        """Draw a rounded top header without changing the card body."""
+        width = max(canvas.winfo_width(), 10)
+        height = max(canvas.winfo_height(), 10)
+        canvas.delete("all")
+
+        def draw_top(color: str, inset: int, radius: int) -> None:
+            right = width - inset
+            bottom = height - inset
+            canvas.create_rectangle(inset, inset + radius, right, bottom, fill=color, outline=color)
+            canvas.create_rectangle(
+                inset + radius, inset, right - radius, bottom, fill=color, outline=color
+            )
+            canvas.create_arc(
+                inset,
+                inset,
+                inset + radius * 2,
+                inset + radius * 2,
+                start=90,
+                extent=90,
+                fill=color,
+                outline=color,
+            )
+            canvas.create_arc(
+                right - radius * 2,
+                inset,
+                right,
+                inset + radius * 2,
+                start=0,
+                extent=90,
+                fill=color,
+                outline=color,
+            )
+
+        radius = min(14, height // 2)
+        draw_top(INK, 0, radius)
+        draw_top(fill, 2, max(radius - 2, 1))
+        canvas.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
+        icon = self.icon_photos.get(icon_name)
+        if icon:
+            canvas.create_image(24, height // 2, image=icon)
+        canvas.create_text(
+            44,
+            height // 2,
+            text=title,
+            fill=INK,
+            font=(FONT, 18, "bold"),
+            anchor="w",
         )
 
-    def set_users(self, users: list[str], current_user: str | None) -> None:
+    def set_users(
+        self, users: list[str], current_user: str | None, current_avatar: str = "rabbit"
+    ) -> None:
         for child in self.users.winfo_children():
             child.destroy()
         for user in users:
             label = f"{user} (You)" if user == current_user else user
+            avatar_name = current_avatar if user == current_user else user.lower()
+            avatar = self.avatars.get(avatar_name, self.avatar)
             button = _require_ctk().CTkButton(
                 self.users,
                 text=label,
-                image=self.avatar,
+                image=avatar,
+                compound="left",
                 anchor="w",
+                border_spacing=14,
+                height=52,
+                corner_radius=0,
+                font=(FONT, 16),
                 fg_color=PINK_LIGHT if user == current_user else "transparent",
+                hover_color=PINK_LIGHT,
                 text_color=INK,
                 command=lambda name=user: self.on_chat(name),
             )
-            button.pack(fill="x", pady=3)
+            button.pack(fill="x", padx=0, pady=(0, 1))
+            _require_ctk().CTkFrame(self.users, height=2, fg_color=INK, corner_radius=0).pack(
+                fill="x", padx=0, pady=0
+            )
 
 
 class MessageBubble:
@@ -442,16 +580,23 @@ class MessageBubble:
     def __init__(self, parent: Any, sender: str, message: str, own: bool = False) -> None:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, fg_color="transparent")
-        bubble = ui.CTkLabel(
+        bubble_shell = ui.CTkFrame(
             self.frame,
-            text=f"{sender}\n{message}",
+            fg_color=PINK if own else PINK_LIGHT,
+            border_color=INK,
+            border_width=2,
+            corner_radius=16,
+        )
+        bubble = ui.CTkLabel(
+            bubble_shell,
+            text=message,
             justify="left",
             wraplength=310,
             text_color=INK,
-            fg_color=PINK if own else PINK_LIGHT,
-            corner_radius=16,
+            fg_color="transparent",
         )
-        bubble.pack(anchor="e" if own else "w", padx=8, pady=4)
+        bubble.pack(padx=12, pady=7)
+        bubble_shell.pack(anchor="e" if own else "w", padx=8, pady=4)
 
 
 class ChatBoxBar:
@@ -467,49 +612,163 @@ class ChatBoxBar:
         ui = _require_ctk()
         on_sticker = on_sticker or _noop
         on_microphone = on_microphone or _noop
-        self.frame = ui.CTkFrame(parent, fg_color=PINK_LIGHT)
-        self.entry = ui.CTkEntry(self.frame, placeholder_text="Type a message…", fg_color="white")
-        self.entry.pack(side="left", fill="x", expand=True, padx=8, pady=8)
-        sticker_button = ui.CTkButton(self.frame, text="😊 Sticker", width=82, command=on_sticker)
-        sticker_button.pack(side="left", padx=3)
-        microphone_button = ui.CTkButton(self.frame, text="🎤", width=40, command=on_microphone)
-        microphone_button.pack(side="left", padx=3)
-        send_button = ui.CTkButton(
-            self.frame, text="Send", width=62, command=lambda: on_send(self.entry.get())
+        self.on_send = on_send
+        self.on_microphone = on_microphone
+        self.sticker_icon = _load_icons().get("sticker")
+        self.microphone_icon = _load_icons().get("microphone")
+        self.send_icon = _load_icons().get("send")
+        self.frame = ui.CTkFrame(parent, fg_color=PINK_LIGHT, corner_radius=0)
+        self.entry = ui.CTkEntry(
+            self.frame,
+            placeholder_text="Type a message…",
+            height=34,
+            fg_color=PINK,
+            border_width=0,
+            corner_radius=17,
+            text_color=INK,
         )
-        send_button.pack(side="left", padx=(3, 8))
+        self.entry.pack(side="left", fill="x", expand=True, padx=(10, 4), pady=8)
+        self.entry.bind("<Return>", lambda _event: self._submit())
+        sticker_button = ui.CTkButton(
+            self.frame,
+            text="",
+            image=self.sticker_icon,
+            width=30,
+            height=30,
+            fg_color="transparent",
+            hover_color=PINK,
+            text_color=INK,
+            command=on_sticker,
+        )
+        sticker_button.pack(side="left", padx=2)
+        self.action_button = ui.CTkButton(
+            self.frame,
+            text="",
+            image=self.microphone_icon,
+            width=34,
+            height=30,
+            fg_color="transparent",
+            hover_color=PINK,
+            text_color=INK,
+            command=self._handle_action,
+        )
+        self.action_button.pack(side="left", padx=(2, 8))
+        self.entry.bind("<KeyRelease>", lambda _event: self._update_action_icon())
+
+    def _submit(self) -> None:
+        message = self.entry.get().strip()
+        if message:
+            self.on_send(message)
+
+    def _handle_action(self) -> None:
+        if self.entry.get().strip():
+            self._submit()
+        else:
+            self.on_microphone()
+
+    def _update_action_icon(self) -> None:
+        self.action_button.configure(
+            image=self.send_icon if self.entry.get().strip() else self.microphone_icon
+        )
 
 
 class ChatRoomTab:
     """Reusable R5/R6 tab containing a scrollable ChatWindow and ChatBoxBar."""
 
     def __init__(
-        self, parent: Any, room_name: str, on_send: Callable[[str], None] | None = None
+        self,
+        parent: Any,
+        room_name: str,
+        on_send: Callable[[str], None] | None = None,
+        on_sticker: Callable[[], None] | None = None,
+        on_microphone: Callable[[], None] | None = None,
     ) -> None:
         ui = _require_ctk()
-        self.frame = ui.CTkFrame(parent, fg_color=BACKGROUND, corner_radius=12)
-        self.header = ui.CTkFrame(self.frame, fg_color=PINK, corner_radius=10)
-        self.header.pack(fill="x", padx=6, pady=(6, 0))
-        ui.CTkLabel(
-            self.header,
-            text=room_name,
-            image=_load_icons().get("chat"),
-            compound="left",
-            font=(FONT, 20, "bold"),
-            text_color=INK,
-            anchor="w",
-        ).pack(fill="x", padx=22, pady=9)
-        self.window = ui.CTkScrollableFrame(self.frame, fg_color=BACKGROUND)
-        self.window.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+        self.frame = ui.CTkFrame(
+            parent,
+            fg_color=BACKGROUND,
+            border_color=INK,
+            border_width=2,
+            corner_radius=14,
+        )
+        self.icon_photos = _load_icon_photos()
+        self.header = tk.Canvas(self.frame, height=52, bg=BACKGROUND, highlightthickness=0, bd=0)
+        self.header.pack(fill="x")
+        self.header.bind("<Configure>", lambda _event: self._draw_header(room_name))
+        self.window = ui.CTkScrollableFrame(self.frame, fg_color=BACKGROUND, corner_radius=10)
+        self.window.pack(fill="both", expand=True, padx=4, pady=(4, 0))
         self.on_send = on_send or self._send_local
-        self.box = ChatBoxBar(self.frame, self._send)
-        self.box.frame.pack(fill="x", padx=8, pady=(0, 8))
+        self.box = ChatBoxBar(
+            self.frame,
+            self._send,
+            on_sticker=on_sticker,
+            on_microphone=on_microphone,
+        )
+        self.box.frame.pack(fill="x", padx=4, pady=(0, 4))
         self.room_name = room_name
+
+    def _scroll_to_latest(self) -> None:
+        canvas = getattr(self.window, "_parent_canvas", None)
+        if canvas is not None:
+            self.window.after_idle(lambda: canvas.yview_moveto(1.0))
+
+    def _draw_header(self, title: str) -> None:
+        """Draw the rounded chat header without replacing the main frame."""
+        width = max(self.header.winfo_width(), 10)
+        height = max(self.header.winfo_height(), 10)
+        self.header.delete("all")
+
+        def draw_top(color: str, inset: int, radius: int) -> None:
+            right = width - inset
+            bottom = height - inset
+            self.header.create_rectangle(
+                inset, inset + radius, right, bottom, fill=color, outline=color
+            )
+            self.header.create_rectangle(
+                inset + radius, inset, right - radius, bottom, fill=color, outline=color
+            )
+            self.header.create_arc(
+                inset,
+                inset,
+                inset + radius * 2,
+                inset + radius * 2,
+                start=90,
+                extent=90,
+                fill=color,
+                outline=color,
+            )
+            self.header.create_arc(
+                right - radius * 2,
+                inset,
+                right,
+                inset + radius * 2,
+                start=0,
+                extent=90,
+                fill=color,
+                outline=color,
+            )
+
+        radius = min(14, height // 2)
+        draw_top(INK, 0, radius)
+        draw_top(PINK, 2, max(radius - 2, 1))
+        self.header.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
+        icon = self.icon_photos.get("chat")
+        if icon:
+            self.header.create_image(25, height // 2, image=icon)
+        self.header.create_text(
+            46,
+            height // 2,
+            text=title,
+            fill=INK,
+            font=(FONT, 20, "bold"),
+            anchor="w",
+        )
 
     def _send(self, message: str) -> None:
         if message.strip():
             self.on_send(message)
             self.box.entry.delete(0, "end")
+            self.box._update_action_icon()
 
     def _send_local(self, message: str) -> None:
         """Render a local demonstration message until private transport (R7) is wired."""
@@ -518,6 +777,7 @@ class ChatRoomTab:
     def add_message(self, sender: str, message: str, own: bool = False) -> None:
         bubble = MessageBubble(self.window, sender, message, own)
         bubble.frame.pack(fill="x")
+        self._scroll_to_latest()
 
 
 def _noop() -> None:
@@ -543,39 +803,57 @@ class MainChatWindow:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, fg_color=BACKGROUND)
         self.controller = controller
-        self.frame.grid_columnconfigure(0, weight=0)
-        self.frame.grid_columnconfigure(1, weight=1)
-        self.frame.grid_rowconfigure(2, weight=1)
-        self.title = ui.CTkLabel(
-            self.frame, text="Logged in", font=(FONT, 22, "bold"), text_color=INK
-        )
-        self.title.grid(row=0, column=0, sticky="w", padx=18, pady=(14, 6))
+        self.content = ui.CTkFrame(self.frame, width=900, height=540, fg_color="transparent")
+        self.content.place(relx=0.5, rely=0.5, anchor="center")
+        self.content.grid_propagate(False)
+        self.content.grid_rowconfigure(0, weight=1)
+        self.content.grid_columnconfigure(0, weight=0, minsize=330)
+        self.content.grid_columnconfigure(1, weight=1)
+        self.content.grid_columnconfigure(2, weight=0, minsize=80)
+        self.logout_area = ui.CTkFrame(self.content, fg_color="transparent")
+        self.logout_area.grid(row=0, column=2, sticky="ne", padx=(18, 0), pady=3)
         self.logout = ui.CTkButton(
-            self.frame,
-            text="Logout",
+            self.logout_area,
+            text="",
             image=_load_icons().get("logout"),
-            compound="top",
-            width=70,
-            height=58,
+            width=54,
+            height=54,
+            bg_color=BACKGROUND,
             fg_color="#FFC8B7",
-            hover_color="#F3AE9A",
+            hover_color="#FFC8B7EF",
             text_color=INK,
+            corner_radius=8,
             command=parent.destroy,
         )
-        self.logout.grid(row=0, column=1, sticky="e", padx=18, pady=(10, 6))
-        self.banner = AnnouncementBanner(self.frame)
-        self.banner.frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=18, pady=6)
+        self.logout.pack()
+        ui.CTkLabel(
+            self.logout_area,
+            text="Logout",
+            font=(FONT, 20),
+            text_color=INK,
+        ).pack(pady=(4, 0))
+        self.banner = AnnouncementBanner(self.content)
+        self.banner.frame.grid(row=1, column=0, columnspan=3, sticky="ew")
         self.banner.frame.grid_remove()
-        self.sidebar = SidebarPanel(self.frame, self.open_private_room)
-        self.sidebar.frame.grid(row=2, column=0, sticky="nsew", padx=(18, 8), pady=(6, 18))
-        self.tabs = ui.CTkTabview(self.frame, fg_color=PINK_LIGHT)
-        self.tabs.grid(row=2, column=1, sticky="nsew", padx=(8, 18), pady=(6, 18))
+        self.sidebar = SidebarPanel(self.content, self.open_private_room)
+        self.sidebar.frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.tabs = ui.CTkTabview(self.content, fg_color=PINK_LIGHT)
+        self.tabs.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
         self.rooms: dict[str, ChatRoomTab] = {}
+        self.frame.bind("<Configure>", self._resize_content)
+
+    def _resize_content(self, event: Any) -> None:
+        """Keep the Figma proportions while still adapting to smaller windows."""
+        width = min(920, max(720, int(event.width * 0.82)))
+        height = min(560, max(460, int(event.height * 0.78)))
+        self.content.configure(width=width, height=height)
 
     def refresh(self) -> None:
-        name = self.controller.username or "…"
-        self.title.configure(text=f"Logged in as: {name} (Online)")
-        self.sidebar.set_users(self.controller.online_users, self.controller.username)
+        self.sidebar.set_users(
+            self.controller.online_users,
+            self.controller.username,
+            self.controller.avatar,
+        )
         peers = [user for user in self.controller.online_users if user != self.controller.username]
         if peers and not self.rooms:
             self.open_private_room(peers[0])
@@ -616,7 +894,8 @@ class ChatApplication:
         self.root.protocol("WM_DELETE_WINDOW", self._close)
         self._poll()
 
-    def _connect(self, host: str, port: str, username: str) -> None:
+    def _connect(self, host: str, port: str, username: str, avatar: str) -> None:
+        self.controller.avatar = avatar
         self.controller.connect_and_register(host, port, username)
         self.login.show_error(self.controller.login_error)
 
