@@ -21,6 +21,7 @@ import socketio
 from protocol import (
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
+    EVENT_READ_ACK,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
@@ -28,6 +29,8 @@ from protocol import (
     PrivateMessagePayload,
     PrivateMessageServerPayload,
     ProtocolValidationError,
+    ReadAckClientPayload,
+    ReadAckServerPayload,
     RegisterAckPayload,
     RegisterPayload,
     UserListPayload,
@@ -45,6 +48,20 @@ class RouteResult:
     success: bool
     error: str | None = None
     payload: PrivateMessageServerPayload | None = None
+    target_sid: str | None = None
+
+    def __iter__(self):
+        """Allow 4-element tuple unpacking for backwards compatibility."""
+        return iter((self.success, self.error, self.payload, self.target_sid))
+
+
+@dataclass(frozen=True)
+class ReadAckRouteResult:
+    """Encapsulates the result of routing a 1-to-1 read acknowledgment (SP4)."""
+
+    success: bool
+    error: str | None = None
+    payload: ReadAckServerPayload | None = None
     target_sid: str | None = None
 
     def __iter__(self):
@@ -167,6 +184,38 @@ class ChatEngine:
                 target_sid=target_sid,
             )
 
+    # --- 1-to-1 Read Receipt Routing (SP4) ---
+
+    def route_read_ack(
+        self,
+        reader_sid: str,
+        message_id: str,
+        target: str,
+    ) -> ReadAckRouteResult:
+        """Route a read receipt acknowledgment enforcing Server Trust Boundary (SP4).
+
+        Returns:
+            ReadAckRouteResult: Encapsulates routing decision, verified reader, and target sid.
+        """
+        with self._lock:
+            reader = self._sessions.get(reader_sid)
+            if reader is None:
+                return ReadAckRouteResult(success=False, error="Reader not registered")
+
+            target_sid = self._users.get(target)
+            if target_sid is None:
+                return ReadAckRouteResult(success=False, error=f"Target user '{target}' is offline")
+
+            server_payload = ReadAckServerPayload(
+                message_id=message_id,
+                reader=reader,
+            )
+            return ReadAckRouteResult(
+                success=True,
+                payload=server_payload,
+                target_sid=target_sid,
+            )
+
 
 # -----------------------------------------------------------------------------
 # Multi-Threaded WSGI Server
@@ -267,6 +316,27 @@ class ChatServer:
             self.sio.emit(EVENT_PRIVATE_MSG, outbound_dict, room=result.target_sid)
             if result.target_sid != sid:
                 self.sio.emit(EVENT_PRIVATE_MSG, outbound_dict, room=sid)
+
+        @self.sio.event
+        def read_ack(sid: str, data: Any) -> None:
+            try:
+                payload = parse_client_event(EVENT_READ_ACK, data)
+                assert isinstance(payload, ReadAckClientPayload)
+            except ProtocolValidationError as e:
+                logger.warning("Invalid read_ack from sid=%s: %s", sid, e)
+                return
+
+            result = self.engine.route_read_ack(
+                reader_sid=sid,
+                message_id=payload.message_id,
+                target=payload.target,
+            )
+            if not result.success or result.payload is None or result.target_sid is None:
+                logger.warning("Failed to route read_ack from sid=%s: %s", sid, result.error)
+                return
+
+            # Deliver strictly to original sender (SP4)
+            self.sio.emit(EVENT_READ_ACK, result.payload.to_dict(), room=result.target_sid)
 
     # --- Broadcast Helpers (R4) ---
 

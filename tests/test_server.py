@@ -11,11 +11,12 @@ from client import ClientSession
 from protocol import (
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
+    EVENT_READ_ACK,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
     MessageMeta,
 )
-from server import ChatEngine, ChatServer, RouteResult
+from server import ChatEngine, ChatServer, ReadAckRouteResult, RouteResult
 
 # -----------------------------------------------------------------------------
 # Fixtures & Test Utilities
@@ -241,6 +242,51 @@ def test_chat_engine_route_private_message():
     assert target_sid is None
 
 
+def test_chat_engine_route_read_ack():
+    engine = ChatEngine()
+    engine.register_user("sid_alice", "Alice")
+    engine.register_user("sid_bob", "Bob")
+
+    # Bob reads Alice's message MSG_001
+    result = engine.route_read_ack(
+        reader_sid="sid_bob",
+        message_id="MSG_001",
+        target="Alice",
+    )
+    assert isinstance(result, ReadAckRouteResult)
+    assert result.success is True
+    assert result.error is None
+    assert result.target_sid == "sid_alice"
+    assert result.payload is not None
+    assert result.payload.message_id == "MSG_001"
+    assert result.payload.reader == "Bob"
+
+    # Tuple unpacking support
+    success, err, payload, target_sid = result
+    assert success is True
+    assert target_sid == "sid_alice"
+
+    # Unregistered reader fails
+    res_unreg = engine.route_read_ack(
+        reader_sid="sid_unknown",
+        message_id="MSG_001",
+        target="Alice",
+    )
+    assert res_unreg.success is False
+    assert res_unreg.error == "Reader not registered"
+    assert res_unreg.payload is None
+
+    # Offline target fails
+    res_offline = engine.route_read_ack(
+        reader_sid="sid_bob",
+        message_id="MSG_001",
+        target="OfflineCharlie",
+    )
+    assert res_offline.success is False
+    assert res_offline.error == "Target user 'OfflineCharlie' is offline"
+    assert res_offline.payload is None
+
+
 # -----------------------------------------------------------------------------
 # 2. ChatServer Integration & Event Routing Tests
 # -----------------------------------------------------------------------------
@@ -399,6 +445,37 @@ def test_server_private_message_invalid_payloads_dropped():
         {"target": "Alice", "message": "Hi"},
     )
     assert len(spy.get_events(EVENT_PRIVATE_MSG)) == 0
+
+
+def test_server_read_ack_routing_and_isolation():
+    """Verify read_ack is routed strictly to target sender with verified reader identity (SP4)."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+    server.engine.register_user("sid_charlie", "Charlie")
+
+    # Bob reads Alice's message MSG_001
+    read_ack_payload = {
+        "message_id": "MSG_001",
+        "target": "Alice",
+        "reader": "SpoofedCharlie",  # Attack attempt: must be derived from sid_bob
+    }
+    spy.trigger("read_ack", "sid_bob", read_ack_payload)
+
+    # 1. Target recipient (Alice) must receive verified read receipt
+    alice_events = spy.get_events(EVENT_READ_ACK, room="sid_alice")
+    assert len(alice_events) == 1
+    assert alice_events[0]["data"]["message_id"] == "MSG_001"
+    assert alice_events[0]["data"]["reader"] == "Bob"
+
+    # 2. Third parties (Charlie, Bob) receive ZERO events
+    assert len(spy.get_events(EVENT_READ_ACK, room="sid_charlie")) == 0
+    assert len(spy.get_events(EVENT_READ_ACK, room="sid_bob")) == 0
+
+    # 3. No global broadcast
+    assert len([e for e in spy.get_events(EVENT_READ_ACK) if e["room"] is None]) == 0
 
 
 def test_live_server_client_roundtrip():

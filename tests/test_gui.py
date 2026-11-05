@@ -9,10 +9,12 @@ from gui import GuiController
 from protocol import (
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
+    EVENT_READ_ACK,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
     MessageMeta,
     PrivateMessageServerPayload,
+    ReadAckServerPayload,
     RegisterAckPayload,
     UserListPayload,
 )
@@ -30,6 +32,7 @@ class SessionSpy:
         self.connected_to: list[str] = []
         self.registered: list[str] = []
         self.sent_private: list[tuple[str, str, str | None, str | None]] = []
+        self.sent_read_ack: list[tuple[str, str]] = []
         self.connect_result = connect_result
 
     def connect(self, server_url: str) -> bool:
@@ -49,6 +52,10 @@ class SessionSpy:
     ) -> str | None:
         self.sent_private.append((target, message, message_id, timestamp))
         return message_id or "MSG_TEST"
+
+    def send_read_ack(self, message_id: str, target: str) -> bool:
+        self.sent_read_ack.append((message_id, target))
+        return True
 
     def get_next_event(self, *, block: bool = False) -> tuple[str, Any] | None:
         del block
@@ -209,3 +216,25 @@ def test_controller_polls_and_notifies_private_message_error():
 
     assert len(errors) == 1
     assert errors[0] == ("Bob", "User 'Bob' is offline")
+
+
+def test_controller_send_read_ack_forwards_to_session():
+    session = SessionSpy()
+    controller = GuiController(session)
+
+    assert controller.send_read_ack("MSG_001", "Alice") is True
+    assert session.sent_read_ack == [("MSG_001", "Alice")]
+
+
+def test_controller_polls_and_notifies_read_ack():
+    payload = ReadAckServerPayload(message_id="MSG_001", reader="Bob")
+    session = SessionSpy([(EVENT_READ_ACK, payload)])
+    controller = GuiController(session)
+
+    acks: list[tuple[str, str]] = []
+    controller.on_read_ack = lambda mid, reader: acks.append((mid, reader))
+
+    controller.poll_events()
+
+    assert len(acks) == 1
+    assert acks[0] == ("MSG_001", "Bob")

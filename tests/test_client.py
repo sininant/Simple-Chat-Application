@@ -8,10 +8,12 @@ from client import ClientSession
 from protocol import (
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
+    EVENT_READ_ACK,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
     PrivateMessageServerPayload,
+    ReadAckServerPayload,
     RegisterAckPayload,
     UserListPayload,
 )
@@ -342,3 +344,56 @@ def test_client_session_receives_private_message_error_event():
     assert event is not None
     assert event[0] == EVENT_PRIVATE_MSG_ERROR
     assert event[1] == error_data
+
+
+def test_client_session_send_read_ack_when_connected():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+    spy.trigger("connect")
+
+    assert session.send_read_ack("MSG_001", "Alice") is True
+    assert len(spy.emitted) == 1
+    event_name, data = spy.emitted[0]
+    assert event_name == EVENT_READ_ACK
+    assert data["message_id"] == "MSG_001"
+    assert data["target"] == "Alice"
+
+
+def test_client_session_send_read_ack_when_disconnected():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    assert session.send_read_ack("MSG_001", "Alice") is False
+    assert len(spy.emitted) == 0
+
+
+def test_client_session_send_read_ack_validation_failure():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+    spy.trigger("connect")
+
+    # Invalid message_id
+    assert session.send_read_ack("", "Alice") is False
+    assert session.send_read_ack("   ", "Alice") is False
+    # Invalid target
+    assert session.send_read_ack("MSG_001", "Invalid@User") is False
+    assert len(spy.emitted) == 0
+
+
+def test_client_session_receives_read_ack_event():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    server_data = {
+        "message_id": "MSG_001",
+        "reader": "Bob",
+    }
+    spy.trigger(EVENT_READ_ACK, server_data)
+
+    event = session.get_next_event(block=False)
+    assert event is not None
+    event_name, payload = event
+    assert event_name == EVENT_READ_ACK
+    assert isinstance(payload, ReadAckServerPayload)
+    assert payload.message_id == "MSG_001"
+    assert payload.reader == "Bob"
