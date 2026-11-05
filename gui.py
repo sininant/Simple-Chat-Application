@@ -33,11 +33,14 @@ except ImportError:  # pragma: no cover - exercised only on machines without GUI
 
 from client import ClientSession
 from protocol import (
+    EVENT_CONNECT,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
+    EVENT_READ_ACK,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
     PrivateMessageServerPayload,
+    ReadAckServerPayload,
     RegisterAckPayload,
     UserListPayload,
 )
@@ -69,6 +72,8 @@ class SessionPort(Protocol):
         timestamp: str | None = None,
     ) -> str | None: ...
 
+    def send_read_ack(self, message_id: str, target: str) -> bool: ...
+
 
 class GuiController:
     """Headless adapter that owns GUI-facing login, presence, and chat message state."""
@@ -84,6 +89,8 @@ class GuiController:
         self.private_messages: dict[str, list[PrivateMessageServerPayload]] = {}
         self.on_private_message: Callable[[str, PrivateMessageServerPayload], None] | None = None
         self.on_private_message_error: Callable[[str, str], None] | None = None
+        self.on_read_ack: Callable[[str, str], None] | None = None
+        self.on_reconnect: Callable[[], None] | None = None
 
     def send_private_message(self, target: str, message: str) -> str | None:
         """Send a 1-to-1 private message through the underlying session adapter (R7)."""
@@ -91,6 +98,13 @@ class GuiController:
         if send_fn is None:
             return None
         return send_fn(target, message)
+
+    def send_read_ack(self, message_id: str, target: str) -> bool:
+        """Send a read receipt acknowledgment through the session adapter (SP4)."""
+        send_fn = getattr(self.session, "send_read_ack", None)
+        if send_fn is None:
+            return False
+        return send_fn(message_id, target)
 
     def connect_and_register(
         self, host: str, port: str, username: str, avatar: str = "rabbit"
@@ -129,6 +143,8 @@ class GuiController:
                     if payload.username not in self.online_users:
                         self.online_users.append(payload.username)
                     self.login_error = None
+                    if self.on_reconnect:
+                        self.on_reconnect()
                 else:
                     self.login_error = payload.error or "Login was rejected."
                 changed = True
@@ -149,6 +165,12 @@ class GuiController:
                 target_peer = str(payload.get("target", ""))
                 if self.on_private_message_error:
                     self.on_private_message_error(target_peer, error_msg)
+                changed = True
+            elif event_name == EVENT_READ_ACK and isinstance(payload, ReadAckServerPayload):
+                if self.on_read_ack:
+                    self.on_read_ack(payload.message_id, payload.reader)
+                changed = True
+            elif event_name in (EVENT_CONNECT, "connect"):
                 changed = True
         if changed:
             self._changed()
@@ -784,6 +806,9 @@ class MessageBubble:
         timestamp: str | None = None,
     ) -> None:
         ui = _require_ctk()
+        self.own = own
+        self.timestamp = timestamp
+        self.status_label: Any | None = None
         self.frame = ui.CTkFrame(parent, fg_color="transparent")
         bubble_shell = ui.CTkFrame(
             self.frame,
@@ -811,14 +836,22 @@ class MessageBubble:
         )
         bubble.pack(padx=12, pady=7)
         bubble_shell.pack(anchor="e" if own else "w", padx=8, pady=4)
-        if own and timestamp:
-            ui.CTkLabel(
+        if own:
+            status_text = f"{timestamp} • Sent" if timestamp else "Sent"
+            self.status_label = ui.CTkLabel(
                 self.frame,
-                text=timestamp,
-                text_color="#666666",
+                text=status_text,
+                text_color="#888888",
                 font=(FONT, 10),
                 anchor="e",
-            ).pack(anchor="e", padx=12, pady=(0, 2))
+            )
+            self.status_label.pack(anchor="e", padx=12, pady=(0, 2))
+
+    def mark_read(self, text: str = "Read ✓✓") -> None:
+        """Update the sender status indicator to Read (SP4)."""
+        if self.status_label is not None:
+            prefix = f"{self.timestamp} • " if self.timestamp else ""
+            self.status_label.configure(text=f"{prefix}{text}", text_color="#107C41")
 
 
 class ChatBoxBar:
@@ -928,6 +961,7 @@ class ChatRoomTab:
         )
         self.box.frame.pack(fill="x", padx=4, pady=(0, 4))
         self.room_name = room_name
+        self.bubbles: dict[str, MessageBubble] = {}
 
     def _scroll_to_latest(self) -> None:
         canvas = getattr(self.window, "_parent_canvas", None)
@@ -1002,10 +1036,22 @@ class ChatRoomTab:
         message: str,
         own: bool = False,
         timestamp: str | None = None,
-    ) -> None:
+        message_id: str | None = None,
+    ) -> MessageBubble:
         bubble = MessageBubble(self.window, sender, message, own, timestamp=timestamp)
         bubble.frame.pack(fill="x")
+        if message_id:
+            self.bubbles[message_id] = bubble
         self._scroll_to_latest()
+        return bubble
+
+    def mark_message_read(self, message_id: str) -> bool:
+        """Mark the message bubble identified by message_id as Read (SP4)."""
+        bubble = self.bubbles.get(message_id)
+        if bubble is not None:
+            bubble.mark_read()
+            return True
+        return False
 
 
 def _noop() -> None:
@@ -1077,10 +1123,14 @@ class MainChatWindow:
         if segmented_button is not None:
             segmented_button.grid_remove()
         self.rooms: dict[str, ChatRoomTab] = {}
-        self.active_room: str | None = None
+        self._active_room: str | None = None
         self._rendered_messages: set[str] = set()
+        self._unread_messages: dict[str, set[str]] = {}
+        self._acknowledged_messages: set[str] = set()
         self.controller.on_private_message = self._handle_incoming_private_message
         self.controller.on_private_message_error = self._handle_private_message_error
+        self.controller.on_read_ack = self._handle_read_ack
+        self.controller.on_reconnect = self._retry_pending_acks
         self.frame.bind("<Configure>", self._resize_content)
         # Process any messages received prior to MainChatWindow construction
         for peer, msgs in list(self.controller.private_messages.items()):
@@ -1098,11 +1148,19 @@ class MainChatWindow:
             self.controller.online_users,
             self.controller.username,
             self.controller.online_avatars,
-            self.active_room,
+            self._active_room,
         )
         peers = [user for user in self.controller.online_users if user != self.controller.username]
         if peers and not self.rooms:
             self.open_private_room(peers[0])
+        self._retry_pending_acks()
+
+    def _retry_pending_acks(self) -> None:
+        """Retry sending pending read receipts for the active room upon reconnect (SP4)."""
+        if not getattr(self.controller.session, "is_registered", True):
+            return
+        if self._active_room and self._unread_messages.get(self._active_room):
+            self._ack_unread_in_room(self._active_room)
 
     def open_private_room(self, user: str, select: bool = True) -> None:
         if user == self.controller.username:
@@ -1117,12 +1175,13 @@ class MainChatWindow:
             self.rooms[user].frame.pack(fill="both", expand=True)
         if select:
             self.tabs.set(user)
-            self.active_room = user
+            self._active_room = user
+            self._ack_unread_in_room(user)
             self.sidebar.set_users(
                 self.controller.online_users,
                 self.controller.username,
                 self.controller.online_avatars,
-                self.active_room,
+                self._active_room,
             )
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
@@ -1150,7 +1209,36 @@ class MainChatWindow:
             message=payload.message,
             own=own,
             timestamp=payload.meta.timestamp,
+            message_id=payload.meta.message_id,
         )
+        if not own:
+            # Check user's actively selected room rather than relying on tabs.get()
+            if self._active_room == peer:
+                self._send_read_ack(payload.meta.message_id, peer)
+            else:
+                self._unread_messages.setdefault(peer, set()).add(payload.meta.message_id)
+
+    def _send_read_ack(self, message_id: str, target: str) -> None:
+        if message_id in self._acknowledged_messages:
+            if target in self._unread_messages:
+                self._unread_messages[target].discard(message_id)
+            return
+        sent = self.controller.send_read_ack(message_id, target)
+        if sent:
+            self._acknowledged_messages.add(message_id)
+            if target in self._unread_messages:
+                self._unread_messages[target].discard(message_id)
+        else:
+            self._unread_messages.setdefault(target, set()).add(message_id)
+
+    def _ack_unread_in_room(self, room_name: str) -> None:
+        unreads = list(self._unread_messages.get(room_name, set()))
+        for mid in unreads:
+            self._send_read_ack(mid, room_name)
+
+    def _handle_read_ack(self, message_id: str, reader: str) -> None:
+        if reader in self.rooms:
+            self.rooms[reader].mark_message_read(message_id)
 
     def _handle_private_message_error(self, target: str, error: str) -> None:
         if target and target in self.rooms:
