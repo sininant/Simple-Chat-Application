@@ -641,7 +641,7 @@ class SidebarPanel:
             hover_color="#D0D0D0",
             text_color=INK,
             border_color=INK,
-            border_width=1,
+            border_width=2,
             corner_radius=16,
             font=(FONT, 14, "bold"),
             command=_close_dialog,
@@ -656,7 +656,7 @@ class SidebarPanel:
             hover_color="#91D5DF",
             text_color=INK,
             border_color=INK,
-            border_width=1,
+            border_width=2,
             corner_radius=18,
             font=(FONT, 18, "bold"),
             command=lambda: self._create_group(name_entry, dialog),
@@ -687,7 +687,7 @@ class SidebarPanel:
         height = max(canvas.winfo_height(), 10)
         canvas.delete("all")
         canvas.create_rectangle(0, 0, width, height, fill=BLUE, outline=BLUE)
-        canvas.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
+        canvas.create_line(0, height - 1, width, height - 1, fill=INK, width=1)
         canvas.create_text(
             24,
             height // 2,
