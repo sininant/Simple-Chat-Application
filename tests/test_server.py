@@ -277,6 +277,20 @@ def test_server_register_success_and_broadcast():
     assert user_lists[0]["data"] == {"users": ["Alice"]}
 
 
+def test_server_broadcasts_selected_avatars_with_presence():
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    spy.trigger("register", "sid_1", {"username": "Alice", "avatar": "cat"})
+    spy.trigger("register", "sid_2", {"username": "Bob", "avatar": "dog"})
+
+    user_lists = spy.get_events(EVENT_USER_LIST, room=None)
+    assert user_lists[-1]["data"] == {
+        "users": ["Alice", "Bob"],
+        "avatars": {"Alice": "cat", "Bob": "dog"},
+    }
+
+
 def test_server_register_duplicate_rejected():
     spy = SocketIOServerSpy()
     _ = ChatServer(sio=spy.sio)

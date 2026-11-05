@@ -57,7 +57,7 @@ class SessionPort(Protocol):
 
     def connect(self, server_url: str) -> bool: ...
 
-    def register(self, username: str) -> bool: ...
+    def register(self, username: str, avatar: str = "rabbit") -> bool: ...
 
     def get_next_event(self, *, block: bool = False) -> tuple[str, Any] | None: ...
 
@@ -79,6 +79,7 @@ class GuiController:
         self.username: str | None = None
         self.avatar = "rabbit"
         self.online_users: list[str] = []
+        self.online_avatars: dict[str, str] = {}
         self.login_error: str | None = None
         self.private_messages: dict[str, list[PrivateMessageServerPayload]] = {}
         self.on_private_message: Callable[[str, PrivateMessageServerPayload], None] | None = None
@@ -91,7 +92,9 @@ class GuiController:
             return None
         return send_fn(target, message)
 
-    def connect_and_register(self, host: str, port: str, username: str) -> bool:
+    def connect_and_register(
+        self, host: str, port: str, username: str, avatar: str = "rabbit"
+    ) -> bool:
         """Connect and request registration, reporting synchronous errors inline."""
         host, port = host.strip(), port.strip()
         if not host or not port or not username.strip():
@@ -111,7 +114,7 @@ class GuiController:
             self._changed()
             return False
         self.login_error = None
-        result = self.session.register(username)
+        result = self.session.register(username, avatar)
         self._changed()
         return result
 
@@ -131,6 +134,7 @@ class GuiController:
                 changed = True
             elif event_name == EVENT_USER_LIST and isinstance(payload, UserListPayload):
                 self.online_users = list(payload.users)
+                self.online_avatars = dict(payload.avatars)
                 changed = True
             elif event_name == EVENT_PRIVATE_MSG and isinstance(
                 payload, PrivateMessageServerPayload
@@ -608,10 +612,6 @@ class SidebarPanel:
         y = parent.winfo_rooty() + (parent.winfo_height() - height) // 2
         dialog.geometry(f"{width}x{height}+{max(x, 0)}+{max(y, 0)}")
         dialog.deiconify()
-        try:
-            dialog.grab_set()
-        except Exception:
-            pass
         if entry is not None:
             entry.focus_force()
 
@@ -739,13 +739,17 @@ class SidebarPanel:
         )
 
     def set_users(
-        self, users: list[str], current_user: str | None, current_avatar: str = "rabbit"
+        self,
+        users: list[str],
+        current_user: str | None,
+        avatars: dict[str, str],
+        active_chat: str | None,
     ) -> None:
         for child in self.users.winfo_children():
             child.destroy()
         for user in users:
             label = f"{user} (You)" if user == current_user else user
-            avatar_name = current_avatar if user == current_user else user.lower()
+            avatar_name = avatars.get(user, "rabbit")
             avatar = self.avatars.get(avatar_name, self.avatar)
             button = _require_ctk().CTkButton(
                 self.users,
@@ -757,7 +761,7 @@ class SidebarPanel:
                 height=52,
                 corner_radius=0,
                 font=(FONT, 16),
-                fg_color=PINK_LIGHT if user == current_user else "transparent",
+                fg_color=PINK_LIGHT if user == active_chat else "transparent",
                 hover_color=PINK_LIGHT,
                 text_color=INK,
                 command=lambda name=user: self.on_chat(name),
@@ -1067,12 +1071,13 @@ class MainChatWindow:
         self.banner.frame.grid_remove()
         self.sidebar = SidebarPanel(self.content, self.open_private_room)
         self.sidebar.frame.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
-        self.tabs = ui.CTkTabview(self.content, fg_color=PINK_LIGHT)
+        self.tabs = ui.CTkTabview(self.content, fg_color=BACKGROUND)
         self.tabs.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
             segmented_button.grid_remove()
         self.rooms: dict[str, ChatRoomTab] = {}
+        self.active_room: str | None = None
         self._rendered_messages: set[str] = set()
         self.controller.on_private_message = self._handle_incoming_private_message
         self.controller.on_private_message_error = self._handle_private_message_error
@@ -1092,7 +1097,8 @@ class MainChatWindow:
         self.sidebar.set_users(
             self.controller.online_users,
             self.controller.username,
-            self.controller.avatar,
+            self.controller.online_avatars,
+            self.active_room,
         )
         peers = [user for user in self.controller.online_users if user != self.controller.username]
         if peers and not self.rooms:
@@ -1111,6 +1117,16 @@ class MainChatWindow:
             self.rooms[user].frame.pack(fill="both", expand=True)
         if select:
             self.tabs.set(user)
+            self.active_room = user
+            self.sidebar.set_users(
+                self.controller.online_users,
+                self.controller.username,
+                self.controller.online_avatars,
+                self.active_room,
+            )
+        segmented_button = getattr(self.tabs, "_segmented_button", None)
+        if segmented_button is not None:
+            segmented_button.grid_forget()
 
     def _send_private_message(self, peer: str, message: str) -> None:
         msg_id = self.controller.send_private_message(peer, message)
@@ -1165,6 +1181,7 @@ class ChatApplication:
         self.root.title("Simple Chat Application")
         self.root.minsize(760, 520)
         self.root.geometry("1080x700")
+        self.root.resizable(False, False)
         self.root.configure(fg_color=BACKGROUND)
         self.controller = GuiController(session or ClientSession(), self._refresh)
         self.login = LoginView(self.root, self._connect, host=host, port=port)
@@ -1175,7 +1192,7 @@ class ChatApplication:
 
     def _connect(self, host: str, port: str, username: str, avatar: str) -> None:
         self.controller.avatar = avatar
-        self.controller.connect_and_register(host, port, username)
+        self.controller.connect_and_register(host, port, username, avatar)
         self.login.show_error(self.controller.login_error)
 
     def _poll(self) -> None:

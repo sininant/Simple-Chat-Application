@@ -102,6 +102,23 @@ def test_client_session_register_emits_payload():
     assert data == {"username": "Alice"}
 
 
+def test_client_session_register_emits_selected_avatar():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    assert session.register("Alice", "cat") is True
+
+    assert spy.emitted == [(EVENT_REGISTER, {"username": "Alice", "avatar": "cat"})]
+
+
+def test_client_session_register_rejects_unknown_avatar():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    assert session.register("Alice", "unicorn") is False
+    assert spy.emitted == []
+
+
 def test_client_session_register_rejects_invalid_username():
     """Invalid username fails validation, enqueues failed ACK, and returns False without raising."""
     spy = SocketIOClientSpy()

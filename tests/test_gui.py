@@ -28,7 +28,7 @@ class SessionSpy:
     ) -> None:
         self.events = deque(events or [])
         self.connected_to: list[str] = []
-        self.registered: list[str] = []
+        self.registered: list[tuple[str, str]] = []
         self.sent_private: list[tuple[str, str, str | None, str | None]] = []
         self.connect_result = connect_result
 
@@ -36,8 +36,8 @@ class SessionSpy:
         self.connected_to.append(server_url)
         return self.connect_result
 
-    def register(self, username: str) -> bool:
-        self.registered.append(username)
+    def register(self, username: str, avatar: str = "rabbit") -> bool:
+        self.registered.append((username, avatar))
         return True
 
     def send_private_message(
@@ -61,7 +61,7 @@ def test_controller_connects_then_registers_the_requested_user():
 
     assert controller.connect_and_register("127.0.0.1", "5000", "Alice") is True
     assert session.connected_to == ["http://127.0.0.1:5000"]
-    assert session.registered == ["Alice"]
+    assert session.registered == [("Alice", "rabbit")]
 
 
 def test_controller_preserves_invalid_username_for_clientsession_validation():
@@ -70,7 +70,7 @@ def test_controller_preserves_invalid_username_for_clientsession_validation():
 
     controller.connect_and_register("127.0.0.1", "5000", " Alice ")
 
-    assert session.registered == [" Alice "]
+    assert session.registered == [(" Alice ", "rabbit")]
 
 
 def test_controller_applies_queued_login_and_presence_events():
@@ -90,6 +90,22 @@ def test_controller_applies_queued_login_and_presence_events():
     assert controller.username == "Alice"
     assert controller.online_users == ["Alice", "Bob"]
     assert controller.login_error is None
+
+
+def test_controller_keeps_each_online_users_selected_character():
+    session = SessionSpy(
+        [
+            (
+                EVENT_USER_LIST,
+                UserListPayload(users=["Alice", "Bob"], avatars={"Alice": "cat", "Bob": "dog"}),
+            )
+        ]
+    )
+    controller = GuiController(session)
+
+    controller.poll_events()
+
+    assert controller.online_avatars == {"Alice": "cat", "Bob": "dog"}
 
 
 def test_controller_adds_the_registered_user_before_the_first_presence_update():

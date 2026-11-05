@@ -32,10 +32,14 @@ All communication between Client and Server occurs through named Socket.IO event
 | Event Name | Direction | Payload Schema | Description |
 | --- | --- | --- | --- |
 | `connect` | Client -> Server | *(Built-in)* | Client establishes underlying socket connection; server assigns a unique `sid`. |
-| `register` | Client -> Server | `{"username": "Alice"}` | Client requests registration with a unique username (`R3`). |
+| `register` | Client -> Server | `{"username": "Alice", "avatar": "cat"}` | Client requests registration with a unique username and selected built-in character (`cat`, `dog`, or `rabbit`) (`R3`). |
 | `register_ack` | Server -> Client | `{"success": true, "username": "Alice", "message": "Registered successfully"}` or `{"success": false, "error": "Username already taken"}` | Server confirms or rejects registration. |
-| `user_list` | Server -> All Clients | `{"users": ["Alice", "Bob"]}` | Broadcast containing all currently connected usernames, including the recipient's own name (`R4`). |
+| `user_list` | Server -> All Clients | `{"users": ["Alice", "Bob"], "avatars": {"Alice": "cat", "Bob": "dog"}}` | Broadcast containing all currently connected usernames and their selected characters, including the recipient's own name (`R4`). |
 | `disconnect` | Client -> Server | *(Built-in)* | Client disconnects or connection drops; server cleans up session and broadcasts updated `user_list`. |
+
+The `avatar` field is optional for older clients and defaults to `"rabbit"`. The server may
+omit the `avatars` map when every connected user uses that default; clients must then render
+the rabbit character for every listed user.
 
 ### Private Chat (`R5`, `R6`, `R7`)
 
