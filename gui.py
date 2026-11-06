@@ -899,7 +899,6 @@ class ChatBoxBar:
             wrap="word",
             font=(FONT, 16),
         )
-        self.entry.pack(side="left", padx=(10, 4), pady=5)
         self.entry.bind("<Return>", lambda _event: self._submit_and_consume())
         self.sticker_button = ui.CTkButton(
             self.frame,
@@ -912,7 +911,6 @@ class ChatBoxBar:
             text_color=INK,
             command=on_sticker,
         )
-        self.sticker_button.pack(side="left", padx=2)
         self.action_button = ui.CTkButton(
             self.frame,
             text="",
@@ -926,7 +924,10 @@ class ChatBoxBar:
             anchor="center",
             command=self._handle_action,
         )
-        self.action_button.pack(side="left", padx=(2, 8))
+        # Reserve the icon controls first so a narrow Chat Room never clips them.
+        self.action_button.pack(side="right", padx=(2, 8), pady=5)
+        self.sticker_button.pack(side="right", padx=2, pady=5)
+        self.entry.pack(side="left", fill="x", expand=True, padx=(10, 4), pady=5)
         self.entry.bind("<KeyRelease>", lambda _event: self._update_action_icon())
         self.frame.after(75, self._poll_speech_results)
 
@@ -966,7 +967,9 @@ class ChatBoxBar:
                     image=None,
                     width=118,
                     anchor="center",
-                    fg_color=INK,
+                    fg_color="transparent",
+                    text_color=INK,
+                    text_color_disabled=INK,
                     font=(FONT, 12),
                 )
         else:
@@ -1013,7 +1016,7 @@ class ChatBoxBar:
     def _restore_sticker_button(self) -> None:
         sticker_button = getattr(self, "sticker_button", None)
         if sticker_button is not None and not sticker_button.winfo_manager():
-            sticker_button.pack(side="left", padx=2, before=self.action_button)
+            sticker_button.pack(side="right", padx=2, pady=5, before=self.action_button)
 
     def _set_paused(self) -> None:
         """Return to the microphone control when capture stopped before any speech."""
