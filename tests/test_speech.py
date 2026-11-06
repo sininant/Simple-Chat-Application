@@ -266,7 +266,7 @@ def test_listening_state_turns_the_microphone_button_into_pause():
         "state": "normal",
         "text": "",
         "image": "pause",
-        "width": 17,
+        "width": 30,
         "anchor": "center",
         "fg_color": PINK,
         "font": (FONT, 14),

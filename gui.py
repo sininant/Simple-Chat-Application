@@ -905,20 +905,20 @@ class ChatBoxBar:
             self.frame,
             text="",
             image=self.sticker_icon,
-            width=20,
-            height=20,
+            width=30,
+            height=30,
             fg_color="transparent",
             hover_color=PINK,
             text_color=INK,
             command=on_sticker,
         )
-        self.sticker_button.pack(side="left", padx=1)
+        self.sticker_button.pack(side="left", padx=2)
         self.action_button = ui.CTkButton(
             self.frame,
             text="",
             image=self.microphone_icon,
-            width=17,
-            height=23,
+            width=30,
+            height=30,
             fg_color="transparent",
             hover_color=PINK,
             text_color=INK,
@@ -926,7 +926,7 @@ class ChatBoxBar:
             anchor="center",
             command=self._handle_action,
         )
-        self.action_button.pack(side="left", padx=(0, 5))
+        self.action_button.pack(side="left", padx=(2, 8))
         self.entry.bind("<KeyRelease>", lambda _event: self._update_action_icon())
         self.frame.after(75, self._poll_speech_results)
 
@@ -966,7 +966,7 @@ class ChatBoxBar:
                     image=None,
                     width=118,
                     anchor="center",
-                    fg_color=PINK,
+                    fg_color=INK,
                     font=(FONT, 12),
                 )
         else:
@@ -999,7 +999,7 @@ class ChatBoxBar:
             state="normal",
             text="",
             image=self.pause_icon,
-            width=17,
+            width=30,
             anchor="center",
             fg_color=PINK,
             font=(FONT, 14),
@@ -1013,14 +1013,14 @@ class ChatBoxBar:
     def _restore_sticker_button(self) -> None:
         sticker_button = getattr(self, "sticker_button", None)
         if sticker_button is not None and not sticker_button.winfo_manager():
-            sticker_button.pack(side="left", padx=1, before=self.action_button)
+            sticker_button.pack(side="left", padx=2, before=self.action_button)
 
     def _set_paused(self) -> None:
         """Return to the microphone control when capture stopped before any speech."""
         self._is_listening = False
         self._restore_sticker_button()
         self.action_button.configure(
-            state="normal", text="", width=17, fg_color="transparent", font=(FONT, 14)
+            state="normal", text="", width=30, fg_color="transparent", font=(FONT, 14)
         )
         self._update_action_icon()
 
@@ -1035,7 +1035,7 @@ class ChatBoxBar:
         self._is_listening = False
         self._restore_sticker_button()
         self.action_button.configure(
-            state="normal", text="", width=17, fg_color="transparent", font=(FONT, 14)
+            state="normal", text="", width=30, fg_color="transparent", font=(FONT, 14)
         )
         self._update_action_icon()
 
@@ -1078,7 +1078,7 @@ class ChatBoxBar:
         self._is_listening = False
         self._restore_sticker_button()
         self.action_button.configure(
-            state="normal", text="", width=17, fg_color="transparent", font=(FONT, 14)
+            state="normal", text="", width=30, fg_color="transparent", font=(FONT, 14)
         )
         self._update_action_icon()
 
