@@ -966,6 +966,7 @@ class ChatBoxBar:
         """Place recognized text in the composer; the user still chooses when to send."""
         self.entry.delete(0, "end")
         self.entry.insert(0, text)
+        self.entry.focus_set()
         self._is_listening = False
         self.action_button.configure(state="normal", text="", width=34)
         self._update_action_icon()

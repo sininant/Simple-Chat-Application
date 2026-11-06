@@ -117,12 +117,16 @@ def test_recognized_text_is_inserted_into_chat_box_without_sending():
     class EntrySpy:
         def __init__(self) -> None:
             self.value = ""
+            self.focused = False
 
         def delete(self, _start: int, _end: str) -> None:
             self.value = ""
 
         def insert(self, _index: int, text: str) -> None:
             self.value = text
+
+        def focus_set(self) -> None:
+            self.focused = True
 
     class WidgetSpy:
         def __init__(self) -> None:
@@ -141,6 +145,7 @@ def test_recognized_text_is_inserted_into_chat_box_without_sending():
     box.insert_transcript("Draft from speech")
 
     assert box.entry.value == "Draft from speech"
+    assert box.entry.focused is True
     assert box.action_button.options["state"] == "normal"
 
 
@@ -151,6 +156,7 @@ def test_microphone_click_disables_action_then_inserts_fake_transcript():
         def __init__(self) -> None:
             self.value = ""
             self.inserted = Event()
+            self.focused = False
 
         def get(self) -> str:
             return self.value
@@ -161,6 +167,9 @@ def test_microphone_click_disables_action_then_inserts_fake_transcript():
         def insert(self, _index: int, text: str) -> None:
             self.value = text
             self.inserted.set()
+
+        def focus_set(self) -> None:
+            self.focused = True
 
     class WidgetSpy:
         def __init__(self) -> None:
@@ -195,6 +204,7 @@ def test_microphone_click_disables_action_then_inserts_fake_transcript():
     box._poll_speech_results()
 
     assert box.entry.value == "Draft from microphone"
+    assert box.entry.focused is True
     assert box.action_button.options["state"] == "normal"
 
 
