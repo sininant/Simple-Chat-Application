@@ -58,7 +58,7 @@ class GoogleSpeechTranscriber:
             if not chunks:
                 raise SpeechTranscriptionPaused
             audio = self._combine_audio_chunks(sr, chunks)
-            return recognizer.recognize_google(audio).strip()
+            return recognizer.recognize_google(audio, language="th-TH").strip()
         except sr.WaitTimeoutError as error:
             raise SpeechTranscriptionError("No speech was detected. Please try again.") from error
         except sr.UnknownValueError as error:
