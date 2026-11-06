@@ -186,6 +186,13 @@ def _require_ctk() -> Any:
     return ctk
 
 
+def configure_fixed_pixel_scaling(ui: Any) -> None:
+    """Keep the fixed 1080×700 layout independent of monitor DPI settings."""
+    ui.deactivate_automatic_dpi_awareness()
+    ui.set_widget_scaling(1.0)
+    ui.set_window_scaling(1.0)
+
+
 def _load_avatars(size: tuple[int, int] = (120, 120)) -> dict[str, Any]:
     """Load the supplied character PNGs, returning an empty map when unavailable."""
     if ctk is None or Image is None:
@@ -1264,6 +1271,7 @@ class ChatApplication:
         host = host or os.getenv("CHAT_SERVER_HOST", "127.0.0.1")
         port = port or os.getenv("CHAT_SERVER_PORT", "5000")
         ui = _require_ctk()
+        configure_fixed_pixel_scaling(ui)
         ui.set_appearance_mode("light")
         self.root = ui.CTk()
         self.root.title("Simple Chat Application")
