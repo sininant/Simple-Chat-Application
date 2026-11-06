@@ -887,7 +887,7 @@ class ChatBoxBar:
             self.frame,
             # CustomTkinter applies the macOS 2× display scale; 199 logical pixels
             # renders as the requested 398 screen-pixel-wide composer.
-            width=199,
+            width=350,
             height=37,
             fg_color=PINK,
             border_width=0,
@@ -902,20 +902,20 @@ class ChatBoxBar:
             self.frame,
             text="",
             image=self.sticker_icon,
-            width=30,
-            height=30,
+            width=20,
+            height=20,
             fg_color="transparent",
             hover_color=PINK,
             text_color=INK,
             command=on_sticker,
         )
-        sticker_button.pack(side="left", padx=2)
+        sticker_button.pack(side="left", padx=1)
         self.action_button = ui.CTkButton(
             self.frame,
             text="",
             image=self.microphone_icon,
-            width=34,
-            height=30,
+            width=17,
+            height=23,
             fg_color="transparent",
             hover_color=PINK,
             text_color=INK,
@@ -923,7 +923,7 @@ class ChatBoxBar:
             anchor="center",
             command=self._handle_action,
         )
-        self.action_button.pack(side="left", padx=(2, 8))
+        self.action_button.pack(side="left", padx=(0, 5))
         self.entry.bind("<KeyRelease>", lambda _event: self._update_action_icon())
         self.frame.after(75, self._poll_speech_results)
 
@@ -957,7 +957,12 @@ class ChatBoxBar:
         elif self._is_listening:
             if self.speech_input.pause():
                 self.action_button.configure(
-                    state="disabled", text="Transcribing…", image=None, width=98, anchor="center"
+                    state="disabled",
+                    text="TRANSCRIBING…",
+                    image=None,
+                    width=98,
+                    anchor="center",
+                    fg_color=PINK,
                 )
         else:
             self.speech_input.transcribe_async(
@@ -991,12 +996,13 @@ class ChatBoxBar:
             image=None,
             width=58,
             anchor="center",
+            fg_color=PINK,
         )
 
     def _set_paused(self) -> None:
         """Return to the microphone control when capture stopped before any speech."""
         self._is_listening = False
-        self.action_button.configure(state="normal", text="", width=34)
+        self.action_button.configure(state="normal", text="", width=34, fg_color="transparent")
         self._update_action_icon()
 
     def insert_transcript(self, text: str) -> None:
@@ -1008,7 +1014,7 @@ class ChatBoxBar:
             self.entry.insert(0, text)
         self.entry.focus_set()
         self._is_listening = False
-        self.action_button.configure(state="normal", text="", width=34)
+        self.action_button.configure(state="normal", text="", width=34, fg_color="transparent")
         self._update_action_icon()
 
     def _show_speech_error(self, message: str) -> None:
@@ -1048,7 +1054,7 @@ class ChatBoxBar:
             font=(FONT, 14),
         ).pack(pady=(0, 6))
         self._is_listening = False
-        self.action_button.configure(state="normal", text="", width=34)
+        self.action_button.configure(state="normal", text="", width=34, fg_color="transparent")
         self._update_action_icon()
 
     def _update_action_icon(self) -> None:

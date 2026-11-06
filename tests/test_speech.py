@@ -5,7 +5,7 @@ from __future__ import annotations
 from queue import Queue
 from threading import Event
 
-from gui import ChatBoxBar
+from gui import PINK, ChatBoxBar
 from speech import FakeSpeechTranscriber, GoogleSpeechTranscriber, SpeechInputController
 
 
@@ -266,5 +266,6 @@ def test_listening_state_turns_the_microphone_button_into_pause():
         "image": None,
         "width": 58,
         "anchor": "center",
+        "fg_color": PINK,
     }
     assert box._is_listening is True
