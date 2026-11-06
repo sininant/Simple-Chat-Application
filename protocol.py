@@ -9,7 +9,7 @@ decoupling wire protocol validation from server routing and desktop GUI logic.
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Self
 
 # -----------------------------------------------------------------------------
@@ -66,6 +66,7 @@ class ProtocolValidationError(Exception):
 USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_]{1,20}$")
 STICKER_ID_REGEX = re.compile(r"^STK_\d{3}$")
 TIMESTAMP_REGEX = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+AVATARS = frozenset({"cat", "dog", "rabbit"})
 
 
 def validate_username(value: Any, field_name: str = "username") -> str:
@@ -150,6 +151,13 @@ def validate_sticker_id(value: Any, field_name: str = "sticker_id") -> str:
     return value
 
 
+def validate_avatar(value: Any, field_name: str = "avatar") -> str:
+    """Validate a selectable built-in character avatar."""
+    if value not in AVATARS:
+        raise ProtocolValidationError("Avatar must be cat, dog, or rabbit", field=field_name)
+    return value
+
+
 def validate_destination(target_raw: Any, group_name_raw: Any) -> tuple[str | None, str | None]:
     """Validate mutually exclusive destination (either private target or group_name)."""
     has_target = target_raw is not None
@@ -216,15 +224,20 @@ class RegisterPayload:
     """Client -> Server: Request username registration (R3)."""
 
     username: str
+    avatar: str = "rabbit"
 
     @classmethod
     def from_dict(cls, data: Any) -> Self:
         d = _ensure_dict(data)
         username = validate_username(d.get("username"))
-        return cls(username=username)
+        avatar = validate_avatar(d.get("avatar", "rabbit"))
+        return cls(username=username, avatar=avatar)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = {"username": self.username}
+        if self.avatar != "rabbit":
+            data["avatar"] = self.avatar
+        return data
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +310,7 @@ class UserListPayload:
     """Server -> All Clients: Broadcast active online users (R4)."""
 
     users: list[str]
+    avatars: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Any) -> Self:
@@ -307,10 +321,28 @@ class UserListPayload:
         validated_users = [
             validate_username(u, field_name=f"users[{i}]") for i, u in enumerate(users_raw)
         ]
-        return cls(users=validated_users)
+        avatars_raw = d.get("avatars", {})
+        if not isinstance(avatars_raw, dict):
+            raise ProtocolValidationError(
+                "UserList 'avatars' must be a dictionary", field="avatars"
+            )
+        avatars = {
+            validate_username(username, field_name=f"avatars[{username!r}]"): validate_avatar(
+                avatar, field_name=f"avatars[{username!r}]"
+            )
+            for username, avatar in avatars_raw.items()
+        }
+        if not set(avatars).issubset(validated_users):
+            raise ProtocolValidationError(
+                "UserList avatars must belong to listed users", field="avatars"
+            )
+        return cls(users=validated_users, avatars=avatars)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data: dict[str, Any] = {"users": self.users}
+        if any(avatar != "rabbit" for avatar in self.avatars.values()):
+            data["avatars"] = self.avatars
+        return data
 
 
 @dataclass(frozen=True, slots=True)
