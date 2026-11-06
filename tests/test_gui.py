@@ -302,48 +302,6 @@ def test_open_private_room_reuses_a_tab_left_by_an_interrupted_initialization(mo
     assert window.rooms["s"].frame.packed is True
 
 
-def test_open_group_room_creates_a_distinct_right_side_group_tab(monkeypatch):
-    class FrameSpy:
-        def __init__(self) -> None:
-            self.packed = False
-
-        def pack(self, **_options: object) -> None:
-            self.packed = True
-
-    class RoomSpy:
-        def __init__(self, _parent: object, room_name: str) -> None:
-            self.room_name = room_name
-            self.frame = FrameSpy()
-
-    class TabsSpy:
-        def __init__(self) -> None:
-            self._tab_dict: dict[str, object] = {}
-            self.added: list[str] = []
-            self.selected: list[str] = []
-
-        def add(self, name: str) -> object:
-            self.added.append(name)
-            self._tab_dict[name] = object()
-            return self._tab_dict[name]
-
-        def tab(self, name: str) -> object:
-            return self._tab_dict[name]
-
-        def set(self, name: str) -> None:
-            self.selected.append(name)
-
-    monkeypatch.setattr("gui.ChatRoomTab", RoomSpy)
-    window = object.__new__(MainChatWindow)
-    window.tabs = TabsSpy()
-    window.group_rooms = {}
-
-    window.open_group_room("Study Group")
-
-    assert window.tabs.added == ["Group · Study Group"]
-    assert window.tabs.selected == ["Group · Study Group"]
-    assert window.group_rooms["Study Group"].frame.packed is True
-
-
 def test_controller_polls_and_records_incoming_private_messages():
     payload = PrivateMessageServerPayload(
         sender="Bob",

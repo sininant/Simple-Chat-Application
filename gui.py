@@ -1107,12 +1107,7 @@ class ChatBoxBar:
     def _set_paused(self) -> None:
         """Return to the microphone control when capture stopped before any speech."""
         self._is_listening = False
-        self._hide_listening_label()
-        self._restore_sticker_button()
-        self.action_button.configure(
-            state="normal", text="", width=30, fg_color="transparent", font=(FONT, 14)
-        )
-        self._update_action_icon()
+        self._reset_speech_control()
 
     def insert_transcript(self, text: str) -> None:
         """Place recognized text in the composer; the user still chooses when to send."""
@@ -1123,12 +1118,7 @@ class ChatBoxBar:
             self.entry.insert(0, text)
         self.entry.focus_set()
         self._is_listening = False
-        self._hide_listening_label()
-        self._restore_sticker_button()
-        self.action_button.configure(
-            state="normal", text="", width=30, fg_color="transparent", font=(FONT, 14)
-        )
-        self._update_action_icon()
+        self._reset_speech_control()
 
     def _show_speech_error(self, message: str) -> None:
         """Present a recoverable transcription failure without crowding the chat bar."""
@@ -1169,6 +1159,10 @@ class ChatBoxBar:
             font=(FONT, 14),
         ).grid(row=2, column=0, pady=(0, 14))
         self._is_listening = False
+        self._reset_speech_control()
+
+    def _reset_speech_control(self) -> None:
+        """Restore the standard sticker and microphone/send controls."""
         self._hide_listening_label()
         self._restore_sticker_button()
         self.action_button.configure(
