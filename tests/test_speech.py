@@ -26,6 +26,20 @@ def test_speech_input_controller_delivers_fake_transcript_without_microphone():
     assert received == ["Hello from the microphone"]
 
 
+def test_enter_submits_the_current_draft_and_consumes_the_key_event():
+    class EntrySpy:
+        def get(self) -> str:
+            return "Send this draft"
+
+    sent: list[str] = []
+    box = object.__new__(ChatBoxBar)
+    box.entry = EntrySpy()
+    box.on_send = sent.append
+
+    assert box._submit_and_consume() == "break"
+    assert sent == ["Send this draft"]
+
+
 def test_speech_input_controller_reports_a_friendly_error_from_fake_transcriber():
     completed = Event()
     errors: list[str] = []

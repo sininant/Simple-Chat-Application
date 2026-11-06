@@ -882,7 +882,7 @@ class ChatBoxBar:
             text_color=INK,
         )
         self.entry.pack(side="left", fill="x", expand=True, padx=(10, 4), pady=8)
-        self.entry.bind("<Return>", lambda _event: self._submit())
+        self.entry.bind("<Return>", lambda _event: self._submit_and_consume())
         sticker_button = ui.CTkButton(
             self.frame,
             text="",
@@ -914,6 +914,11 @@ class ChatBoxBar:
         message = self.entry.get().strip()
         if message:
             self.on_send(message)
+
+    def _submit_and_consume(self) -> str:
+        """Send an Entry draft and prevent Tk from processing Return a second time."""
+        self._submit()
+        return "break"
 
     def _handle_action(self) -> None:
         if self.entry.get().strip():
