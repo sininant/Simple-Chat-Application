@@ -6,11 +6,7 @@ from queue import Queue
 from threading import Event
 
 from gui import ChatBoxBar
-from speech import (
-    FakeSpeechTranscriber,
-    SpeechInputController,
-    SpeechTranscriptionPaused,
-)
+from speech import FakeSpeechTranscriber, SpeechInputController
 
 
 def test_speech_input_controller_delivers_fake_transcript_without_microphone():
@@ -46,7 +42,7 @@ def test_speech_input_controller_reports_a_friendly_error_from_fake_transcriber(
     assert errors == ["Microphone is unavailable."]
 
 
-def test_speech_input_controller_pauses_and_discards_the_active_capture():
+def test_speech_input_controller_transcribes_the_phrase_when_pause_is_pressed():
     started = Event()
     completed = Event()
     pauses: list[bool] = []
@@ -55,20 +51,20 @@ def test_speech_input_controller_pauses_and_discards_the_active_capture():
         def transcribe(self, paused: Event) -> str:
             started.set()
             assert paused.wait(timeout=1)
-            raise SpeechTranscriptionPaused
+            return "Draft spoken before pause"
 
     controller = SpeechInputController(PausableTranscriber())
     controller.transcribe_async(
         on_listening=lambda: None,
-        on_transcript=lambda text: (_ for _ in ()).throw(AssertionError(text)),
+        on_transcript=lambda text: (pauses.append(text), completed.set()),
         on_error=lambda message: (_ for _ in ()).throw(AssertionError(message)),
-        on_paused=lambda: (pauses.append(True), completed.set()),
+        on_paused=lambda: (_ for _ in ()).throw(AssertionError("capture was discarded")),
     )
 
     assert started.wait(timeout=1)
     assert controller.pause() is True
     assert completed.wait(timeout=1)
-    assert pauses == [True]
+    assert pauses == ["Draft spoken before pause"]
 
 
 def test_recognized_text_is_inserted_into_chat_box_without_sending():

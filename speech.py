@@ -12,7 +12,7 @@ class SpeechTranscriptionError(Exception):
 
 
 class SpeechTranscriptionPaused(Exception):
-    """The user paused capture before a transcript was available."""
+    """The user stopped capture before saying a phrase."""
 
 
 class SpeechTranscriber(Protocol):
@@ -36,16 +36,15 @@ class GoogleSpeechTranscriber:
         try:
             with sr.Microphone() as source:
                 recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                while not paused.is_set():
+                while True:
                     try:
                         audio = recognizer.listen(source, timeout=1, phrase_time_limit=30)
                     except sr.WaitTimeoutError:
+                        if paused.is_set():
+                            raise SpeechTranscriptionPaused from None
                         continue
                     break
-                else:
-                    raise SpeechTranscriptionPaused
-            if paused.is_set():
-                raise SpeechTranscriptionPaused
+            # If Pause was requested during a phrase, keep and transcribe that phrase.
             return recognizer.recognize_google(audio).strip()
         except sr.WaitTimeoutError as error:
             raise SpeechTranscriptionError("No speech was detected. Please try again.") from error
@@ -87,7 +86,7 @@ class SpeechInputController:
         self._paused: Event | None = None
 
     def pause(self) -> bool:
-        """Request capture cancellation; the worker releases the microphone safely."""
+        """Stop waiting for a new phrase while preserving one already being captured."""
         with self._lock:
             if self._paused is None:
                 return False

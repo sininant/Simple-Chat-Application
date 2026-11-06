@@ -921,7 +921,7 @@ class ChatBoxBar:
         elif self._is_listening:
             if self.speech_input.pause():
                 self.action_button.configure(
-                    state="disabled", text="Pausing…", image=None, width=70
+                    state="disabled", text="Transcribing…", image=None, width=98
                 )
         else:
             self.speech_input.transcribe_async(
@@ -952,7 +952,7 @@ class ChatBoxBar:
         self.action_button.configure(state="normal", text="Pause", image=None, width=58)
 
     def _set_paused(self) -> None:
-        """Return to the microphone control after the worker releases the audio device."""
+        """Return to the microphone control when capture stopped before any speech."""
         self._is_listening = False
         self.action_button.configure(state="normal", text="", width=34)
         self._update_action_icon()
