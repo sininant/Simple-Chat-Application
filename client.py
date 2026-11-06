@@ -34,6 +34,7 @@ from protocol import (
     RegisterPayload,
     UserListPayload,
     parse_server_event,
+    validate_avatar,
     validate_message_id,
     validate_message_text,
     validate_username,
@@ -73,6 +74,7 @@ class ClientSession:
 
         self._lock = threading.RLock()
         self._username: str | None = None
+        self._avatar = "rabbit"
         self._online_users: list[str] = []
         self._is_connected: bool = False
         self._is_registered: bool = False
@@ -87,11 +89,12 @@ class ClientSession:
             with self._lock:
                 self._is_connected = True
                 username_to_reregister = self._username
+                avatar_to_reregister = self._avatar
             logger.info("Connected to server: %s", self.server_url)
             self.event_queue.put(("connect", None))
             if username_to_reregister is not None:
                 logger.info("Auto re-registering on reconnect as: %s", username_to_reregister)
-                self.register(username_to_reregister)
+                self.register(username_to_reregister, avatar_to_reregister)
 
         @self.sio.event
         def disconnect() -> None:
@@ -195,7 +198,7 @@ class ClientSession:
                 self._is_connected = False
                 self._is_registered = False
 
-    def register(self, username: str) -> bool:
+    def register(self, username: str, avatar: str = "rabbit") -> bool:
         """Send a registration request with the desired username (R3).
 
         Validates the username format against protocol specifications.
@@ -204,13 +207,16 @@ class ClientSession:
         """
         try:
             clean_username = validate_username(username)
+            clean_avatar = validate_avatar(avatar)
         except ProtocolValidationError as e:
             self.event_queue.put(
                 (EVENT_REGISTER_ACK, RegisterAckPayload(success=False, error=e.message))
             )
             return False
 
-        payload = RegisterPayload(username=clean_username)
+        with self._lock:
+            self._avatar = clean_avatar
+        payload = RegisterPayload(username=clean_username, avatar=clean_avatar)
         self.sio.emit(EVENT_REGISTER, payload.to_dict())
         return True
 

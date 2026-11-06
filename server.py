@@ -35,6 +35,7 @@ from protocol import (
     RegisterPayload,
     UserListPayload,
     parse_client_event,
+    validate_avatar,
     validate_username,
 )
 
@@ -80,11 +81,12 @@ class ChatEngine:
         self._lock = threading.RLock()
         self._sessions: dict[str, str] = {}  # sid -> username
         self._users: dict[str, str] = {}  # username -> sid
+        self._avatars: dict[str, str] = {}  # username -> selected character
         self._private_messages: dict[str, tuple[str, str]] = {}  # message_id -> (sender, target)
 
     # --- Session & Identity Management (R3, R4) ---
 
-    def register_user(self, sid: str, username: str) -> RegisterAckPayload:
+    def register_user(self, sid: str, username: str, avatar: str = "rabbit") -> RegisterAckPayload:
         """Register a unique username for a connected client session.
 
         Enforces non-empty, unpadded alphanumeric format and uniqueness.
@@ -92,6 +94,7 @@ class ChatEngine:
         """
         try:
             username = validate_username(username)
+            avatar = validate_avatar(avatar)
         except ProtocolValidationError as e:
             return RegisterAckPayload(success=False, error=e.message)
 
@@ -107,9 +110,11 @@ class ChatEngine:
             old_user = self._sessions.get(sid)
             if old_user is not None and old_user != username:
                 self._users.pop(old_user, None)
+                self._avatars.pop(old_user, None)
 
             self._sessions[sid] = username
             self._users[username] = sid
+            self._avatars[username] = avatar
             return RegisterAckPayload(
                 success=True,
                 username=username,
@@ -122,6 +127,7 @@ class ChatEngine:
             username = self._sessions.pop(sid, None)
             if username is not None:
                 self._users.pop(username, None)
+                self._avatars.pop(username, None)
             return username
 
     def get_username(self, sid: str) -> str | None:
@@ -143,6 +149,11 @@ class ChatEngine:
         """Return a sorted list of all currently registered online usernames (R4)."""
         with self._lock:
             return sorted(self._users.keys())
+
+    def get_online_avatars(self) -> dict[str, str]:
+        """Return selected characters for the active user roster."""
+        with self._lock:
+            return {username: self._avatars[username] for username in self.get_online_users()}
 
     # --- 1-to-1 Private Message Routing (R7) ---
 
@@ -263,7 +274,7 @@ class ChatServer:
         def connect(sid: str, environ: dict[str, Any]) -> None:
             logger.info("Connection established: sid=%s", sid)
             # Emit initial user roster to the connecting client
-            initial_roster = UserListPayload(users=self.engine.get_online_users())
+            initial_roster = self._user_list_payload()
             self.sio.emit(
                 EVENT_USER_LIST,
                 initial_roster.to_dict(),
@@ -284,7 +295,7 @@ class ChatServer:
             try:
                 payload = parse_client_event(EVENT_REGISTER, data)
                 assert isinstance(payload, RegisterPayload)
-                ack = self.engine.register_user(sid, payload.username)
+                ack = self.engine.register_user(sid, payload.username, payload.avatar)
             except ProtocolValidationError as e:
                 ack = RegisterAckPayload(success=False, error=e.message)
 
@@ -350,9 +361,15 @@ class ChatServer:
 
     # --- Broadcast Helpers (R4) ---
 
+    def _user_list_payload(self) -> UserListPayload:
+        """Build the current presence roster once for direct and broadcast delivery."""
+        return UserListPayload(
+            users=self.engine.get_online_users(), avatars=self.engine.get_online_avatars()
+        )
+
     def broadcast_user_list(self) -> None:
         """Broadcast updated connected user roster to all clients (R4)."""
-        payload = UserListPayload(users=self.engine.get_online_users())
+        payload = self._user_list_payload()
         self.sio.emit(EVENT_USER_LIST, payload.to_dict())
 
     # --- HTTP/WSGI Server Lifecycle ---

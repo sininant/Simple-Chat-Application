@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from collections import deque
 from typing import Any
 
 import pytest
 
-from gui import GuiController, MainChatWindow
+from gui import GuiController, MainChatWindow, configure_fixed_pixel_scaling
 from protocol import (
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
@@ -36,7 +37,7 @@ class SessionSpy:
     ) -> None:
         self.events = deque(events or [])
         self.connected_to: list[str] = []
-        self.registered: list[str] = []
+        self.registered: list[tuple[str, str]] = []
         self.sent_private: list[tuple[str, str, str | None, str | None]] = []
         self.sent_read_ack: list[tuple[str, str]] = []
         self.connect_result = connect_result
@@ -46,8 +47,8 @@ class SessionSpy:
         self.connected_to.append(server_url)
         return self.connect_result
 
-    def register(self, username: str) -> bool:
-        self.registered.append(username)
+    def register(self, username: str, avatar: str = "rabbit") -> bool:
+        self.registered.append((username, avatar))
         return True
 
     def send_private_message(
@@ -71,13 +72,39 @@ class SessionSpy:
         return self.events.popleft() if self.events else None
 
 
+class ScalingSpy:
+    def __init__(self) -> None:
+        self.automatic_dpi_awareness_disabled = False
+        self.widget_scaling: float | None = None
+        self.window_scaling: float | None = None
+
+    def deactivate_automatic_dpi_awareness(self) -> None:
+        self.automatic_dpi_awareness_disabled = True
+
+    def set_widget_scaling(self, value: float) -> None:
+        self.widget_scaling = value
+
+    def set_window_scaling(self, value: float) -> None:
+        self.window_scaling = value
+
+
+def test_fixed_pixel_scaling_disables_automatic_dpi_resizing():
+    ui = ScalingSpy()
+
+    configure_fixed_pixel_scaling(ui)
+
+    assert ui.automatic_dpi_awareness_disabled is True
+    assert ui.widget_scaling == 1.0
+    assert ui.window_scaling == 1.0
+
+
 def test_controller_connects_then_registers_the_requested_user():
     session = SessionSpy()
     controller = GuiController(session)
 
     assert controller.connect_and_register("127.0.0.1", "5000", "Alice") is True
     assert session.connected_to == ["http://127.0.0.1:5000"]
-    assert session.registered == ["Alice"]
+    assert session.registered == [("Alice", "rabbit")]
 
 
 def test_controller_preserves_invalid_username_for_clientsession_validation():
@@ -86,7 +113,7 @@ def test_controller_preserves_invalid_username_for_clientsession_validation():
 
     controller.connect_and_register("127.0.0.1", "5000", " Alice ")
 
-    assert session.registered == [" Alice "]
+    assert session.registered == [(" Alice ", "rabbit")]
 
 
 def test_controller_applies_queued_login_and_presence_events():
@@ -106,6 +133,22 @@ def test_controller_applies_queued_login_and_presence_events():
     assert controller.username == "Alice"
     assert controller.online_users == ["Alice", "Bob"]
     assert controller.login_error is None
+
+
+def test_controller_keeps_each_online_users_selected_character():
+    session = SessionSpy(
+        [
+            (
+                EVENT_USER_LIST,
+                UserListPayload(users=["Alice", "Bob"], avatars={"Alice": "cat", "Bob": "dog"}),
+            )
+        ]
+    )
+    controller = GuiController(session)
+
+    controller.poll_events()
+
+    assert controller.online_avatars == {"Alice": "cat", "Bob": "dog"}
 
 
 def test_controller_adds_the_registered_user_before_the_first_presence_update():
@@ -306,6 +349,9 @@ class DirectSession:
         return self.events.popleft() if self.events else None
 
 
+@pytest.mark.skipif(
+    os.environ.get("RUN_GUI_TESTS") != "1", reason="set RUN_GUI_TESTS=1 with a graphical display"
+)
 def test_main_window_retries_pending_read_acks_on_reconnect():
     """Verify pending ACKs are retried only after re-registration with new SID (SP4)."""
     try:
@@ -405,6 +451,9 @@ def test_main_window_retries_pending_read_acks_on_reconnect():
         root.destroy()
 
 
+@pytest.mark.skipif(
+    os.environ.get("RUN_GUI_TESTS") != "1", reason="set RUN_GUI_TESTS=1 with a graphical display"
+)
 def test_end_to_end_private_message_and_read_ack_flow():
     """Verify true end-to-end UI flow:
     Alice sends message via ChatServer -> Bob receives in background ->

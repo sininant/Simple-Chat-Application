@@ -354,9 +354,17 @@ def test_user_list_payload():
     payload = UserListPayload.from_dict(raw)
     assert payload.users == ["Alice", "Bob", "Charlie"]
     assert payload.to_dict() == raw
-
     with pytest.raises(ProtocolValidationError):
         UserListPayload.from_dict({"users": ["Alice", "Invalid User!"]})
+
+
+def test_user_list_payload_accepts_a_valid_avatar_for_each_user():
+    payload = UserListPayload.from_dict(
+        {"users": ["Alice", "Bob"], "avatars": {"Alice": "cat", "Bob": "dog"}}
+    )
+
+    assert payload.avatars == {"Alice": "cat", "Bob": "dog"}
+    assert payload.to_dict() == {"users": ["Alice", "Bob"], "avatars": payload.avatars}
 
 
 def test_private_message_client_and_server_payloads():
