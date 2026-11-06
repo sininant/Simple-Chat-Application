@@ -64,7 +64,15 @@ See [docs/protocol.md](docs/protocol.md) for the agreed Socket.IO event contract
 
 ## Getting started
 
-Speech-to-text microphone capture additionally needs the local `PyAudio` backend supported by SpeechRecognition. Install it on machines that use the microphone (for example, `python -m pip install PyAudio`) and grant the application microphone permission when prompted.
+Speech-to-text microphone capture uses the bundled `PyAudio` dependency. On macOS, install PortAudio first if PyAudio cannot build (`brew install portaudio`), then rerun the dependency installation with its headers and libraries available:
+
+```bash
+CFLAGS="-I$(brew --prefix portaudio)/include" \\
+LDFLAGS="-L$(brew --prefix portaudio)/lib" \\
+python -m pip install -r requirements.txt
+```
+
+Grant the application microphone permission when prompted.
 
 ### Prerequisites
 
