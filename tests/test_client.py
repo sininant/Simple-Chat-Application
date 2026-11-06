@@ -6,12 +6,18 @@ import socketio
 
 from client import ClientSession
 from protocol import (
+    EVENT_CREATE_GROUP,
+    EVENT_GROUP_ERROR,
+    EVENT_GROUP_LIST,
+    EVENT_JOIN_GROUP,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    GroupErrorPayload,
+    GroupListPayload,
     PrivateMessageServerPayload,
     ReadAckServerPayload,
     RegisterAckPayload,
@@ -233,6 +239,56 @@ def test_client_session_user_list_updates_presence():
     assert event_name == EVENT_USER_LIST
     assert isinstance(payload, UserListPayload)
     assert payload.users == ["Alice", "Bob", "Charlie"]
+
+
+def test_client_session_tracks_group_list_and_emits_voluntary_group_actions():
+    """R8-R10: typed group updates drive explicit create and self-join requests."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+    spy.trigger("connect")
+    _ = session.get_next_event(block=False)
+    spy.trigger(
+        EVENT_REGISTER_ACK,
+        {"success": True, "username": "Alice", "message": "Registered successfully"},
+    )
+    _ = session.get_next_event(block=False)
+
+    spy.trigger(
+        EVENT_GROUP_LIST,
+        {"groups": [{"group_name": "StudyGroup", "members": ["Alice"]}]},
+    )
+
+    assert session.groups == [{"group_name": "StudyGroup", "members": ["Alice"]}]
+    queued = session.get_next_event(block=False)
+    assert queued is not None
+    assert queued[0] == EVENT_GROUP_LIST
+    assert isinstance(queued[1], GroupListPayload)
+
+    assert session.create_group("StudyGroup") is True
+    assert session.join_group("StudyGroup") is True
+    assert spy.emitted == [
+        (EVENT_CREATE_GROUP, {"group_name": "StudyGroup"}),
+        (EVENT_JOIN_GROUP, {"group_name": "StudyGroup"}),
+    ]
+
+
+def test_client_session_rejects_group_actions_when_disconnected():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    assert session.create_group("StudyGroup") is False
+    assert session.join_group("StudyGroup") is False
+    assert spy.emitted == []
+
+
+def test_client_session_parses_group_errors():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger(EVENT_GROUP_ERROR, {"error": "Group name already exists"})
+
+    queued = session.get_next_event(block=False)
+    assert queued == (EVENT_GROUP_ERROR, GroupErrorPayload(error="Group name already exists"))
 
 
 def test_client_session_catch_all_custom_events():

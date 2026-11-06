@@ -34,11 +34,15 @@ except ImportError:  # pragma: no cover - exercised only on machines without GUI
 from client import ClientSession
 from protocol import (
     EVENT_CONNECT,
+    EVENT_GROUP_ERROR,
+    EVENT_GROUP_LIST,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    GroupErrorPayload,
+    GroupListPayload,
     PrivateMessageServerPayload,
     ReadAckServerPayload,
     RegisterAckPayload,
@@ -74,6 +78,10 @@ class SessionPort(Protocol):
 
     def send_read_ack(self, message_id: str, target: str) -> bool: ...
 
+    def create_group(self, group_name: str) -> bool: ...
+
+    def join_group(self, group_name: str) -> bool: ...
+
 
 class GuiController:
     """Headless adapter that owns GUI-facing login, presence, and chat message state."""
@@ -85,6 +93,8 @@ class GuiController:
         self.avatar = "rabbit"
         self.online_users: list[str] = []
         self.online_avatars: dict[str, str] = {}
+        self.groups: list[dict[str, Any]] = []
+        self.group_error: str | None = None
         self.login_error: str | None = None
         self.private_messages: dict[str, list[PrivateMessageServerPayload]] = {}
         self.on_private_message: Callable[[str, PrivateMessageServerPayload], None] | None = None
@@ -105,6 +115,16 @@ class GuiController:
         if send_fn is None:
             return False
         return send_fn(message_id, target)
+
+    def create_group(self, group_name: str) -> bool:
+        """Request a group whose initial member is the local user (R8)."""
+        create_fn = getattr(self.session, "create_group", None)
+        return bool(create_fn and create_fn(group_name))
+
+    def join_group(self, group_name: str) -> bool:
+        """Request that the local user voluntarily joins a group (R10)."""
+        join_fn = getattr(self.session, "join_group", None)
+        return bool(join_fn and join_fn(group_name))
 
     def connect_and_register(
         self, host: str, port: str, username: str, avatar: str = "rabbit"
@@ -151,6 +171,13 @@ class GuiController:
             elif event_name == EVENT_USER_LIST and isinstance(payload, UserListPayload):
                 self.online_users = list(payload.users)
                 self.online_avatars = dict(payload.avatars)
+                changed = True
+            elif event_name == EVENT_GROUP_LIST and isinstance(payload, GroupListPayload):
+                self.groups = [group.to_dict() for group in payload.groups]
+                self.group_error = None
+                changed = True
+            elif event_name == EVENT_GROUP_ERROR and isinstance(payload, GroupErrorPayload):
+                self.group_error = payload.error
                 changed = True
             elif event_name == EVENT_PRIVATE_MSG and isinstance(
                 payload, PrivateMessageServerPayload
@@ -470,12 +497,22 @@ class AnnouncementBanner:
 
 
 class SidebarPanel:
-    """Reusable responsive presence and group placeholder panel."""
+    """Reusable responsive presence and server-backed group discovery panel."""
 
-    def __init__(self, parent: Any, on_chat: Callable[[str], None]) -> None:
+    def __init__(
+        self,
+        parent: Any,
+        on_chat: Callable[[str], None],
+        on_create_group: Callable[[str], bool],
+        on_join_group: Callable[[str], bool],
+        on_open_group: Callable[[str], None],
+    ) -> None:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, width=380, fg_color="transparent")
         self.on_chat = on_chat
+        self.on_create_group = on_create_group
+        self.on_join_group = on_join_group
+        self.on_open_group = on_open_group
         self.avatars = _load_avatars((42, 42))
         self.avatar = self.avatars.get("rabbit")
         self.icons = _load_icons((30, 30))
@@ -531,6 +568,7 @@ class SidebarPanel:
             corner_radius=15,
             bg_color=BLUE,
             fg_color=WHITE,
+            hover_color=BLUE,
             border_color=INK,
             border_width=1,
             text_color=INK,
@@ -550,7 +588,7 @@ class SidebarPanel:
         self.group_rows: dict[str, Any] = {}
 
     def _open_group_dialog(self) -> None:
-        """Open the local create-group dialog until server group wiring is added."""
+        """Open the dialog for a server-backed group creation request."""
         ui = _require_ctk()
         if (
             hasattr(self, "_active_dialog")
@@ -565,7 +603,7 @@ class SidebarPanel:
         self._active_dialog = dialog
         dialog.title("Create New Group")
         dialog.withdraw()
-        width, height = 470, 260
+        width, height = 630, 320
         dialog.geometry(f"{width}x{height}")
         dialog.resizable(False, False)
         dialog.transient(self.frame.winfo_toplevel())
@@ -580,56 +618,56 @@ class SidebarPanel:
         dialog.protocol("WM_DELETE_WINDOW", _close_dialog)
         dialog.bind("<Escape>", lambda _event: _close_dialog())
 
-        card = ui.CTkFrame(
-            dialog, fg_color=WHITE, border_color=INK, border_width=2, corner_radius=14
-        )
+        card = ui.CTkFrame(dialog, fg_color=WHITE, border_width=0, corner_radius=0)
         card.pack(fill="both", expand=True)
-        header = tk.Canvas(card, height=58, bg=WHITE, highlightthickness=0, bd=0)
+        header = tk.Canvas(card, height=84, bg=WHITE, highlightthickness=0, bd=0)
         header.pack(fill="x")
         header.bind("<Configure>", lambda _event: self._draw_group_dialog_header(header))
 
         name_entry = ui.CTkEntry(
             card,
             placeholder_text="Enter Group Name",
-            height=38,
-            font=(FONT, 18),
+            height=60,
+            font=(FONT, 19),
             fg_color=PINK_LIGHT,
             border_color=INK,
-            border_width=1,
-            corner_radius=19,
+            border_width=2,
+            corner_radius=30,
         )
-        name_entry.pack(fill="x", padx=38, pady=(18, 10))
+        name_entry.pack(fill="x", padx=46, pady=(46, 20))
 
         btn_row = ui.CTkFrame(card, fg_color="transparent")
-        btn_row.pack(fill="x", padx=38, pady=(4, 10))
+        btn_row.pack(pady=(8, 12))
 
         ui.CTkButton(
             btn_row,
             text="Cancel",
-            width=100,
-            height=44,
+            width=92,
+            height=54,
             fg_color="#E0E0E0",
             hover_color="#D0D0D0",
             text_color=INK,
-            corner_radius=12,
+            border_color=INK,
+            border_width=2,
+            corner_radius=16,
             font=(FONT, 14, "bold"),
             command=_close_dialog,
-        ).pack(side="left", padx=(0, 10))
+        ).pack(side="left", padx=(0, 14))
 
         ui.CTkButton(
             btn_row,
             text="Create",
-            width=180,
-            height=44,
+            width=228,
+            height=62,
             fg_color=BLUE,
             hover_color="#91D5DF",
             text_color=INK,
             border_color=INK,
-            border_width=1,
-            corner_radius=12,
-            font=(FONT, 16, "bold"),
+            border_width=2,
+            corner_radius=18,
+            font=(FONT, 18, "bold"),
             command=lambda: self._create_group(name_entry, dialog),
-        ).pack(side="right", fill="x", expand=True)
+        ).pack(side="left")
 
         name_entry.bind("<Return>", lambda _event: self._create_group(name_entry, dialog))
         dialog.after(50, lambda: self._center_group_dialog(dialog, width, height, name_entry))
@@ -655,22 +693,7 @@ class SidebarPanel:
         width = max(canvas.winfo_width(), 10)
         height = max(canvas.winfo_height(), 10)
         canvas.delete("all")
-        radius = min(14, height // 2)
-        canvas.create_rectangle(0, radius, width, height, fill=BLUE, outline=BLUE)
-        canvas.create_rectangle(radius, 0, width - radius, height, fill=BLUE, outline=BLUE)
-        canvas.create_arc(
-            0, 0, radius * 2, radius * 2, start=90, extent=90, fill=BLUE, outline=BLUE
-        )
-        canvas.create_arc(
-            width - radius * 2,
-            0,
-            width,
-            radius * 2,
-            start=0,
-            extent=90,
-            fill=BLUE,
-            outline=BLUE,
-        )
+        canvas.create_rectangle(0, 0, width, height, fill=BLUE, outline=BLUE)
         canvas.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
         canvas.create_text(
             24,
@@ -683,39 +706,70 @@ class SidebarPanel:
 
     def _create_group(self, entry: Any, dialog: Any) -> None:
         name = entry.get().strip()
-        if not name:
+        if not name or not self.on_create_group(name):
             return
-        if name in self.group_rows:
-            try:
-                dialog.grab_release()
-            except Exception:
-                pass
-            dialog.destroy()
-            return
-        self.group_placeholder.pack_forget()
-        row = _require_ctk().CTkButton(
-            self.groups,
-            text=name,
-            image=self.avatars.get("dog"),
-            compound="left",
-            anchor="w",
-            border_spacing=14,
-            height=52,
-            corner_radius=0,
-            font=(FONT, 16, "bold"),
-            fg_color=PINK_LIGHT,
-            hover_color=PINK_LIGHT,
-            text_color=INK,
-            command=lambda group=name: self.on_chat(group),
-        )
-        row.pack(fill="x", padx=0, pady=0)
-        _require_ctk().CTkFrame(self.groups, height=2, fg_color=INK).pack(fill="x")
-        self.group_rows[name] = row
         try:
             dialog.grab_release()
         except Exception:
             pass
         dialog.destroy()
+
+    def set_groups(
+        self, groups: list[dict[str, Any]], current_user: str | None, error: str | None = None
+    ) -> None:
+        """Render current member lists with an explicit Join or Open action (R9/R10)."""
+        for child in self.groups.winfo_children():
+            child.destroy()
+        self.group_rows.clear()
+        if not groups:
+            self.group_placeholder = _require_ctk().CTkLabel(
+                self.groups,
+                text=error or "No groups yet. Create one to get started!",
+                text_color="#B22222" if error else INK,
+                wraplength=300,
+            )
+            self.group_placeholder.pack(pady=(12, 0))
+            return
+
+        for group in groups:
+            name = str(group["group_name"])
+            members = list(group["members"])
+            joined = current_user in members
+            row = _require_ctk().CTkFrame(self.groups, fg_color=PINK_LIGHT, corner_radius=8)
+            row.pack(fill="x", padx=4, pady=3)
+            _require_ctk().CTkLabel(
+                row, text=name, font=(FONT, 15, "bold"), text_color=INK, anchor="w"
+            ).pack(fill="x", padx=10, pady=(7, 0))
+            _require_ctk().CTkLabel(
+                row,
+                text="Members: " + ", ".join(members),
+                font=(FONT, 11),
+                text_color=INK,
+                anchor="w",
+                wraplength=220,
+            ).pack(fill="x", padx=10, pady=(1, 7))
+            action = "Open" if joined else "Join"
+            command = (
+                (lambda group_name=name: self.on_open_group(group_name))
+                if joined
+                else (lambda group_name=name: self.on_join_group(group_name))
+            )
+            _require_ctk().CTkButton(
+                row,
+                text=action,
+                width=66,
+                height=27,
+                corner_radius=13,
+                fg_color=BLUE,
+                hover_color="#91D5DF",
+                text_color=INK,
+                command=command,
+            ).place(relx=1.0, x=-9, y=9, anchor="ne")
+            self.group_rows[name] = row
+        if error:
+            _require_ctk().CTkLabel(
+                self.groups, text=error, text_color="#B22222", wraplength=300
+            ).pack(fill="x", padx=8, pady=(6, 2))
 
     def _draw_card_header(self, canvas: Any, fill: str, title: str, icon_name: str) -> None:
         """Draw a rounded top header without changing the card body."""
@@ -1089,7 +1143,7 @@ class MainChatWindow:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, fg_color=BACKGROUND)
         self.controller = controller
-        self.content = ui.CTkFrame(self.frame, width=900, height=540, fg_color="transparent")
+        self.content = ui.CTkFrame(self.frame, width=900, height=554, fg_color="transparent")
         self.content.place(relx=0.5, rely=0.5, anchor="center")
         self.content.grid_propagate(False)
         self.content.grid_rowconfigure(0, weight=0)
@@ -1122,13 +1176,23 @@ class MainChatWindow:
         self.banner = AnnouncementBanner(self.content)
         self.banner.frame.grid(row=0, column=0, columnspan=3, sticky="ew")
         self.banner.frame.grid_remove()
-        self.sidebar = SidebarPanel(self.content, self.open_private_room)
+        self.sidebar = SidebarPanel(
+            self.content,
+            self.open_private_room,
+            self.controller.create_group,
+            self.controller.join_group,
+            self.open_group_room,
+        )
         self.sidebar.frame.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
-        self.tabs = ui.CTkTabview(self.content, fg_color=BACKGROUND)
+        self.tabs = ui.CTkTabview(
+            self.content, fg_color=BACKGROUND, corner_radius=0, border_width=0
+        )
         self.tabs.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
             segmented_button.grid_remove()
+        for row in range(3):
+            self.tabs.grid_rowconfigure(row, minsize=0)
         self.rooms: dict[str, ChatRoomTab] = {}
         self._active_room: str | None = None
         self._rendered_messages: set[str] = set()
@@ -1147,7 +1211,7 @@ class MainChatWindow:
     def _resize_content(self, event: Any) -> None:
         """Keep the Figma proportions while still adapting to smaller windows."""
         width = min(920, max(720, int(event.width * 0.82)))
-        height = min(560, max(460, int(event.height * 0.78)))
+        height = min(574, max(554, int(event.height * 0.78)))
         self.content.configure(width=width, height=height)
 
     def refresh(self) -> None:
@@ -1156,6 +1220,9 @@ class MainChatWindow:
             self.controller.username,
             self.controller.online_avatars,
             self._active_room,
+        )
+        self.sidebar.set_groups(
+            self.controller.groups, self.controller.username, self.controller.group_error
         )
         peers = [user for user in self.controller.online_users if user != self.controller.username]
         if peers and not self.rooms:
@@ -1190,6 +1257,18 @@ class MainChatWindow:
                 self.controller.online_avatars,
                 self._active_room,
             )
+        segmented_button = getattr(self.tabs, "_segmented_button", None)
+        if segmented_button is not None:
+            segmented_button.grid_forget()
+
+    def open_group_room(self, group_name: str) -> None:
+        """Open a joined Group Room; group message transport is introduced in R11."""
+        if group_name not in self.rooms:
+            tab = self.tabs.add(group_name)
+            self.rooms[group_name] = ChatRoomTab(tab, group_name, on_send=lambda _message: None)
+            self.rooms[group_name].frame.pack(fill="both", expand=True)
+        self.tabs.set(group_name)
+        self._active_room = group_name
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
             segmented_button.grid_forget()
