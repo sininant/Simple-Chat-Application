@@ -74,9 +74,6 @@ python -m pip install -r requirements.txt
 
 Grant the application microphone permission when prompted.
 
-Choose **EN** or **TH** beside the microphone to match the speaker's language. The app passes `en-US` or `th-TH` to Google Web Speech recognition; select TH for Thai speech and EN for English speech.
-
-
 ### Prerequisites
 
 - Python 3.11+

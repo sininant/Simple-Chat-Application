@@ -24,9 +24,6 @@ class SpeechTranscriber(Protocol):
 class GoogleSpeechTranscriber:
     """Production adapter using SpeechRecognition's Google Web Speech API backend."""
 
-    def __init__(self, language: str = "en-US") -> None:
-        self.language = language
-
     def transcribe(self, paused: Event) -> str:
         try:
             import speech_recognition as sr
@@ -48,7 +45,7 @@ class GoogleSpeechTranscriber:
                         continue
                     break
             # If Pause was requested during a phrase, keep and transcribe that phrase.
-            return recognizer.recognize_google(audio, language=self.language).strip()
+            return recognizer.recognize_google(audio).strip()
         except sr.WaitTimeoutError as error:
             raise SpeechTranscriptionError("No speech was detected. Please try again.") from error
         except sr.UnknownValueError as error:
