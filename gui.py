@@ -342,7 +342,9 @@ class LoginView:
             canvas.bind("<Enter>", lambda _event, selected=name: self._hover_character(selected))
             canvas.bind("<Leave>", lambda _event: self._hover_character(None))
             self.character_buttons[name] = canvas
-        self.error = ui.CTkLabel(self.frame, text="", text_color="#C64B68", wraplength=300)
+        self.error = ui.CTkLabel(
+            self.frame, text="", text_color="#C64B68", wraplength=300, font=(FONT, 16)
+        )
         self.error.grid(row=5, column=0, padx=54, pady=(1, 1))
         ui.CTkButton(
             self.frame,
@@ -385,10 +387,16 @@ class LoginView:
 
     def _entry(self, label: str, value: str, row: int) -> Any:
         ui = _require_ctk()
-        ui.CTkLabel(self.frame, text=label, text_color=INK).grid(
+        ui.CTkLabel(self.frame, text=label, text_color=INK, font=(FONT, 16)).grid(
             row=row, column=0, padx=(28, 10), pady=8, sticky="w"
         )
-        entry = ui.CTkEntry(self.frame, placeholder_text=value, border_color=PINK, fg_color="white")
+        entry = ui.CTkEntry(
+            self.frame,
+            placeholder_text=value,
+            border_color=PINK,
+            fg_color="white",
+            font=(FONT, 16),
+        )
         if value:
             entry.insert(0, value)
         entry.grid(row=row, column=1, padx=(0, 28), pady=8, sticky="ew")
@@ -449,11 +457,12 @@ class AnnouncementBanner:
             compound="left",
             text_color=INK,
             anchor="w",
+            font=(FONT, 16),
         )
         self.label.pack(side="left", fill="x", expand=True, padx=14, pady=7)
-        ui.CTkButton(self.frame, text="Hide", width=55, command=self.frame.grid_remove).pack(
-            side="right", padx=8, pady=4
-        )
+        ui.CTkButton(
+            self.frame, text="Hide", width=55, font=(FONT, 14), command=self.frame.grid_remove
+        ).pack(side="right", padx=8, pady=4)
 
     def show(self, message: str) -> None:
         self.label.configure(text=f"📢  {message}")
@@ -536,6 +545,7 @@ class SidebarPanel:
             self.groups,
             text="Group rooms will appear here.",
             text_color=INK,
+            font=(FONT, 16),
         )
         self.group_placeholder.pack(pady=(12, 0))
         self.group_rows: dict[str, Any] = {}
@@ -831,6 +841,7 @@ class MessageBubble:
             wraplength=310,
             text_color=INK,
             fg_color="transparent",
+            font=(FONT, 16),
         )
         bubble.pack(padx=12, pady=7)
         bubble_shell.pack(anchor="e" if own else "w", padx=8, pady=4)
@@ -880,6 +891,7 @@ class ChatBoxBar:
             corner_radius=12,
             text_color=INK,
             wrap="word",
+            font=(FONT, 16),
         )
         self.entry.pack(side="left", fill="x", expand=True, padx=(10, 4), pady=5)
         self.entry.bind("<Return>", lambda _event: self._submit_and_consume())
@@ -904,6 +916,8 @@ class ChatBoxBar:
             fg_color="transparent",
             hover_color=PINK,
             text_color=INK,
+            font=(FONT, 14),
+            anchor="center",
             command=self._handle_action,
         )
         self.action_button.pack(side="left", padx=(2, 8))
@@ -940,7 +954,7 @@ class ChatBoxBar:
         elif self._is_listening:
             if self.speech_input.pause():
                 self.action_button.configure(
-                    state="disabled", text="Transcribing…", image=None, width=98
+                    state="disabled", text="Transcribing…", image=None, width=98, anchor="center"
                 )
         else:
             self.speech_input.transcribe_async(
@@ -968,7 +982,9 @@ class ChatBoxBar:
     def _set_listening(self) -> None:
         """Make the microphone control a Pause button while capture is active."""
         self._is_listening = True
-        self.action_button.configure(state="normal", text="Pause", image=None, width=58)
+        self.action_button.configure(
+            state="normal", text="Pause", image=None, width=58, anchor="center"
+        )
 
     def _set_paused(self) -> None:
         """Return to the microphone control when capture stopped before any speech."""
@@ -1013,6 +1029,7 @@ class ChatBoxBar:
             text_color=INK,
             justify="center",
             wraplength=320,
+            font=(FONT, 16),
         ).pack(fill="x", padx=16, pady=(4, 10))
         ui.CTkButton(
             dialog.frame,
@@ -1021,6 +1038,7 @@ class ChatBoxBar:
             fg_color=PINK,
             hover_color="#F58AAE",
             text_color=INK,
+            font=(FONT, 14),
         ).pack(pady=(0, 6))
         self._is_listening = False
         self.action_button.configure(state="normal", text="", width=34)
@@ -1226,6 +1244,7 @@ class MainChatWindow:
         self.tabs.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
+            segmented_button.configure(font=(FONT, 16))
             segmented_button.grid_remove()
         self.rooms: dict[str, ChatRoomTab] = {}
         self._active_room: str | None = None

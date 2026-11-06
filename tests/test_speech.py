@@ -265,5 +265,6 @@ def test_listening_state_turns_the_microphone_button_into_pause():
         "text": "Pause",
         "image": None,
         "width": 58,
+        "anchor": "center",
     }
     assert box._is_listening is True
