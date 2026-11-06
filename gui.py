@@ -997,9 +997,18 @@ class ChatBoxBar:
             anchor="center",
             command=self._handle_action,
         )
+        self.listening_label = ui.CTkLabel(
+            self.frame,
+            text="Listening…",
+            text_color=INK,
+            fg_color="transparent",
+            font=(FONT, 12),
+        )
         self.entry.grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=5)
         self.sticker_button.grid(row=0, column=1, padx=2, pady=5)
         self.action_button.grid(row=0, column=2, padx=(2, 8), pady=5)
+        self.listening_label.grid(row=1, column=0, columnspan=3, pady=(0, 3))
+        self.listening_label.grid_remove()
         self.entry.bind("<KeyRelease>", lambda _event: self._update_action_icon())
         self.frame.after(75, self._poll_speech_results)
 
@@ -1070,6 +1079,9 @@ class ChatBoxBar:
     def _set_listening(self) -> None:
         """Make the microphone control a centered pause icon while capture is active."""
         self._is_listening = True
+        label = getattr(self, "listening_label", None)
+        if label is not None:
+            label.grid()
         self.action_button.configure(
             state="normal",
             text="",
@@ -1095,6 +1107,7 @@ class ChatBoxBar:
     def _set_paused(self) -> None:
         """Return to the microphone control when capture stopped before any speech."""
         self._is_listening = False
+        self._hide_listening_label()
         self._restore_sticker_button()
         self.action_button.configure(
             state="normal", text="", width=30, fg_color="transparent", font=(FONT, 14)
@@ -1110,6 +1123,7 @@ class ChatBoxBar:
             self.entry.insert(0, text)
         self.entry.focus_set()
         self._is_listening = False
+        self._hide_listening_label()
         self._restore_sticker_button()
         self.action_button.configure(
             state="normal", text="", width=30, fg_color="transparent", font=(FONT, 14)
@@ -1155,12 +1169,17 @@ class ChatBoxBar:
             font=(FONT, 14),
         ).grid(row=2, column=0, pady=(0, 14))
         self._is_listening = False
+        self._hide_listening_label()
         self._restore_sticker_button()
         self.action_button.configure(
             state="normal", text="", width=30, fg_color="transparent", font=(FONT, 14)
         )
         self._update_action_icon()
 
+    def _hide_listening_label(self) -> None:
+        label = getattr(self, "listening_label", None)
+        if label is not None:
+            label.grid_remove()
 
     def _update_action_icon(self) -> None:
         self.action_button.configure(
@@ -1461,6 +1480,7 @@ class MainChatWindow:
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
             segmented_button.grid_forget()
+
     def _send_private_message(self, peer: str, message: str) -> None:
         msg_id = self.controller.send_private_message(peer, message)
         if msg_id is None:

@@ -37,23 +37,10 @@ def test_google_transcriber_adapts_to_room_noise():
     assert recognizer.dynamic_energy_threshold is True
 
 
-def test_google_transcriber_combines_all_audio_captured_before_pause():
-    class Chunk:
-        def __init__(self, frame_data: bytes) -> None:
-            self.frame_data = frame_data
-            self.sample_rate = 16_000
-            self.sample_width = 2
+def test_google_transcriber_accepts_a_configured_language():
+    transcriber = GoogleSpeechTranscriber(language="en-GB")
 
-    class SpeechRecognitionSpy:
-        @staticmethod
-        def AudioData(frame_data: bytes, sample_rate: int, sample_width: int):
-            return frame_data, sample_rate, sample_width
-
-    audio = GoogleSpeechTranscriber._combine_audio_chunks(
-        SpeechRecognitionSpy(), [Chunk(b"first"), Chunk(b"second")]
-    )
-
-    assert audio == (b"firstsecond", 16_000, 2)
+    assert transcriber.language == "en-GB"
 
 
 def test_enter_submits_the_current_draft_and_consumes_the_key_event():

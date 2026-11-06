@@ -74,6 +74,8 @@ python -m pip install -r requirements.txt
 
 Grant the application microphone permission when prompted.
 
+Speech recognition defaults to Thai (`th-TH`). Set `CHAT_SPEECH_LANGUAGE` in `.env` to a supported BCP-47 locale such as `en-US` or `en-GB` to recognise another language or accent.
+
 ### Prerequisites
 
 - Python 3.11+

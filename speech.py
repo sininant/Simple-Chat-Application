@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from threading import Event, Lock, Thread
 from typing import Protocol
@@ -24,20 +25,25 @@ class SpeechTranscriber(Protocol):
 class GoogleSpeechTranscriber:
     """Production adapter using SpeechRecognition's Google Web Speech API backend."""
 
+    def __init__(
+        self,
+        language: str | None = None,
+        listen_timeout: float = 5,
+        phrase_time_limit: float = 60,
+    ) -> None:
+        """Configure recognition without baking a language into the application.
+
+        ``CHAT_SPEECH_LANGUAGE`` accepts a BCP-47 locale such as ``th-TH``,
+        ``en-US``, or ``en-GB``. Thai remains the default for this application.
+        """
+        self.language = language or os.getenv("CHAT_SPEECH_LANGUAGE", "th-TH")
+        self.listen_timeout = listen_timeout
+        self.phrase_time_limit = phrase_time_limit
+
     @staticmethod
     def _configure_recognizer(recognizer: object) -> None:
         """Adapt microphone sensitivity to the current room noise."""
         recognizer.dynamic_energy_threshold = True
-
-    @staticmethod
-    def _combine_audio_chunks(speech_recognition: object, chunks: list[object]) -> object:
-        """Join locally recorded chunks into one AudioData object for transcription."""
-        first = chunks[0]
-        return speech_recognition.AudioData(
-            b"".join(chunk.frame_data for chunk in chunks),
-            first.sample_rate,
-            first.sample_width,
-        )
 
     def transcribe(self, paused: Event) -> str:
         try:
@@ -52,13 +58,12 @@ class GoogleSpeechTranscriber:
         try:
             with sr.Microphone() as source:
                 recognizer.adjust_for_ambient_noise(source, duration=0.1)
-                chunks = []
-                while not paused.is_set():
-                    chunks.append(recognizer.record(source, duration=0.1))
-            if not chunks:
-                raise SpeechTranscriptionPaused
-            audio = self._combine_audio_chunks(sr, chunks)
-            return recognizer.recognize_google(audio, language="th-TH").strip()
+                audio = recognizer.listen(
+                    source,
+                    timeout=self.listen_timeout,
+                    phrase_time_limit=self.phrase_time_limit,
+                )
+            return recognizer.recognize_google(audio, language=self.language).strip()
         except sr.WaitTimeoutError as error:
             raise SpeechTranscriptionError("No speech was detected. Please try again.") from error
         except sr.UnknownValueError as error:
