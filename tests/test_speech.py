@@ -6,7 +6,7 @@ from queue import Queue
 from threading import Event
 
 from gui import ChatBoxBar
-from speech import FakeSpeechTranscriber, SpeechInputController
+from speech import FakeSpeechTranscriber, GoogleSpeechTranscriber, SpeechInputController
 
 
 def test_speech_input_controller_delivers_fake_transcript_without_microphone():
@@ -24,6 +24,23 @@ def test_speech_input_controller_delivers_fake_transcript_without_microphone():
 
     assert completed.wait(timeout=1)
     assert received == ["Hello from the microphone"]
+
+
+def test_google_transcriber_accepts_short_utterances():
+    class RecognizerSpy:
+        dynamic_energy_threshold = False
+        phrase_threshold = 0.3
+        pause_threshold = 0.8
+        non_speaking_duration = 0.5
+
+    recognizer = RecognizerSpy()
+
+    GoogleSpeechTranscriber._configure_recognizer(recognizer)
+
+    assert recognizer.dynamic_energy_threshold is True
+    assert recognizer.phrase_threshold == 0.1
+    assert recognizer.pause_threshold == 0.5
+    assert recognizer.non_speaking_duration == 0.2
 
 
 def test_enter_submits_the_current_draft_and_consumes_the_key_event():

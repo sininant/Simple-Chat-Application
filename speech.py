@@ -24,6 +24,14 @@ class SpeechTranscriber(Protocol):
 class GoogleSpeechTranscriber:
     """Production adapter using SpeechRecognition's Google Web Speech API backend."""
 
+    @staticmethod
+    def _configure_recognizer(recognizer: object) -> None:
+        """Accept short utterances such as "hi" while adapting to room noise."""
+        recognizer.dynamic_energy_threshold = True
+        recognizer.phrase_threshold = 0.1
+        recognizer.pause_threshold = 0.5
+        recognizer.non_speaking_duration = 0.2
+
     def transcribe(self, paused: Event) -> str:
         try:
             import speech_recognition as sr
@@ -33,6 +41,7 @@ class GoogleSpeechTranscriber:
             ) from error
 
         recognizer = sr.Recognizer()
+        self._configure_recognizer(recognizer)
         try:
             with sr.Microphone() as source:
                 recognizer.adjust_for_ambient_noise(source, duration=0.5)
