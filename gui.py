@@ -919,7 +919,6 @@ class ChatBoxBar:
             text_color=INK,
             font=(FONT, 14),
             anchor="center",
-            compound="center",
             command=self._handle_action,
         )
         self.action_button.pack(side="left", padx=(2, 8))
@@ -990,7 +989,6 @@ class ChatBoxBar:
             image=None,
             width=58,
             anchor="center",
-            compound="center",
         )
 
     def _set_paused(self) -> None:
