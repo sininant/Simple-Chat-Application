@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from gui import GuiController, MainChatWindow
+from gui import GuiController, MainChatWindow, configure_fixed_pixel_scaling
 from protocol import (
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
@@ -84,6 +84,32 @@ class SessionSpy:
     def get_next_event(self, *, block: bool = False) -> tuple[str, Any] | None:
         del block
         return self.events.popleft() if self.events else None
+
+
+class ScalingSpy:
+    def __init__(self) -> None:
+        self.automatic_dpi_awareness_disabled = False
+        self.widget_scaling: float | None = None
+        self.window_scaling: float | None = None
+
+    def deactivate_automatic_dpi_awareness(self) -> None:
+        self.automatic_dpi_awareness_disabled = True
+
+    def set_widget_scaling(self, value: float) -> None:
+        self.widget_scaling = value
+
+    def set_window_scaling(self, value: float) -> None:
+        self.window_scaling = value
+
+
+def test_fixed_pixel_scaling_disables_automatic_dpi_resizing():
+    ui = ScalingSpy()
+
+    configure_fixed_pixel_scaling(ui)
+
+    assert ui.automatic_dpi_awareness_disabled is True
+    assert ui.widget_scaling == 1.0
+    assert ui.window_scaling == 1.0
 
 
 def test_controller_connects_then_registers_the_requested_user():
