@@ -62,7 +62,6 @@ def test_recognized_text_is_inserted_into_chat_box_without_sending():
 
     box = object.__new__(ChatBoxBar)
     box.entry = EntrySpy()
-    box.notice = WidgetSpy()
     box.action_button = WidgetSpy()
     box.send_icon = "send"
     box.microphone_icon = "microphone"
@@ -74,7 +73,7 @@ def test_recognized_text_is_inserted_into_chat_box_without_sending():
     assert box.action_button.options["state"] == "normal"
 
 
-def test_microphone_click_shows_listening_then_inserts_fake_transcript():
+def test_microphone_click_disables_action_then_inserts_fake_transcript():
     """The ChatBoxBar click path schedules the fake result without calling Send."""
 
     class EntrySpy:
@@ -109,7 +108,6 @@ def test_microphone_click_shows_listening_then_inserts_fake_transcript():
 
     box = object.__new__(ChatBoxBar)
     box.entry = EntrySpy()
-    box.notice = WidgetSpy()
     box.action_button = WidgetSpy()
     box.frame = FrameSpy()
     box.send_icon = "send"

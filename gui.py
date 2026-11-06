@@ -906,8 +906,6 @@ class ChatBoxBar:
             command=self._handle_action,
         )
         self.action_button.pack(side="left", padx=(2, 8))
-        self.notice = ui.CTkLabel(self.frame, text="", text_color=INK, font=(FONT, 11))
-        self.notice.pack(side="bottom", fill="x", padx=12, pady=(0, 3))
         self.entry.bind("<KeyRelease>", lambda _event: self._update_action_icon())
         self.frame.after(75, self._poll_speech_results)
 
@@ -940,21 +938,38 @@ class ChatBoxBar:
         self.frame.after(75, self._poll_speech_results)
 
     def _set_listening(self) -> None:
-        """Show microphone capture state while the worker owns the audio device."""
-        self.notice.configure(text="Listening…")
-        self.action_button.configure(state="disabled", text="Listening…", image=None, width=78)
+        """Prevent duplicate microphone captures while the worker owns the device."""
+        self.action_button.configure(state="disabled")
 
     def insert_transcript(self, text: str) -> None:
         """Place recognized text in the composer; the user still chooses when to send."""
         self.entry.delete(0, "end")
         self.entry.insert(0, text)
-        self.notice.configure(text="")
-        self.action_button.configure(state="normal", text="", width=34)
+        self.action_button.configure(state="normal")
         self._update_action_icon()
 
     def _show_speech_error(self, message: str) -> None:
-        self.notice.configure(text=f"⚠ {message}")
-        self.action_button.configure(state="normal", text="", width=34)
+        """Present a recoverable transcription failure without crowding the chat bar."""
+        ui = _require_ctk()
+        dialog = PopupDialog(self.frame.winfo_toplevel(), "Speech-to-Text")
+        dialog.window.geometry("380x150")
+        dialog.window.grab_set()
+        ui.CTkLabel(
+            dialog.frame,
+            text=f"⚠ {message}",
+            text_color=INK,
+            justify="center",
+            wraplength=320,
+        ).pack(fill="x", padx=16, pady=(12, 10))
+        ui.CTkButton(
+            dialog.frame,
+            text="Close",
+            command=dialog.window.destroy,
+            fg_color=PINK,
+            hover_color="#F58AAE",
+            text_color=INK,
+        ).pack(pady=(0, 6))
+        self.action_button.configure(state="normal")
         self._update_action_icon()
 
     def _update_action_icon(self) -> None:
