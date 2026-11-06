@@ -26,21 +26,34 @@ def test_speech_input_controller_delivers_fake_transcript_without_microphone():
     assert received == ["Hello from the microphone"]
 
 
-def test_google_transcriber_accepts_short_utterances():
+def test_google_transcriber_adapts_to_room_noise():
     class RecognizerSpy:
         dynamic_energy_threshold = False
-        phrase_threshold = 0.3
-        pause_threshold = 0.8
-        non_speaking_duration = 0.5
 
     recognizer = RecognizerSpy()
 
     GoogleSpeechTranscriber._configure_recognizer(recognizer)
 
     assert recognizer.dynamic_energy_threshold is True
-    assert recognizer.phrase_threshold == 0.1
-    assert recognizer.pause_threshold == 0.5
-    assert recognizer.non_speaking_duration == 0.2
+
+
+def test_google_transcriber_combines_all_audio_captured_before_pause():
+    class Chunk:
+        def __init__(self, frame_data: bytes) -> None:
+            self.frame_data = frame_data
+            self.sample_rate = 16_000
+            self.sample_width = 2
+
+    class SpeechRecognitionSpy:
+        @staticmethod
+        def AudioData(frame_data: bytes, sample_rate: int, sample_width: int):
+            return frame_data, sample_rate, sample_width
+
+    audio = GoogleSpeechTranscriber._combine_audio_chunks(
+        SpeechRecognitionSpy(), [Chunk(b"first"), Chunk(b"second")]
+    )
+
+    assert audio == (b"firstsecond", 16_000, 2)
 
 
 def test_enter_submits_the_current_draft_and_consumes_the_key_event():

@@ -26,11 +26,18 @@ class GoogleSpeechTranscriber:
 
     @staticmethod
     def _configure_recognizer(recognizer: object) -> None:
-        """Accept short utterances such as "hi" while adapting to room noise."""
+        """Adapt microphone sensitivity to the current room noise."""
         recognizer.dynamic_energy_threshold = True
-        recognizer.phrase_threshold = 0.1
-        recognizer.pause_threshold = 0.5
-        recognizer.non_speaking_duration = 0.2
+
+    @staticmethod
+    def _combine_audio_chunks(speech_recognition: object, chunks: list[object]) -> object:
+        """Join locally recorded chunks into one AudioData object for transcription."""
+        first = chunks[0]
+        return speech_recognition.AudioData(
+            b"".join(chunk.frame_data for chunk in chunks),
+            first.sample_rate,
+            first.sample_width,
+        )
 
     def transcribe(self, paused: Event) -> str:
         try:
@@ -45,15 +52,12 @@ class GoogleSpeechTranscriber:
         try:
             with sr.Microphone() as source:
                 recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                while True:
-                    try:
-                        audio = recognizer.listen(source, timeout=1, phrase_time_limit=30)
-                    except sr.WaitTimeoutError:
-                        if paused.is_set():
-                            raise SpeechTranscriptionPaused from None
-                        continue
-                    break
-            # If Pause was requested during a phrase, keep and transcribe that phrase.
+                chunks = []
+                while not paused.is_set():
+                    chunks.append(recognizer.record(source, duration=0.5))
+            if not chunks:
+                raise SpeechTranscriptionPaused
+            audio = self._combine_audio_chunks(sr, chunks)
             return recognizer.recognize_google(audio).strip()
         except sr.WaitTimeoutError as error:
             raise SpeechTranscriptionError("No speech was detected. Please try again.") from error
