@@ -238,7 +238,7 @@ def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
                 "notification": (17, 20),
                 "logout": (23, 23),
                 "sticker": (24, 24),
-                "send": (28, 24),
+                "send": (19, 17),
                 "microphone": (20, 24),
             }
             icon_size = intrinsic_sizes.get(name, size)
@@ -885,7 +885,8 @@ class ChatBoxBar:
         self.frame = ui.CTkFrame(parent, fg_color=PINK_LIGHT, corner_radius=0)
         self.entry = ui.CTkTextbox(
             self.frame,
-            height=54,
+            width=398,
+            height=37,
             fg_color=PINK,
             border_width=0,
             corner_radius=12,
@@ -893,7 +894,7 @@ class ChatBoxBar:
             wrap="word",
             font=(FONT, 16),
         )
-        self.entry.pack(side="left", fill="x", expand=True, padx=(10, 4), pady=5)
+        self.entry.pack(side="left", padx=(10, 4), pady=5)
         self.entry.bind("<Return>", lambda _event: self._submit_and_consume())
         sticker_button = ui.CTkButton(
             self.frame,
@@ -918,6 +919,7 @@ class ChatBoxBar:
             text_color=INK,
             font=(FONT, 14),
             anchor="center",
+            compound="center",
             command=self._handle_action,
         )
         self.action_button.pack(side="left", padx=(2, 8))
@@ -983,7 +985,12 @@ class ChatBoxBar:
         """Make the microphone control a Pause button while capture is active."""
         self._is_listening = True
         self.action_button.configure(
-            state="normal", text="Pause", image=None, width=58, anchor="center"
+            state="normal",
+            text="PAUSE",
+            image=None,
+            width=58,
+            anchor="center",
+            compound="center",
         )
 
     def _set_paused(self) -> None:

@@ -262,9 +262,10 @@ def test_listening_state_turns_the_microphone_button_into_pause():
 
     assert box.action_button.options == {
         "state": "normal",
-        "text": "Pause",
+        "text": "PAUSE",
         "image": None,
         "width": 58,
         "anchor": "center",
+        "compound": "center",
     }
     assert box._is_listening is True
