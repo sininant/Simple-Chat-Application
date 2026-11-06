@@ -951,16 +951,29 @@ class ChatBoxBar:
     def _show_speech_error(self, message: str) -> None:
         """Present a recoverable transcription failure without crowding the chat bar."""
         ui = _require_ctk()
-        dialog = PopupDialog(self.frame.winfo_toplevel(), "Speech-to-Text")
-        dialog.window.geometry("380x150")
+        parent = self.frame.winfo_toplevel()
+        parent.update_idletasks()
+        width, height = 380, 150
+        x = parent.winfo_rootx() + max((parent.winfo_width() - width) // 2, 0)
+        y = parent.winfo_rooty() + max((parent.winfo_height() - height) // 2, 0)
+        dialog = PopupDialog(parent, "Speech-to-Text")
+        dialog.window.overrideredirect(True)
+        dialog.window.resizable(False, False)
+        dialog.window.geometry(f"{width}x{height}+{x}+{y}")
         dialog.window.grab_set()
+        ui.CTkLabel(
+            dialog.frame,
+            text="Speech-to-Text",
+            text_color=INK,
+            font=(FONT, 16, "bold"),
+        ).pack(fill="x", padx=16, pady=(10, 2))
         ui.CTkLabel(
             dialog.frame,
             text=f"⚠ {message}",
             text_color=INK,
             justify="center",
             wraplength=320,
-        ).pack(fill="x", padx=16, pady=(12, 10))
+        ).pack(fill="x", padx=16, pady=(4, 10))
         ui.CTkButton(
             dialog.frame,
             text="Close",
