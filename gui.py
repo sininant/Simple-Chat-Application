@@ -885,7 +885,9 @@ class ChatBoxBar:
         self.frame = ui.CTkFrame(parent, fg_color=PINK_LIGHT, corner_radius=0)
         self.entry = ui.CTkTextbox(
             self.frame,
-            width=398,
+            # CustomTkinter applies the macOS 2× display scale; 199 logical pixels
+            # renders as the requested 398 screen-pixel-wide composer.
+            width=199,
             height=37,
             fg_color=PINK,
             border_width=0,
