@@ -6,7 +6,7 @@ from queue import Queue
 from threading import Event
 
 from gui import ChatBoxBar
-from speech import FakeSpeechTranscriber, SpeechInputController
+from speech import FakeSpeechTranscriber, GoogleSpeechTranscriber, SpeechInputController
 
 
 def test_speech_input_controller_delivers_fake_transcript_without_microphone():
@@ -24,6 +24,20 @@ def test_speech_input_controller_delivers_fake_transcript_without_microphone():
 
     assert completed.wait(timeout=1)
     assert received == ["Hello from the microphone"]
+
+
+def test_google_transcriber_uses_english_by_default_and_accepts_thai():
+    assert GoogleSpeechTranscriber().language == "en-US"
+    assert GoogleSpeechTranscriber(language="th-TH").language == "th-TH"
+
+
+def test_language_selector_changes_the_google_transcriber_locale():
+    box = object.__new__(ChatBoxBar)
+    box.transcriber = GoogleSpeechTranscriber()
+
+    box._set_speech_language("TH")
+
+    assert box.transcriber.language == "th-TH"
 
 
 def test_enter_submits_the_current_draft_and_consumes_the_key_event():

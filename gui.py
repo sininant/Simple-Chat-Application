@@ -865,7 +865,8 @@ class ChatBoxBar:
         ui = _require_ctk()
         on_sticker = on_sticker or _noop
         self.on_send = on_send
-        self.speech_input = SpeechInputController(transcriber or GoogleSpeechTranscriber())
+        self.transcriber = transcriber or GoogleSpeechTranscriber()
+        self.speech_input = SpeechInputController(self.transcriber)
         self._speech_results: Queue[tuple[str, str]] = Queue()
         self._is_listening = False
         self.sticker_icon = _load_icons().get("sticker")
@@ -895,6 +896,19 @@ class ChatBoxBar:
             command=on_sticker,
         )
         sticker_button.pack(side="left", padx=2)
+        self.language_selector = ui.CTkOptionMenu(
+            self.frame,
+            values=["EN", "TH"],
+            width=48,
+            height=28,
+            fg_color="transparent",
+            button_color=PINK,
+            button_hover_color="#F58AAE",
+            text_color=INK,
+            command=self._set_speech_language,
+        )
+        self.language_selector.set("EN")
+        self.language_selector.pack(side="left", padx=2)
         self.action_button = ui.CTkButton(
             self.frame,
             text="",
@@ -919,6 +933,11 @@ class ChatBoxBar:
         """Send an Entry draft and prevent Tk from processing Return a second time."""
         self._submit()
         return "break"
+
+    def _set_speech_language(self, choice: str) -> None:
+        """Select the recognizer locale that best matches the speaker's language."""
+        if isinstance(self.transcriber, GoogleSpeechTranscriber):
+            self.transcriber.language = {"EN": "en-US", "TH": "th-TH"}[choice]
 
     def _handle_action(self) -> None:
         if self.entry.get().strip():
