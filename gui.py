@@ -239,11 +239,18 @@ def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
                 "notification": (17, 20),
                 "logout": (23, 23),
                 "sticker": (24, 24),
-                "send": (19, 17),
-                "microphone": (20, 24),
-                "pause": (17, 20),
+                "send": (20, 20),
+                "microphone": (20, 20),
+                "pause": (20, 20),
             }
             icon_size = intrinsic_sizes.get(name, size)
+            if name in {"send", "microphone", "pause"}:
+                # Fit the complete glyph in a common canvas without cropping or distortion.
+                image.thumbnail(icon_size, Image.Resampling.LANCZOS)
+                centered = Image.new("RGBA", icon_size, (0, 0, 0, 0))
+                offset = ((icon_size[0] - image.width) // 2, (icon_size[1] - image.height) // 2)
+                centered.alpha_composite(image, offset)
+                image = centered
             icons[name] = ctk.CTkImage(light_image=image, dark_image=image, size=icon_size)
     return icons
 
@@ -474,10 +481,16 @@ class AnnouncementBanner:
 class SidebarPanel:
     """Reusable responsive presence and group placeholder panel."""
 
-    def __init__(self, parent: Any, on_chat: Callable[[str], None]) -> None:
+    def __init__(
+        self,
+        parent: Any,
+        on_chat: Callable[[str], None],
+        on_group_chat: Callable[[str], None] | None = None,
+    ) -> None:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(parent, width=380, fg_color="transparent")
         self.on_chat = on_chat
+        self.on_group_chat = on_group_chat or on_chat
         self.avatars = _load_avatars((42, 42))
         self.avatar = self.avatars.get("rabbit")
         self.icons = _load_icons((30, 30))
@@ -713,7 +726,7 @@ class SidebarPanel:
             fg_color=PINK_LIGHT,
             hover_color=PINK_LIGHT,
             text_color=INK,
-            command=lambda group=name: self.on_chat(group),
+            command=lambda group=name: self.on_group_chat(group),
         )
         row.pack(fill="x", padx=0, pady=0)
         _require_ctk().CTkFrame(self.groups, height=2, fg_color=INK).pack(fill="x")
@@ -886,6 +899,7 @@ class ChatBoxBar:
         self.pause_icon = _load_icons().get("pause")
         self.send_icon = _load_icons().get("send")
         self.frame = ui.CTkFrame(parent, fg_color=PINK_LIGHT, corner_radius=0)
+        self.frame.grid_columnconfigure(0, weight=1)
         self.entry = ui.CTkTextbox(
             self.frame,
             # CustomTkinter applies the macOS 2× display scale; 199 logical pixels
@@ -907,7 +921,7 @@ class ChatBoxBar:
             width=30,
             height=30,
             fg_color="transparent",
-            hover_color=PINK,
+            hover=False,
             text_color=INK,
             command=on_sticker,
         )
@@ -918,16 +932,15 @@ class ChatBoxBar:
             width=30,
             height=30,
             fg_color="transparent",
-            hover_color=PINK,
+            hover=False,
             text_color=INK,
             font=(FONT, 14),
             anchor="center",
             command=self._handle_action,
         )
-        # Reserve the icon controls first so a narrow Chat Room never clips them.
-        self.action_button.pack(side="right", padx=(2, 8), pady=5)
-        self.sticker_button.pack(side="right", padx=2, pady=5)
-        self.entry.pack(side="left", fill="x", expand=True, padx=(10, 4), pady=5)
+        self.entry.grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=5)
+        self.sticker_button.grid(row=0, column=1, padx=2, pady=5)
+        self.action_button.grid(row=0, column=2, padx=(2, 8), pady=5)
         self.entry.bind("<KeyRelease>", lambda _event: self._update_action_icon())
         self.frame.after(75, self._poll_speech_results)
 
@@ -1004,19 +1017,21 @@ class ChatBoxBar:
             image=self.pause_icon,
             width=30,
             anchor="center",
-            fg_color=PINK,
+            # fg_color=PINK,
             font=(FONT, 14),
         )
 
     def _hide_sticker_button(self) -> None:
         sticker_button = getattr(self, "sticker_button", None)
         if sticker_button is not None:
-            sticker_button.pack_forget()
+            sticker_button.grid_remove()
+            self.action_button.grid(row=0, column=1, columnspan=2, padx=(2, 8), pady=5)
 
     def _restore_sticker_button(self) -> None:
         sticker_button = getattr(self, "sticker_button", None)
         if sticker_button is not None and not sticker_button.winfo_manager():
-            sticker_button.pack(side="right", padx=2, pady=5, before=self.action_button)
+            sticker_button.grid(row=0, column=1, padx=2, pady=5)
+            self.action_button.grid(row=0, column=2, columnspan=1, padx=(2, 8), pady=5)
 
     def _set_paused(self) -> None:
         """Return to the microphone control when capture stopped before any speech."""
@@ -1047,7 +1062,7 @@ class ChatBoxBar:
         ui = _require_ctk()
         parent = self.frame.winfo_toplevel()
         parent.update_idletasks()
-        width, height = 380, 150
+        width, height = 380, 220
         x = parent.winfo_rootx() + max((parent.winfo_width() - width) // 2, 0)
         y = parent.winfo_rooty() + max((parent.winfo_height() - height) // 2, 0)
         dialog = PopupDialog(parent, "Speech-to-Text")
@@ -1055,12 +1070,14 @@ class ChatBoxBar:
         dialog.window.resizable(False, False)
         dialog.window.geometry(f"{width}x{height}+{x}+{y}")
         dialog.window.grab_set()
+        dialog.frame.grid_columnconfigure(0, weight=1)
+        dialog.frame.grid_rowconfigure(1, weight=1)
         ui.CTkLabel(
             dialog.frame,
             text="Speech-to-Text",
             text_color=INK,
             font=(FONT, 16, "bold"),
-        ).pack(fill="x", padx=16, pady=(10, 2))
+        ).grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 4))
         ui.CTkLabel(
             dialog.frame,
             text=f"⚠ {message}",
@@ -1068,7 +1085,7 @@ class ChatBoxBar:
             justify="center",
             wraplength=320,
             font=(FONT, 16),
-        ).pack(fill="x", padx=16, pady=(4, 10))
+        ).grid(row=1, column=0, sticky="nsew", padx=16, pady=(4, 8))
         ui.CTkButton(
             dialog.frame,
             text="Close",
@@ -1077,7 +1094,7 @@ class ChatBoxBar:
             hover_color="#F58AAE",
             text_color=INK,
             font=(FONT, 14),
-        ).pack(pady=(0, 6))
+        ).grid(row=2, column=0, pady=(0, 14))
         self._is_listening = False
         self._restore_sticker_button()
         self.action_button.configure(
@@ -1279,7 +1296,7 @@ class MainChatWindow:
         self.banner = AnnouncementBanner(self.content)
         self.banner.frame.grid(row=0, column=0, columnspan=3, sticky="ew")
         self.banner.frame.grid_remove()
-        self.sidebar = SidebarPanel(self.content, self.open_private_room)
+        self.sidebar = SidebarPanel(self.content, self.open_private_room, self.open_group_room)
         self.sidebar.frame.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
         self.tabs = ui.CTkTabview(self.content, fg_color=PINK_LIGHT)
         self.tabs.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
@@ -1288,6 +1305,7 @@ class MainChatWindow:
             segmented_button.configure(font=(FONT, 16))
             segmented_button.grid_remove()
         self.rooms: dict[str, ChatRoomTab] = {}
+        self.group_rooms: dict[str, ChatRoomTab] = {}
         self._active_room: str | None = None
         self._rendered_messages: set[str] = set()
         self._unread_messages: dict[str, set[str]] = {}
@@ -1330,17 +1348,43 @@ class MainChatWindow:
         if user == self.controller.username:
             return
         if user not in self.rooms:
-            tab = self.tabs.add(user)
-            self.rooms[user] = ChatRoomTab(
-                tab,
-                user,
-                on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
-            )
-            self.rooms[user].frame.pack(fill="both", expand=True)
+            existing_tabs = getattr(self.tabs, "_tab_dict", {})
+            tab_exists = user in existing_tabs
+            tab = self.tabs.tab(user) if tab_exists else self.tabs.add(user)
+            try:
+                room = ChatRoomTab(
+                    tab,
+                    user,
+                    on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
+                )
+                room.frame.pack(fill="both", expand=True)
+                self.rooms[user] = room
+            except Exception:
+                if not tab_exists:
+                    self.tabs.delete(user)
+                raise
         if select:
             self.tabs.set(user)
             self._active_room = user
             self._ack_unread_in_room(user)
+
+    def open_group_room(self, group_name: str, select: bool = True) -> None:
+        """Open a distinct Group Room tab for a Community group."""
+        tab_name = f"Group · {group_name}"
+        if group_name not in self.group_rooms:
+            existing_tabs = getattr(self.tabs, "_tab_dict", {})
+            tab_exists = tab_name in existing_tabs
+            tab = self.tabs.tab(tab_name) if tab_exists else self.tabs.add(tab_name)
+            try:
+                room = ChatRoomTab(tab, group_name)
+                room.frame.pack(fill="both", expand=True)
+                self.group_rooms[group_name] = room
+            except Exception:
+                if not tab_exists:
+                    self.tabs.delete(tab_name)
+                raise
+        if select:
+            self.tabs.set(tab_name)
 
     def _send_private_message(self, peer: str, message: str) -> None:
         msg_id = self.controller.send_private_message(peer, message)

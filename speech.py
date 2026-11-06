@@ -63,7 +63,7 @@ class GoogleSpeechTranscriber:
             raise SpeechTranscriptionError("No speech was detected. Please try again.") from error
         except sr.UnknownValueError as error:
             raise SpeechTranscriptionError(
-                "Sorry, I could not understand that. Please try again."
+                "Sorry, I could not understand that.\n Please try again."
             ) from error
         except sr.RequestError as error:
             raise SpeechTranscriptionError(
@@ -71,7 +71,7 @@ class GoogleSpeechTranscriber:
             ) from error
         except OSError as error:
             raise SpeechTranscriptionError(
-                "Microphone is unavailable. Please check it and try again."
+                "Microphone is unavailable.\n Please check it and try again."
             ) from error
 
 
