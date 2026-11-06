@@ -124,3 +124,24 @@ def test_microphone_click_disables_action_then_inserts_fake_transcript():
 
     assert box.entry.value == "Draft from microphone"
     assert box.action_button.options["state"] == "normal"
+
+
+def test_listening_state_uses_a_single_microphone_button_indicator():
+    class WidgetSpy:
+        def __init__(self) -> None:
+            self.options: dict[str, object] = {}
+
+        def configure(self, **options: object) -> None:
+            self.options.update(options)
+
+    box = object.__new__(ChatBoxBar)
+    box.action_button = WidgetSpy()
+
+    box._set_listening()
+
+    assert box.action_button.options == {
+        "state": "disabled",
+        "text": "Listening…",
+        "image": None,
+        "width": 78,
+    }

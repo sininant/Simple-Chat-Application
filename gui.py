@@ -938,14 +938,14 @@ class ChatBoxBar:
         self.frame.after(75, self._poll_speech_results)
 
     def _set_listening(self) -> None:
-        """Prevent duplicate microphone captures while the worker owns the device."""
-        self.action_button.configure(state="disabled")
+        """Show a single capture state and prevent duplicate microphone requests."""
+        self.action_button.configure(state="disabled", text="Listening…", image=None, width=78)
 
     def insert_transcript(self, text: str) -> None:
         """Place recognized text in the composer; the user still chooses when to send."""
         self.entry.delete(0, "end")
         self.entry.insert(0, text)
-        self.action_button.configure(state="normal")
+        self.action_button.configure(state="normal", text="", width=34)
         self._update_action_icon()
 
     def _show_speech_error(self, message: str) -> None:
@@ -969,7 +969,7 @@ class ChatBoxBar:
             hover_color="#F58AAE",
             text_color=INK,
         ).pack(pady=(0, 6))
-        self.action_button.configure(state="normal")
+        self.action_button.configure(state="normal", text="", width=34)
         self._update_action_icon()
 
     def _update_action_icon(self) -> None:
