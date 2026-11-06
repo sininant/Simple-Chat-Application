@@ -59,10 +59,12 @@ See [docs/protocol.md](docs/protocol.md) for the agreed Socket.IO event contract
 - **Desktop GUI (Client):**
   - **Recommended:** `CustomTkinter` + `Pillow` (or standard-library `tkinter` with `ttk.Notebook` tabs) for simple multi-tab chat rooms (`R5`), inline `.png` sticker rendering, and 1-line `"Read ✓✓"` label updates
   - **Alternative:** `PySide6` / `PyQt5` (`QTabWidget` / `QListWidget` / `QTextBrowser`)
-- **AI Feature (Speech-to-Text):** Client-side `SpeechRecognition` (with Google Web Speech API or OpenAI Whisper)
+- **AI Feature (Speech-to-Text):** Client-side `SpeechRecognition` using its **Google Web Speech API (`recognize_google`) backend**. The production adapter is `GoogleSpeechTranscriber` in `speech.py`; it captures and transcribes audio locally before only the resulting text enters normal chat messaging. Reference: [SpeechRecognition `recognize_google` API](https://github.com/Uberi/speech_recognition/blob/master/reference/library-reference.rst#recognizer_instance-recognize_google).
 - **Quality checks:** `pytest` and Ruff
 
 ## Getting started
+
+Speech-to-text microphone capture additionally needs the local `PyAudio` backend supported by SpeechRecognition. Install it on machines that use the microphone (for example, `python -m pip install PyAudio`) and grant the application microphone permission when prompted.
 
 ### Prerequisites
 

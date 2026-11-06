@@ -12,6 +12,7 @@ import os
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any, Protocol
 
 try:  # Keep headless CI able to import the controller without GUI dependencies installed.
@@ -44,6 +45,7 @@ from protocol import (
     RegisterAckPayload,
     UserListPayload,
 )
+from speech import GoogleSpeechTranscriber, SpeechInputController, SpeechTranscriber
 
 BACKGROUND = "#FFFCF8"
 PINK = "#FF9FBF"
@@ -858,13 +860,13 @@ class ChatBoxBar:
         parent: Any,
         on_send: Callable[[str], None],
         on_sticker: Callable[[], None] | None = None,
-        on_microphone: Callable[[], None] | None = None,
+        transcriber: SpeechTranscriber | None = None,
     ) -> None:
         ui = _require_ctk()
         on_sticker = on_sticker or _noop
-        on_microphone = on_microphone or _noop
         self.on_send = on_send
-        self.on_microphone = on_microphone
+        self.speech_input = SpeechInputController(transcriber or GoogleSpeechTranscriber())
+        self._speech_results: Queue[tuple[str, str]] = Queue()
         self.sticker_icon = _load_icons().get("sticker")
         self.microphone_icon = _load_icons().get("microphone")
         self.send_icon = _load_icons().get("send")
@@ -904,7 +906,10 @@ class ChatBoxBar:
             command=self._handle_action,
         )
         self.action_button.pack(side="left", padx=(2, 8))
+        self.notice = ui.CTkLabel(self.frame, text="", text_color=INK, font=(FONT, 11))
+        self.notice.pack(side="bottom", fill="x", padx=12, pady=(0, 3))
         self.entry.bind("<KeyRelease>", lambda _event: self._update_action_icon())
+        self.frame.after(75, self._poll_speech_results)
 
     def _submit(self) -> None:
         message = self.entry.get().strip()
@@ -915,7 +920,42 @@ class ChatBoxBar:
         if self.entry.get().strip():
             self._submit()
         else:
-            self.on_microphone()
+            self.speech_input.transcribe_async(
+                on_listening=self._set_listening,
+                on_transcript=lambda text: self._speech_results.put(("transcript", text)),
+                on_error=lambda message: self._speech_results.put(("error", message)),
+            )
+
+    def _poll_speech_results(self) -> None:
+        """Apply worker results on the Tk thread without calling Tk from the worker."""
+        try:
+            while result := self._speech_results.get_nowait():
+                kind, value = result
+                if kind == "transcript":
+                    self.insert_transcript(value)
+                else:
+                    self._show_speech_error(value)
+        except Empty:
+            pass
+        self.frame.after(75, self._poll_speech_results)
+
+    def _set_listening(self) -> None:
+        """Show microphone capture state while the worker owns the audio device."""
+        self.notice.configure(text="Listening…")
+        self.action_button.configure(state="disabled", text="Listening…", image=None, width=78)
+
+    def insert_transcript(self, text: str) -> None:
+        """Place recognized text in the composer; the user still chooses when to send."""
+        self.entry.delete(0, "end")
+        self.entry.insert(0, text)
+        self.notice.configure(text="")
+        self.action_button.configure(state="normal", text="", width=34)
+        self._update_action_icon()
+
+    def _show_speech_error(self, message: str) -> None:
+        self.notice.configure(text=f"⚠ {message}")
+        self.action_button.configure(state="normal", text="", width=34)
+        self._update_action_icon()
 
     def _update_action_icon(self) -> None:
         self.action_button.configure(
@@ -932,7 +972,7 @@ class ChatRoomTab:
         room_name: str,
         on_send: Callable[[str], None] | None = None,
         on_sticker: Callable[[], None] | None = None,
-        on_microphone: Callable[[], None] | None = None,
+        transcriber: SpeechTranscriber | None = None,
     ) -> None:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(
@@ -953,7 +993,7 @@ class ChatRoomTab:
             self.frame,
             self._send,
             on_sticker=on_sticker,
-            on_microphone=on_microphone,
+            transcriber=transcriber,
         )
         self.box.frame.pack(fill="x", padx=4, pady=(0, 4))
         self.room_name = room_name

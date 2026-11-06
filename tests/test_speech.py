@@ -1,0 +1,128 @@
+"""Headless behavior tests for the client-side speech transcription seam."""
+
+from __future__ import annotations
+
+from queue import Queue
+from threading import Event
+
+from gui import ChatBoxBar
+from speech import FakeSpeechTranscriber, SpeechInputController
+
+
+def test_speech_input_controller_delivers_fake_transcript_without_microphone():
+    """A completed transcription is made available to the chat composer, not sent."""
+    completed = Event()
+    received: list[str] = []
+    controller = SpeechInputController(FakeSpeechTranscriber("Hello from the microphone"))
+
+    controller.transcribe_async(
+        on_listening=lambda: None,
+        on_transcript=lambda text: (received.append(text), completed.set()),
+        on_error=lambda message: (_ for _ in ()).throw(AssertionError(message)),
+    )
+
+    assert completed.wait(timeout=1)
+    assert received == ["Hello from the microphone"]
+
+
+def test_speech_input_controller_reports_a_friendly_error_from_fake_transcriber():
+    completed = Event()
+    errors: list[str] = []
+    controller = SpeechInputController(FakeSpeechTranscriber(error="Microphone is unavailable."))
+
+    controller.transcribe_async(
+        on_listening=lambda: None,
+        on_transcript=lambda text: (_ for _ in ()).throw(AssertionError(text)),
+        on_error=lambda message: (errors.append(message), completed.set()),
+    )
+
+    assert completed.wait(timeout=1)
+    assert errors == ["Microphone is unavailable."]
+
+
+def test_recognized_text_is_inserted_into_chat_box_without_sending():
+    """The microphone flow fills the composer and leaves Send under user control."""
+
+    class EntrySpy:
+        def __init__(self) -> None:
+            self.value = ""
+
+        def delete(self, _start: int, _end: str) -> None:
+            self.value = ""
+
+        def insert(self, _index: int, text: str) -> None:
+            self.value = text
+
+    class WidgetSpy:
+        def __init__(self) -> None:
+            self.options: dict[str, object] = {}
+
+        def configure(self, **options: object) -> None:
+            self.options.update(options)
+
+    box = object.__new__(ChatBoxBar)
+    box.entry = EntrySpy()
+    box.notice = WidgetSpy()
+    box.action_button = WidgetSpy()
+    box.send_icon = "send"
+    box.microphone_icon = "microphone"
+    box._update_action_icon = lambda: None
+
+    box.insert_transcript("Draft from speech")
+
+    assert box.entry.value == "Draft from speech"
+    assert box.action_button.options["state"] == "normal"
+
+
+def test_microphone_click_shows_listening_then_inserts_fake_transcript():
+    """The ChatBoxBar click path schedules the fake result without calling Send."""
+
+    class EntrySpy:
+        def __init__(self) -> None:
+            self.value = ""
+            self.inserted = Event()
+
+        def get(self) -> str:
+            return self.value
+
+        def delete(self, _start: int, _end: str) -> None:
+            self.value = ""
+
+        def insert(self, _index: int, text: str) -> None:
+            self.value = text
+            self.inserted.set()
+
+    class WidgetSpy:
+        def __init__(self) -> None:
+            self.options: dict[str, object] = {}
+
+        def configure(self, **options: object) -> None:
+            self.options.update(options)
+
+    class FrameSpy:
+        def __init__(self) -> None:
+            self.callbacks: list[object] = []
+
+        def after(self, _delay: int, callback: object) -> None:
+            assert callable(callback)
+            self.callbacks.append(callback)
+
+    box = object.__new__(ChatBoxBar)
+    box.entry = EntrySpy()
+    box.notice = WidgetSpy()
+    box.action_button = WidgetSpy()
+    box.frame = FrameSpy()
+    box.send_icon = "send"
+    box.microphone_icon = "microphone"
+    box.speech_input = SpeechInputController(FakeSpeechTranscriber("Draft from microphone"))
+    box._speech_results = Queue()
+    box._update_action_icon = lambda: None
+
+    box._handle_action()
+
+    assert box._speech_results.get(timeout=1) == ("transcript", "Draft from microphone")
+    box._speech_results.put(("transcript", "Draft from microphone"))
+    box._poll_speech_results()
+
+    assert box.entry.value == "Draft from microphone"
+    assert box.action_button.options["state"] == "normal"
