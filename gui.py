@@ -12,6 +12,7 @@ import os
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any, Protocol
 
 try:  # Keep headless CI able to import the controller without GUI dependencies installed.
@@ -48,6 +49,7 @@ from protocol import (
     RegisterAckPayload,
     UserListPayload,
 )
+from speech import GoogleSpeechTranscriber, SpeechInputController, SpeechTranscriber
 
 BACKGROUND = "#FFFCF8"
 PINK = "#FF9FBF"
@@ -263,6 +265,7 @@ def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
         "sticker",
         "send",
         "microphone",
+        "pause",
     ):
         path = root / "assets" / f"icon_{name}.png"
         if path.is_file():
@@ -274,10 +277,18 @@ def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
                 "notification": (17, 20),
                 "logout": (23, 23),
                 "sticker": (24, 24),
-                "send": (28, 24),
-                "microphone": (20, 24),
+                "send": (20, 20),
+                "microphone": (20, 20),
+                "pause": (20, 20),
             }
             icon_size = intrinsic_sizes.get(name, size)
+            if name in {"send", "microphone", "pause"}:
+                # Fit the complete glyph in a common canvas without cropping or distortion.
+                image.thumbnail(icon_size, Image.Resampling.LANCZOS)
+                centered = Image.new("RGBA", icon_size, (0, 0, 0, 0))
+                offset = ((icon_size[0] - image.width) // 2, (icon_size[1] - image.height) // 2)
+                centered.alpha_composite(image, offset)
+                image = centered
             icons[name] = ctk.CTkImage(light_image=image, dark_image=image, size=icon_size)
     return icons
 
@@ -378,7 +389,9 @@ class LoginView:
             canvas.bind("<Enter>", lambda _event, selected=name: self._hover_character(selected))
             canvas.bind("<Leave>", lambda _event: self._hover_character(None))
             self.character_buttons[name] = canvas
-        self.error = ui.CTkLabel(self.frame, text="", text_color="#C64B68", wraplength=300)
+        self.error = ui.CTkLabel(
+            self.frame, text="", text_color="#C64B68", wraplength=300, font=(FONT, 16)
+        )
         self.error.grid(row=5, column=0, padx=54, pady=(1, 1))
         ui.CTkButton(
             self.frame,
@@ -421,10 +434,16 @@ class LoginView:
 
     def _entry(self, label: str, value: str, row: int) -> Any:
         ui = _require_ctk()
-        ui.CTkLabel(self.frame, text=label, text_color=INK).grid(
+        ui.CTkLabel(self.frame, text=label, text_color=INK, font=(FONT, 16)).grid(
             row=row, column=0, padx=(28, 10), pady=8, sticky="w"
         )
-        entry = ui.CTkEntry(self.frame, placeholder_text=value, border_color=PINK, fg_color="white")
+        entry = ui.CTkEntry(
+            self.frame,
+            placeholder_text=value,
+            border_color=PINK,
+            fg_color="white",
+            font=(FONT, 16),
+        )
         if value:
             entry.insert(0, value)
         entry.grid(row=row, column=1, padx=(0, 28), pady=8, sticky="ew")
@@ -485,11 +504,12 @@ class AnnouncementBanner:
             compound="left",
             text_color=INK,
             anchor="w",
+            font=(FONT, 16),
         )
         self.label.pack(side="left", fill="x", expand=True, padx=14, pady=7)
-        ui.CTkButton(self.frame, text="Hide", width=55, command=self.frame.grid_remove).pack(
-            side="right", padx=8, pady=4
-        )
+        ui.CTkButton(
+            self.frame, text="Hide", width=55, font=(FONT, 14), command=self.frame.grid_remove
+        ).pack(side="right", padx=8, pady=4)
 
     def show(self, message: str) -> None:
         self.label.configure(text=f"📢  {message}")
@@ -583,6 +603,7 @@ class SidebarPanel:
             self.groups,
             text="Group rooms will appear here.",
             text_color=INK,
+            font=(FONT, 16),
         )
         self.group_placeholder.pack(pady=(12, 0))
         self.group_rows: dict[str, Any] = {}
@@ -894,6 +915,7 @@ class MessageBubble:
             wraplength=310,
             text_color=INK,
             fg_color="transparent",
+            font=(FONT, 16),
         )
         bubble.pack(padx=12, pady=7)
         bubble_shell.pack(anchor="e" if own else "w", padx=8, pady=4)
@@ -923,68 +945,239 @@ class ChatBoxBar:
         parent: Any,
         on_send: Callable[[str], None],
         on_sticker: Callable[[], None] | None = None,
-        on_microphone: Callable[[], None] | None = None,
+        transcriber: SpeechTranscriber | None = None,
     ) -> None:
         ui = _require_ctk()
         on_sticker = on_sticker or _noop
-        on_microphone = on_microphone or _noop
         self.on_send = on_send
-        self.on_microphone = on_microphone
+        self.speech_input = SpeechInputController(transcriber or GoogleSpeechTranscriber())
+        self._speech_results: Queue[tuple[str, str]] = Queue()
+        self._is_listening = False
         self.sticker_icon = _load_icons().get("sticker")
         self.microphone_icon = _load_icons().get("microphone")
+        self.pause_icon = _load_icons().get("pause")
         self.send_icon = _load_icons().get("send")
         self.frame = ui.CTkFrame(parent, fg_color=PINK_LIGHT, corner_radius=0)
-        self.entry = ui.CTkEntry(
+        self.frame.grid_columnconfigure(0, weight=1)
+        self.entry = ui.CTkTextbox(
             self.frame,
-            placeholder_text="Type a message…",
-            height=34,
+            # CustomTkinter applies the macOS 2× display scale; 199 logical pixels
+            # renders as the requested 398 screen-pixel-wide composer.
+            width=350,
+            height=37,
             fg_color=PINK,
             border_width=0,
-            corner_radius=17,
+            corner_radius=12,
             text_color=INK,
+            wrap="word",
+            font=(FONT, 16),
         )
-        self.entry.pack(side="left", fill="x", expand=True, padx=(10, 4), pady=8)
-        self.entry.bind("<Return>", lambda _event: self._submit())
-        sticker_button = ui.CTkButton(
+        self.entry.bind("<Return>", lambda _event: self._submit_and_consume())
+        self.sticker_button = ui.CTkButton(
             self.frame,
             text="",
             image=self.sticker_icon,
             width=30,
             height=30,
             fg_color="transparent",
-            hover_color=PINK,
+            hover=False,
             text_color=INK,
             command=on_sticker,
         )
-        sticker_button.pack(side="left", padx=2)
         self.action_button = ui.CTkButton(
             self.frame,
             text="",
             image=self.microphone_icon,
-            width=34,
+            width=30,
             height=30,
             fg_color="transparent",
-            hover_color=PINK,
+            hover=False,
             text_color=INK,
+            font=(FONT, 14),
+            anchor="center",
             command=self._handle_action,
         )
-        self.action_button.pack(side="left", padx=(2, 8))
+        self.listening_label = ui.CTkLabel(
+            self.frame,
+            text="Listening…",
+            text_color=INK,
+            fg_color="transparent",
+            font=(FONT, 12),
+        )
+        self.entry.grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=5)
+        self.sticker_button.grid(row=0, column=1, padx=2, pady=5)
+        self.action_button.grid(row=0, column=2, padx=(2, 8), pady=5)
+        self.listening_label.grid(row=1, column=0, columnspan=3, pady=(0, 3))
+        self.listening_label.grid_remove()
         self.entry.bind("<KeyRelease>", lambda _event: self._update_action_icon())
+        self.frame.after(75, self._poll_speech_results)
 
     def _submit(self) -> None:
-        message = self.entry.get().strip()
+        message = self._entry_text().strip()
         if message:
             self.on_send(message)
 
+    def _submit_and_consume(self) -> str:
+        """Send an Entry draft and prevent Tk from processing Return a second time."""
+        self._submit()
+        return "break"
+
+    def _entry_text(self) -> str:
+        """Read either the multiline production composer or a simple test double."""
+        try:
+            return self.entry.get("1.0", "end-1c")
+        except TypeError:
+            return self.entry.get()
+
+    def clear_entry(self) -> None:
+        """Clear the composer after the existing send flow accepts its draft."""
+        try:
+            self.entry.delete("1.0", "end")
+        except TypeError:
+            self.entry.delete(0, "end")
+
     def _handle_action(self) -> None:
-        if self.entry.get().strip():
+        if self._entry_text().strip():
             self._submit()
+        elif self._is_listening:
+            if self.speech_input.pause():
+                self._hide_sticker_button()
+                self.action_button.configure(
+                    state="disabled",
+                    text="TRANSCRIBING…",
+                    image=None,
+                    width=118,
+                    anchor="center",
+                    fg_color="transparent",
+                    text_color=INK,
+                    text_color_disabled=INK,
+                    font=(FONT, 12),
+                )
         else:
-            self.on_microphone()
+            self.speech_input.transcribe_async(
+                on_listening=self._set_listening,
+                on_transcript=lambda text: self._speech_results.put(("transcript", text)),
+                on_error=lambda message: self._speech_results.put(("error", message)),
+                on_paused=lambda: self._speech_results.put(("paused", "")),
+            )
+
+    def _poll_speech_results(self) -> None:
+        """Apply worker results on the Tk thread without calling Tk from the worker."""
+        try:
+            while result := self._speech_results.get_nowait():
+                kind, value = result
+                if kind == "transcript":
+                    self.insert_transcript(value)
+                elif kind == "paused":
+                    self._set_paused()
+                else:
+                    self._show_speech_error(value)
+        except Empty:
+            pass
+        self.frame.after(75, self._poll_speech_results)
+
+    def _set_listening(self) -> None:
+        """Make the microphone control a centered pause icon while capture is active."""
+        self._is_listening = True
+        label = getattr(self, "listening_label", None)
+        if label is not None:
+            label.grid()
+        self.action_button.configure(
+            state="normal",
+            text="",
+            image=self.pause_icon,
+            width=30,
+            anchor="center",
+            # fg_color=PINK,
+            font=(FONT, 14),
+        )
+
+    def _hide_sticker_button(self) -> None:
+        sticker_button = getattr(self, "sticker_button", None)
+        if sticker_button is not None:
+            sticker_button.grid_remove()
+            self.action_button.grid(row=0, column=1, columnspan=2, padx=(2, 8), pady=5)
+
+    def _restore_sticker_button(self) -> None:
+        sticker_button = getattr(self, "sticker_button", None)
+        if sticker_button is not None and not sticker_button.winfo_manager():
+            sticker_button.grid(row=0, column=1, padx=2, pady=5)
+            self.action_button.grid(row=0, column=2, columnspan=1, padx=(2, 8), pady=5)
+
+    def _set_paused(self) -> None:
+        """Return to the microphone control when capture stopped before any speech."""
+        self._is_listening = False
+        self._reset_speech_control()
+
+    def insert_transcript(self, text: str) -> None:
+        """Place recognized text in the composer; the user still chooses when to send."""
+        self.clear_entry()
+        try:
+            self.entry.insert("1.0", text)
+        except TypeError:
+            self.entry.insert(0, text)
+        self.entry.focus_set()
+        self._is_listening = False
+        self._reset_speech_control()
+
+    def _show_speech_error(self, message: str) -> None:
+        """Present a recoverable transcription failure without crowding the chat bar."""
+        ui = _require_ctk()
+        parent = self.frame.winfo_toplevel()
+        parent.update_idletasks()
+        width, height = 380, 220
+        x = parent.winfo_rootx() + max((parent.winfo_width() - width) // 2, 0)
+        y = parent.winfo_rooty() + max((parent.winfo_height() - height) // 2, 0)
+        dialog = PopupDialog(parent, "Speech-to-Text")
+        dialog.window.overrideredirect(True)
+        dialog.window.resizable(False, False)
+        dialog.window.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.window.grab_set()
+        dialog.frame.grid_columnconfigure(0, weight=1)
+        dialog.frame.grid_rowconfigure(1, weight=1)
+        ui.CTkLabel(
+            dialog.frame,
+            text="Speech-to-Text",
+            text_color=INK,
+            font=(FONT, 16, "bold"),
+        ).grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 4))
+        ui.CTkLabel(
+            dialog.frame,
+            text=f"⚠ {message}",
+            text_color=INK,
+            justify="center",
+            wraplength=320,
+            font=(FONT, 16),
+        ).grid(row=1, column=0, sticky="nsew", padx=16, pady=(4, 8))
+        ui.CTkButton(
+            dialog.frame,
+            text="Close",
+            command=dialog.window.destroy,
+            fg_color=PINK,
+            hover_color="#F58AAE",
+            text_color=INK,
+            font=(FONT, 14),
+        ).grid(row=2, column=0, pady=(0, 14))
+        self._is_listening = False
+        self._reset_speech_control()
+
+    def _reset_speech_control(self) -> None:
+        """Restore the standard sticker and microphone/send controls."""
+        self._hide_listening_label()
+        self._restore_sticker_button()
+        self.action_button.configure(
+            state="normal", text="", width=30, fg_color="transparent", font=(FONT, 14)
+        )
+        self._update_action_icon()
+
+    def _hide_listening_label(self) -> None:
+        label = getattr(self, "listening_label", None)
+        if label is not None:
+            label.grid_remove()
 
     def _update_action_icon(self) -> None:
         self.action_button.configure(
-            image=self.send_icon if self.entry.get().strip() else self.microphone_icon
+            image=self.send_icon if self._entry_text().strip() else self.microphone_icon
         )
 
 
@@ -997,7 +1190,7 @@ class ChatRoomTab:
         room_name: str,
         on_send: Callable[[str], None] | None = None,
         on_sticker: Callable[[], None] | None = None,
-        on_microphone: Callable[[], None] | None = None,
+        transcriber: SpeechTranscriber | None = None,
     ) -> None:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(
@@ -1018,7 +1211,7 @@ class ChatRoomTab:
             self.frame,
             self._send,
             on_sticker=on_sticker,
-            on_microphone=on_microphone,
+            transcriber=transcriber,
         )
         self.box.frame.pack(fill="x", padx=4, pady=(0, 4))
         self.room_name = room_name
@@ -1084,7 +1277,7 @@ class ChatRoomTab:
     def _send(self, message: str) -> None:
         if message.strip():
             self.on_send(message)
-            self.box.entry.delete(0, "end")
+            self.box.clear_entry()
             self.box._update_action_icon()
 
     def _send_local(self, message: str) -> None:
@@ -1190,6 +1383,7 @@ class MainChatWindow:
         self.tabs.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
+            segmented_button.configure(font=(FONT, 16))
             segmented_button.grid_remove()
         for row in range(3):
             self.tabs.grid_rowconfigure(row, minsize=0)
@@ -1240,13 +1434,21 @@ class MainChatWindow:
         if user == self.controller.username:
             return
         if user not in self.rooms:
-            tab = self.tabs.add(user)
-            self.rooms[user] = ChatRoomTab(
-                tab,
-                user,
-                on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
-            )
-            self.rooms[user].frame.pack(fill="both", expand=True)
+            existing_tabs = getattr(self.tabs, "_tab_dict", {})
+            tab_exists = user in existing_tabs
+            tab = self.tabs.tab(user) if tab_exists else self.tabs.add(user)
+            try:
+                room = ChatRoomTab(
+                    tab,
+                    user,
+                    on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
+                )
+                room.frame.pack(fill="both", expand=True)
+                self.rooms[user] = room
+            except Exception:
+                if not tab_exists:
+                    self.tabs.delete(user)
+                raise
         if select:
             self.tabs.set(user)
             self._active_room = user

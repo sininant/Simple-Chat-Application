@@ -59,10 +59,22 @@ See [docs/protocol.md](docs/protocol.md) for the agreed Socket.IO event contract
 - **Desktop GUI (Client):**
   - **Recommended:** `CustomTkinter` + `Pillow` (or standard-library `tkinter` with `ttk.Notebook` tabs) for simple multi-tab chat rooms (`R5`), inline `.png` sticker rendering, and 1-line `"Read ✓✓"` label updates
   - **Alternative:** `PySide6` / `PyQt5` (`QTabWidget` / `QListWidget` / `QTextBrowser`)
-- **AI Feature (Speech-to-Text):** Client-side `SpeechRecognition` (with Google Web Speech API or OpenAI Whisper)
+- **AI Feature (Speech-to-Text):** Client-side `SpeechRecognition` using its **Google Web Speech API (`recognize_google`) backend**. The production adapter is `GoogleSpeechTranscriber` in `speech.py`; it captures and transcribes audio locally before only the resulting text enters normal chat messaging. Reference: [SpeechRecognition `recognize_google` API](https://github.com/Uberi/speech_recognition/blob/master/reference/library-reference.rst#recognizer_instance-recognize_google).
 - **Quality checks:** `pytest` and Ruff
 
 ## Getting started
+
+Speech-to-text microphone capture uses the bundled `PyAudio` dependency. On macOS, install PortAudio first if PyAudio cannot build (`brew install portaudio`), then rerun the dependency installation with its headers and libraries available:
+
+```bash
+CFLAGS="-I$(brew --prefix portaudio)/include" \\
+LDFLAGS="-L$(brew --prefix portaudio)/lib" \\
+python -m pip install -r requirements.txt
+```
+
+Grant the application microphone permission when prompted.
+
+Speech recognition defaults to Thai (`th-TH`). Set `CHAT_SPEECH_LANGUAGE` in `.env` to a supported BCP-47 locale such as `en-US` or `en-GB` to recognise another language or accent.
 
 ### Prerequisites
 
