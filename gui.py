@@ -867,6 +867,7 @@ class ChatBoxBar:
         self.on_send = on_send
         self.speech_input = SpeechInputController(transcriber or GoogleSpeechTranscriber())
         self._speech_results: Queue[tuple[str, str]] = Queue()
+        self._is_listening = False
         self.sticker_icon = _load_icons().get("sticker")
         self.microphone_icon = _load_icons().get("microphone")
         self.send_icon = _load_icons().get("send")
@@ -917,11 +918,17 @@ class ChatBoxBar:
     def _handle_action(self) -> None:
         if self.entry.get().strip():
             self._submit()
+        elif self._is_listening:
+            if self.speech_input.pause():
+                self.action_button.configure(
+                    state="disabled", text="Pausing…", image=None, width=70
+                )
         else:
             self.speech_input.transcribe_async(
                 on_listening=self._set_listening,
                 on_transcript=lambda text: self._speech_results.put(("transcript", text)),
                 on_error=lambda message: self._speech_results.put(("error", message)),
+                on_paused=lambda: self._speech_results.put(("paused", "")),
             )
 
     def _poll_speech_results(self) -> None:
@@ -931,6 +938,8 @@ class ChatBoxBar:
                 kind, value = result
                 if kind == "transcript":
                     self.insert_transcript(value)
+                elif kind == "paused":
+                    self._set_paused()
                 else:
                     self._show_speech_error(value)
         except Empty:
@@ -938,13 +947,21 @@ class ChatBoxBar:
         self.frame.after(75, self._poll_speech_results)
 
     def _set_listening(self) -> None:
-        """Show a single capture state and prevent duplicate microphone requests."""
-        self.action_button.configure(state="disabled", text="Listening…", image=None, width=78)
+        """Make the microphone control a Pause button while capture is active."""
+        self._is_listening = True
+        self.action_button.configure(state="normal", text="Pause", image=None, width=58)
+
+    def _set_paused(self) -> None:
+        """Return to the microphone control after the worker releases the audio device."""
+        self._is_listening = False
+        self.action_button.configure(state="normal", text="", width=34)
+        self._update_action_icon()
 
     def insert_transcript(self, text: str) -> None:
         """Place recognized text in the composer; the user still chooses when to send."""
         self.entry.delete(0, "end")
         self.entry.insert(0, text)
+        self._is_listening = False
         self.action_button.configure(state="normal", text="", width=34)
         self._update_action_icon()
 
@@ -982,6 +999,7 @@ class ChatBoxBar:
             hover_color="#F58AAE",
             text_color=INK,
         ).pack(pady=(0, 6))
+        self._is_listening = False
         self.action_button.configure(state="normal", text="", width=34)
         self._update_action_icon()
 
