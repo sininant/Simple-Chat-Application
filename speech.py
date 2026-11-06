@@ -51,10 +51,10 @@ class GoogleSpeechTranscriber:
         self._configure_recognizer(recognizer)
         try:
             with sr.Microphone() as source:
-                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                recognizer.adjust_for_ambient_noise(source, duration=0.1)
                 chunks = []
                 while not paused.is_set():
-                    chunks.append(recognizer.record(source, duration=0.5))
+                    chunks.append(recognizer.record(source, duration=0.1))
             if not chunks:
                 raise SpeechTranscriptionPaused
             audio = self._combine_audio_chunks(sr, chunks)

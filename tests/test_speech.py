@@ -149,6 +149,44 @@ def test_recognized_text_is_inserted_into_chat_box_without_sending():
     assert box.action_button.options["state"] == "normal"
 
 
+def test_multiline_composer_keeps_a_long_transcript_as_wrapped_text():
+    class TextboxSpy:
+        def __init__(self) -> None:
+            self.value = ""
+            self.focused = False
+
+        def get(self, start: str, end: str) -> str:
+            assert (start, end) == ("1.0", "end-1c")
+            return self.value
+
+        def delete(self, start: str, end: str) -> None:
+            assert (start, end) == ("1.0", "end")
+            self.value = ""
+
+        def insert(self, index: str, text: str) -> None:
+            assert index == "1.0"
+            self.value = text
+
+        def focus_set(self) -> None:
+            self.focused = True
+
+    long_transcript = (
+        "A long transcript that remains in the multiline composer instead of truncating."
+    )
+    box = object.__new__(ChatBoxBar)
+    box.entry = TextboxSpy()
+    box.action_button = type("WidgetSpy", (), {"configure": lambda *_args, **_kwargs: None})()
+    box.send_icon = "send"
+    box.microphone_icon = "microphone"
+    box._is_listening = True
+    box._update_action_icon = lambda: None
+
+    box.insert_transcript(long_transcript)
+
+    assert box._entry_text() == long_transcript
+    assert box.entry.focused is True
+
+
 def test_microphone_click_disables_action_then_inserts_fake_transcript():
     """The ChatBoxBar click path schedules the fake result without calling Send."""
 

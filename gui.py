@@ -872,16 +872,16 @@ class ChatBoxBar:
         self.microphone_icon = _load_icons().get("microphone")
         self.send_icon = _load_icons().get("send")
         self.frame = ui.CTkFrame(parent, fg_color=PINK_LIGHT, corner_radius=0)
-        self.entry = ui.CTkEntry(
+        self.entry = ui.CTkTextbox(
             self.frame,
-            placeholder_text="Type a message…",
-            height=34,
+            height=54,
             fg_color=PINK,
             border_width=0,
-            corner_radius=17,
+            corner_radius=12,
             text_color=INK,
+            wrap="word",
         )
-        self.entry.pack(side="left", fill="x", expand=True, padx=(10, 4), pady=8)
+        self.entry.pack(side="left", fill="x", expand=True, padx=(10, 4), pady=5)
         self.entry.bind("<Return>", lambda _event: self._submit_and_consume())
         sticker_button = ui.CTkButton(
             self.frame,
@@ -911,7 +911,7 @@ class ChatBoxBar:
         self.frame.after(75, self._poll_speech_results)
 
     def _submit(self) -> None:
-        message = self.entry.get().strip()
+        message = self._entry_text().strip()
         if message:
             self.on_send(message)
 
@@ -920,8 +920,22 @@ class ChatBoxBar:
         self._submit()
         return "break"
 
+    def _entry_text(self) -> str:
+        """Read either the multiline production composer or a simple test double."""
+        try:
+            return self.entry.get("1.0", "end-1c")
+        except TypeError:
+            return self.entry.get()
+
+    def clear_entry(self) -> None:
+        """Clear the composer after the existing send flow accepts its draft."""
+        try:
+            self.entry.delete("1.0", "end")
+        except TypeError:
+            self.entry.delete(0, "end")
+
     def _handle_action(self) -> None:
-        if self.entry.get().strip():
+        if self._entry_text().strip():
             self._submit()
         elif self._is_listening:
             if self.speech_input.pause():
@@ -964,8 +978,11 @@ class ChatBoxBar:
 
     def insert_transcript(self, text: str) -> None:
         """Place recognized text in the composer; the user still chooses when to send."""
-        self.entry.delete(0, "end")
-        self.entry.insert(0, text)
+        self.clear_entry()
+        try:
+            self.entry.insert("1.0", text)
+        except TypeError:
+            self.entry.insert(0, text)
         self.entry.focus_set()
         self._is_listening = False
         self.action_button.configure(state="normal", text="", width=34)
@@ -1011,7 +1028,7 @@ class ChatBoxBar:
 
     def _update_action_icon(self) -> None:
         self.action_button.configure(
-            image=self.send_icon if self.entry.get().strip() else self.microphone_icon
+            image=self.send_icon if self._entry_text().strip() else self.microphone_icon
         )
 
 
@@ -1111,7 +1128,7 @@ class ChatRoomTab:
     def _send(self, message: str) -> None:
         if message.strip():
             self.on_send(message)
-            self.box.entry.delete(0, "end")
+            self.box.clear_entry()
             self.box._update_action_icon()
 
     def _send_local(self, message: str) -> None:
