@@ -9,6 +9,10 @@ import socketio
 
 from client import ClientSession
 from protocol import (
+    EVENT_CREATE_GROUP,
+    EVENT_GROUP_ERROR,
+    EVENT_GROUP_LIST,
+    EVENT_JOIN_GROUP,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
@@ -29,6 +33,8 @@ class SocketIOServerSpy:
     def __init__(self) -> None:
         self.sio = socketio.Server(async_mode="threading")
         self.emissions: list[dict[str, Any]] = []
+        self.entered_rooms: list[tuple[str, str]] = []
+        self.left_rooms: list[tuple[str, str]] = []
 
         def spy_emit(
             event: str,
@@ -41,6 +47,18 @@ class SocketIOServerSpy:
             return None
 
         self.sio.emit = spy_emit  # type: ignore[assignment]
+
+        def spy_enter_room(sid: str, room: str, namespace: str | None = None) -> None:
+            del namespace
+            self.entered_rooms.append((sid, room))
+
+        self.sio.enter_room = spy_enter_room  # type: ignore[assignment]
+
+        def spy_leave_room(sid: str, room: str, namespace: str | None = None) -> None:
+            del namespace
+            self.left_rooms.append((sid, room))
+
+        self.sio.leave_room = spy_leave_room  # type: ignore[assignment]
 
     def trigger(self, event: str, sid: str, data: Any = None) -> None:
         """Trigger an inbound Socket.IO event handler."""
@@ -432,6 +450,116 @@ def test_server_disconnect_cleanup_and_broadcast():
     spy.clear()
     spy.trigger("disconnect", "sid_random")
     assert len(spy.get_events(EVENT_USER_LIST, room=None)) == 0
+
+
+def test_server_creates_group_with_only_its_creator_and_broadcasts_it():
+    """R8: a newly created group starts with its creator as its only member."""
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    spy.trigger("register", "sid_alice", {"username": "Alice"})
+    spy.trigger("register", "sid_bob", {"username": "Bob"})
+    spy.clear()
+
+    spy.trigger(EVENT_CREATE_GROUP, "sid_alice", {"group_name": "StudyGroup"})
+
+    group_lists = spy.get_events(EVENT_GROUP_LIST, room=None)
+    assert len(group_lists) == 1
+    assert group_lists[0]["data"] == {
+        "groups": [{"group_name": "StudyGroup", "members": ["Alice"]}]
+    }
+    assert spy.entered_rooms == [("sid_alice", "StudyGroup")]
+
+
+def test_server_allows_only_the_requesting_user_to_join_a_group():
+    """R9/R10: a join request adds its authenticated sender and rebroadcasts the roster."""
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    spy.trigger("register", "sid_alice", {"username": "Alice"})
+    spy.trigger("register", "sid_bob", {"username": "Bob"})
+    spy.trigger(EVENT_CREATE_GROUP, "sid_alice", {"group_name": "StudyGroup"})
+    spy.clear()
+
+    spy.trigger(EVENT_JOIN_GROUP, "sid_bob", {"group_name": "StudyGroup"})
+
+    group_lists = spy.get_events(EVENT_GROUP_LIST, room=None)
+    assert len(group_lists) == 1
+    assert group_lists[0]["data"] == {
+        "groups": [{"group_name": "StudyGroup", "members": ["Alice", "Bob"]}]
+    }
+    assert spy.entered_rooms == [("sid_alice", "StudyGroup"), ("sid_bob", "StudyGroup")]
+
+
+def test_server_rejects_a_duplicate_group_name_with_a_group_error():
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    spy.trigger("register", "sid_alice", {"username": "Alice"})
+    spy.trigger(EVENT_CREATE_GROUP, "sid_alice", {"group_name": "StudyGroup"})
+    spy.clear()
+
+    spy.trigger(EVENT_CREATE_GROUP, "sid_alice", {"group_name": "StudyGroup"})
+
+    errors = spy.get_events(EVENT_GROUP_ERROR, room="sid_alice")
+    assert errors == [
+        {
+            "event": EVENT_GROUP_ERROR,
+            "data": {"error": "Group name already exists"},
+            "room": "sid_alice",
+            "to": None,
+        }
+    ]
+    assert spy.get_events(EVENT_GROUP_LIST, room=None) == []
+
+
+def test_server_rejects_an_empty_group_name_with_a_group_error():
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    spy.trigger("register", "sid_alice", {"username": "Alice"})
+    spy.clear()
+    spy.trigger(EVENT_CREATE_GROUP, "sid_alice", {"group_name": ""})
+
+    errors = spy.get_events(EVENT_GROUP_ERROR, room="sid_alice")
+    assert len(errors) == 1
+    assert "between 1 and 50" in errors[0]["data"]["error"]
+
+
+def test_server_broadcasts_group_membership_after_a_member_disconnects():
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    spy.trigger("register", "sid_alice", {"username": "Alice"})
+    spy.trigger("register", "sid_bob", {"username": "Bob"})
+    spy.trigger(EVENT_CREATE_GROUP, "sid_alice", {"group_name": "StudyGroup"})
+    spy.trigger(EVENT_JOIN_GROUP, "sid_bob", {"group_name": "StudyGroup"})
+    spy.clear()
+
+    spy.trigger("disconnect", "sid_bob")
+
+    group_lists = spy.get_events(EVENT_GROUP_LIST, room=None)
+    assert group_lists == [
+        {
+            "event": EVENT_GROUP_LIST,
+            "data": {"groups": [{"group_name": "StudyGroup", "members": ["Alice"]}]},
+            "room": None,
+            "to": None,
+        }
+    ]
+
+
+def test_server_removes_renamed_session_from_its_previous_socketio_group_room():
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    spy.trigger("register", "sid_alice", {"username": "Alice"})
+    spy.trigger(EVENT_CREATE_GROUP, "sid_alice", {"group_name": "StudyGroup"})
+    spy.clear()
+
+    spy.trigger("register", "sid_alice", {"username": "Bob"})
+
+    assert spy.left_rooms == [("sid_alice", "StudyGroup")]
 
 
 def test_server_private_message_routing_and_charlie_isolation():

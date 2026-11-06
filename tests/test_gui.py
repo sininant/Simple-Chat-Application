@@ -10,11 +10,15 @@ import pytest
 
 from gui import GuiController, MainChatWindow, configure_fixed_pixel_scaling
 from protocol import (
+    EVENT_GROUP_ERROR,
+    EVENT_GROUP_LIST,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    GroupErrorPayload,
+    GroupListPayload,
     MessageMeta,
     PrivateMessageServerPayload,
     ReadAckServerPayload,
@@ -40,6 +44,8 @@ class SessionSpy:
         self.registered: list[tuple[str, str]] = []
         self.sent_private: list[tuple[str, str, str | None, str | None]] = []
         self.sent_read_ack: list[tuple[str, str]] = []
+        self.created_groups: list[str] = []
+        self.joined_groups: list[str] = []
         self.connect_result = connect_result
         self.send_read_ack_result = send_read_ack_result
 
@@ -66,6 +72,14 @@ class SessionSpy:
             self.sent_read_ack.append((message_id, target))
             return True
         return False
+
+    def create_group(self, group_name: str) -> bool:
+        self.created_groups.append(group_name)
+        return True
+
+    def join_group(self, group_name: str) -> bool:
+        self.joined_groups.append(group_name)
+        return True
 
     def get_next_event(self, *, block: bool = False) -> tuple[str, Any] | None:
         del block
@@ -149,6 +163,39 @@ def test_controller_keeps_each_online_users_selected_character():
     controller.poll_events()
 
     assert controller.online_avatars == {"Alice": "cat", "Bob": "dog"}
+
+
+def test_controller_tracks_groups_and_forwards_explicit_create_and_join_actions():
+    session = SessionSpy(
+        [
+            (
+                EVENT_GROUP_LIST,
+                GroupListPayload.from_dict(
+                    {"groups": [{"group_name": "StudyGroup", "members": ["Alice"]}]}
+                ),
+            )
+        ]
+    )
+    controller = GuiController(session)
+
+    controller.poll_events()
+
+    assert controller.groups == [{"group_name": "StudyGroup", "members": ["Alice"]}]
+    assert controller.create_group("StudyGroup") is True
+    assert controller.join_group("StudyGroup") is True
+    assert session.created_groups == ["StudyGroup"]
+    assert session.joined_groups == ["StudyGroup"]
+
+
+def test_controller_exposes_a_group_error_for_sidebar_rendering():
+    session = SessionSpy(
+        [(EVENT_GROUP_ERROR, GroupErrorPayload(error="Group name already exists"))]
+    )
+    controller = GuiController(session)
+
+    controller.poll_events()
+
+    assert controller.group_error == "Group name already exists"
 
 
 def test_controller_adds_the_registered_user_before_the_first_presence_update():
