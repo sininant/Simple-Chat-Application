@@ -227,6 +227,7 @@ def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
         "sticker",
         "send",
         "microphone",
+        "pause",
     ):
         path = root / "assets" / f"icon_{name}.png"
         if path.is_file():
@@ -240,6 +241,7 @@ def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
                 "sticker": (24, 24),
                 "send": (19, 17),
                 "microphone": (20, 24),
+                "pause": (17, 20),
             }
             icon_size = intrinsic_sizes.get(name, size)
             icons[name] = ctk.CTkImage(light_image=image, dark_image=image, size=icon_size)
@@ -881,6 +883,7 @@ class ChatBoxBar:
         self._is_listening = False
         self.sticker_icon = _load_icons().get("sticker")
         self.microphone_icon = _load_icons().get("microphone")
+        self.pause_icon = _load_icons().get("pause")
         self.send_icon = _load_icons().get("send")
         self.frame = ui.CTkFrame(parent, fg_color=PINK_LIGHT, corner_radius=0)
         self.entry = ui.CTkTextbox(
@@ -898,7 +901,7 @@ class ChatBoxBar:
         )
         self.entry.pack(side="left", padx=(10, 4), pady=5)
         self.entry.bind("<Return>", lambda _event: self._submit_and_consume())
-        sticker_button = ui.CTkButton(
+        self.sticker_button = ui.CTkButton(
             self.frame,
             text="",
             image=self.sticker_icon,
@@ -909,7 +912,7 @@ class ChatBoxBar:
             text_color=INK,
             command=on_sticker,
         )
-        sticker_button.pack(side="left", padx=1)
+        self.sticker_button.pack(side="left", padx=1)
         self.action_button = ui.CTkButton(
             self.frame,
             text="",
@@ -956,13 +959,15 @@ class ChatBoxBar:
             self._submit()
         elif self._is_listening:
             if self.speech_input.pause():
+                self._hide_sticker_button()
                 self.action_button.configure(
                     state="disabled",
                     text="TRANSCRIBING…",
                     image=None,
-                    width=98,
+                    width=118,
                     anchor="center",
                     fg_color=PINK,
+                    font=(FONT, 12),
                 )
         else:
             self.speech_input.transcribe_async(
@@ -988,21 +993,35 @@ class ChatBoxBar:
         self.frame.after(75, self._poll_speech_results)
 
     def _set_listening(self) -> None:
-        """Make the microphone control a Pause button while capture is active."""
+        """Make the microphone control a centered pause icon while capture is active."""
         self._is_listening = True
         self.action_button.configure(
             state="normal",
-            text="PAUSE",
-            image=None,
-            width=58,
+            text="",
+            image=self.pause_icon,
+            width=17,
             anchor="center",
             fg_color=PINK,
+            font=(FONT, 14),
         )
+
+    def _hide_sticker_button(self) -> None:
+        sticker_button = getattr(self, "sticker_button", None)
+        if sticker_button is not None:
+            sticker_button.pack_forget()
+
+    def _restore_sticker_button(self) -> None:
+        sticker_button = getattr(self, "sticker_button", None)
+        if sticker_button is not None and not sticker_button.winfo_manager():
+            sticker_button.pack(side="left", padx=1, before=self.action_button)
 
     def _set_paused(self) -> None:
         """Return to the microphone control when capture stopped before any speech."""
         self._is_listening = False
-        self.action_button.configure(state="normal", text="", width=34, fg_color="transparent")
+        self._restore_sticker_button()
+        self.action_button.configure(
+            state="normal", text="", width=17, fg_color="transparent", font=(FONT, 14)
+        )
         self._update_action_icon()
 
     def insert_transcript(self, text: str) -> None:
@@ -1014,7 +1033,10 @@ class ChatBoxBar:
             self.entry.insert(0, text)
         self.entry.focus_set()
         self._is_listening = False
-        self.action_button.configure(state="normal", text="", width=34, fg_color="transparent")
+        self._restore_sticker_button()
+        self.action_button.configure(
+            state="normal", text="", width=17, fg_color="transparent", font=(FONT, 14)
+        )
         self._update_action_icon()
 
     def _show_speech_error(self, message: str) -> None:
@@ -1054,7 +1076,10 @@ class ChatBoxBar:
             font=(FONT, 14),
         ).pack(pady=(0, 6))
         self._is_listening = False
-        self.action_button.configure(state="normal", text="", width=34, fg_color="transparent")
+        self._restore_sticker_button()
+        self.action_button.configure(
+            state="normal", text="", width=17, fg_color="transparent", font=(FONT, 14)
+        )
         self._update_action_icon()
 
     def _update_action_icon(self) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from queue import Queue
 from threading import Event
 
-from gui import PINK, ChatBoxBar
+from gui import FONT, PINK, ChatBoxBar
 from speech import FakeSpeechTranscriber, GoogleSpeechTranscriber, SpeechInputController
 
 
@@ -230,6 +230,7 @@ def test_microphone_click_disables_action_then_inserts_fake_transcript():
     box.frame = FrameSpy()
     box.send_icon = "send"
     box.microphone_icon = "microphone"
+    box.pause_icon = "pause"
     box.speech_input = SpeechInputController(FakeSpeechTranscriber("Draft from microphone"))
     box._speech_results = Queue()
     box._is_listening = False
@@ -256,16 +257,18 @@ def test_listening_state_turns_the_microphone_button_into_pause():
 
     box = object.__new__(ChatBoxBar)
     box.action_button = WidgetSpy()
+    box.pause_icon = "pause"
     box._is_listening = False
 
     box._set_listening()
 
     assert box.action_button.options == {
         "state": "normal",
-        "text": "PAUSE",
-        "image": None,
-        "width": 58,
+        "text": "",
+        "image": "pause",
+        "width": 17,
         "anchor": "center",
         "fg_color": PINK,
+        "font": (FONT, 14),
     }
     assert box._is_listening is True
