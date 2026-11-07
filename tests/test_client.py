@@ -6,6 +6,7 @@ import socketio
 
 from client import ClientSession
 from protocol import (
+    EVENT_ANNOUNCEMENT,
     EVENT_CREATE_GROUP,
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
@@ -16,6 +17,7 @@ from protocol import (
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    AnnouncementPayload,
     GroupErrorPayload,
     GroupListPayload,
     PrivateMessageServerPayload,
@@ -512,3 +514,35 @@ def test_client_session_auto_reregisters_on_reconnect_and_guards_read_ack():
 
     # Now read_ack is permitted
     assert session.send_read_ack("MSG_001", "Bob") is True
+
+
+def test_client_session_receives_announcement_event():
+    """SP3: ClientSession parses incoming server announcements and enqueues AnnouncementPayload."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    assert session.announcements == []
+
+    spy.trigger(
+        EVENT_ANNOUNCEMENT,
+        {"message": "Server will restart in 5 minutes!", "timestamp": "14:30"},
+    )
+
+    event = session.get_next_event(block=False)
+    assert event is not None
+    event_name, payload = event
+    assert event_name == EVENT_ANNOUNCEMENT
+    assert isinstance(payload, AnnouncementPayload)
+    assert payload.message == "Server will restart in 5 minutes!"
+    assert payload.timestamp == "14:30"
+    assert session.announcements == [payload]
+
+
+def test_client_session_drops_invalid_announcement_event():
+    """SP3: Malformed announcement payloads from server are dropped without crashing."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger(EVENT_ANNOUNCEMENT, {"message": "", "timestamp": "14:30"})
+    assert session.get_next_event(block=False) is None
+    assert session.announcements == []

@@ -10,15 +10,18 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from socketserver import ThreadingMixIn
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TextIO, TypeVar
 from wsgiref.simple_server import WSGIServer, make_server
 
 import socketio
 
 from protocol import (
+    EVENT_ANNOUNCEMENT,
     EVENT_CREATE_GROUP,
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
@@ -29,6 +32,7 @@ from protocol import (
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    AnnouncementPayload,
     CreateGroupPayload,
     GroupInfo,
     GroupListPayload,
@@ -45,6 +49,8 @@ from protocol import (
     parse_client_event,
     validate_avatar,
     validate_group_name,
+    validate_message_text,
+    validate_timestamp,
     validate_username,
 )
 
@@ -171,6 +177,11 @@ class ChatEngine:
         """Return a sorted list of all currently registered online usernames (R4)."""
         with self._lock:
             return sorted(self._users.keys())
+
+    def get_active_sids(self) -> list[str]:
+        """Return all active registered client Socket.IO session IDs (SP3)."""
+        with self._lock:
+            return [self._users[username] for username in self.get_online_users()]
 
     def get_online_avatars(self) -> dict[str, str]:
         """Return selected characters for the active user roster."""
@@ -477,7 +488,15 @@ class ChatServer:
             # Deliver strictly to original sender (SP4)
             self.sio.emit(EVENT_READ_ACK, result.payload.to_dict(), room=result.target_sid)
 
-    # --- Broadcast Helpers (R4) ---
+        @self.sio.event
+        def announcement(sid: str, data: Any = None) -> None:
+            del data
+            logger.warning(
+                "Rejected unauthorized client announcement spoof attempt from sid=%s",
+                sid,
+            )
+
+    # --- Broadcast Helpers (R4, R9, SP3) ---
 
     def _user_list_payload(self) -> UserListPayload:
         """Build the current presence roster once for direct and broadcast delivery."""
@@ -498,6 +517,53 @@ class ChatServer:
         """Broadcast all group names and their member lists (R9)."""
         self.sio.emit(EVENT_GROUP_LIST, self._group_list_payload().to_dict())
 
+    def broadcast_announcement(
+        self,
+        message: str,
+        timestamp: str | None = None,
+    ) -> AnnouncementPayload:
+        """Broadcast a system-wide announcement to all connected clients (SP3).
+
+        Iterates over all active client sockets (with a broadcast fallback when no
+        registered sessions are tracked) and delivers the announcement regardless
+        of which chat rooms clients have open.
+        """
+        clean_message = validate_message_text(message, field_name="message")
+        clean_timestamp = validate_timestamp(
+            timestamp if timestamp is not None else datetime.now().strftime("%H:%M")
+        )
+        payload = AnnouncementPayload(message=clean_message, timestamp=clean_timestamp)
+        outbound = payload.to_dict()
+        active_sids = self.engine.get_active_sids()
+        if active_sids:
+            for client_sid in active_sids:
+                self.sio.emit(EVENT_ANNOUNCEMENT, outbound, room=client_sid)
+        else:
+            self.sio.emit(EVENT_ANNOUNCEMENT, outbound)
+        logger.info(
+            "Broadcast announcement [%s] to %d client(s): %s",
+            clean_timestamp,
+            len(active_sids),
+            clean_message,
+        )
+        return payload
+
+    def run_console_loop(self, stream: TextIO | None = None) -> None:
+        """Read operator lines from server console stdin and broadcast announcements (SP3)."""
+        input_stream = stream if stream is not None else sys.stdin
+        for raw_line in input_stream:
+            text = raw_line.strip()
+            if not text:
+                continue
+            if text.startswith("/announce"):
+                text = text[len("/announce") :].strip()
+                if not text:
+                    continue
+            try:
+                self.broadcast_announcement(text)
+            except ProtocolValidationError as error:
+                logger.warning("Ignored invalid console announcement: %s", error)
+
     # --- HTTP/WSGI Server Lifecycle ---
 
     def create_http_server(self, host: str = "0.0.0.0", port: int = 5000) -> ThreadedWSGIServer:
@@ -510,8 +576,15 @@ class ChatServer:
         print("============================================================")
         print("  Simple Chat Application - Socket.IO Server")
         print(f"  Listening on http://{host}:{port}")
+        print("  Type a message (or /announce <msg>) and press Enter to broadcast (SP3).")
         print("  Press Ctrl+C to terminate.")
         print("============================================================")
+        console_thread = threading.Thread(
+            target=self.run_console_loop,
+            name="server-console-announcement",
+            daemon=True,
+        )
+        console_thread.start()
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
