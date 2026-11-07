@@ -30,6 +30,8 @@ from protocol import (
     EVENT_RECEIVE_GROUP,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
+    EVENT_SEND_STICKER,
+    EVENT_STICKER_MSG,
     EVENT_USER_LIST,
     AnnouncementPayload,
     CreateGroupPayload,
@@ -46,12 +48,16 @@ from protocol import (
     ReadAckServerPayload,
     RegisterAckPayload,
     RegisterPayload,
+    SendStickerPayload,
+    StickerMessageServerPayload,
     UserListPayload,
     parse_server_event,
     validate_avatar,
+    validate_destination,
     validate_group_name,
     validate_message_id,
     validate_message_text,
+    validate_sticker_id,
     validate_username,
 )
 
@@ -205,6 +211,15 @@ class ClientSession:
                 logger.warning("Received invalid read_ack from server: %s", e)
 
         @self.sio.event
+        def sticker_message(data: Any) -> None:
+            try:
+                payload = parse_server_event(EVENT_STICKER_MSG, data)
+                assert isinstance(payload, StickerMessageServerPayload)
+                self.event_queue.put((EVENT_STICKER_MSG, payload))
+            except ProtocolValidationError as e:
+                logger.warning("Received invalid sticker_message from server: %s", e)
+
+        @self.sio.event
         def announcement(data: Any) -> None:
             try:
                 payload = parse_server_event(EVENT_ANNOUNCEMENT, data)
@@ -223,6 +238,7 @@ class ClientSession:
             # via parse_server_event.
             if event not in {
                 EVENT_REGISTER_ACK,
+                EVENT_STICKER_MSG,
                 EVENT_USER_LIST,
                 EVENT_GROUP_LIST,
                 EVENT_GROUP_ERROR,
@@ -420,6 +436,45 @@ class ClientSession:
 
         self.sio.emit(EVENT_READ_ACK, payload.to_dict())
         return True
+
+    def send_sticker(
+        self,
+        sticker_id: str,
+        target: str | None = None,
+        group_name: str | None = None,
+        message_id: str | None = None,
+        timestamp: str | None = None,
+    ) -> str | None:
+        """Send a predefined sticker to a target peer or group over Socker.IO (SP2).
+
+        Returns:
+            The message_id if emission succeeded, or None if validation/emission failed.
+        """
+        if not self.is_connected or not self.is_registered:
+            logger.warning("Cannot send sticker: client is not connected and registered")
+            return None
+
+        try:
+            clean_sticker_id = validate_sticker_id(sticker_id)
+            clean_target, clean_group = validate_destination(target, group_name)
+        except ProtocolValidationError as e:
+            logger.warning("Invalid sticker parameters: %s", e)
+            return None
+
+        msg_id = message_id or f"STK_{uuid.uuid4().hex[:8]}"
+        ts = timestamp or datetime.now().strftime("%H:%M")
+
+        try:
+            meta = MessageMeta(message_id=msg_id, timestamp=ts)
+            payload = SendStickerPayload(
+                sticker_id=clean_sticker_id, meta=meta, target=clean_target, group_name=clean_group
+            )
+        except ProtocolValidationError as e:
+            logger.warning("Sticker metadata validation failed: %s", e)
+            return None
+
+        self.sio.emit(EVENT_SEND_STICKER, payload.to_dict())
+        return msg_id
 
     def get_next_event(
         self, block: bool = False, timeout: float | None = None

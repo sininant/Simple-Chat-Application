@@ -70,6 +70,8 @@ USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_]{1,20}$")
 STICKER_ID_REGEX = re.compile(r"^STK_\d{3}$")
 TIMESTAMP_REGEX = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 AVATARS = frozenset({"cat", "dog", "rabbit"})
+ALLOWED_STICKERS: frozenset[str] = frozenset(f"STK_{i:03d}" for i in range(1, 10))
+STICKER_REGISTRY: frozenset[str] = ALLOWED_STICKERS
 
 
 def validate_username(value: Any, field_name: str = "username") -> str:
@@ -143,12 +145,17 @@ def validate_timestamp(value: Any, field_name: str = "timestamp") -> str:
 
 
 def validate_sticker_id(value: Any, field_name: str = "sticker_id") -> str:
-    """Validate that a sticker ID matches 'STK_XXX' without whitespace padding."""
+    """Validate that a sticker ID matches 'STK_XXX' and exists in the allowed sticker registry."""
     if not isinstance(value, str):
         raise ProtocolValidationError("Sticker ID must be a string", field=field_name)
     if not STICKER_ID_REGEX.fullmatch(value):
         raise ProtocolValidationError(
             f"Invalid sticker ID '{value}'. Must be in format 'STK_XXX' (e.g., 'STK_001').",
+            field=field_name,
+        )
+    if value not in ALLOWED_STICKERS:
+        raise ProtocolValidationError(
+            f"Unknown sticker ID '{value}'. Must be in allowed sticker registry (STK_001-STK_009).",
             field=field_name,
         )
     return value
