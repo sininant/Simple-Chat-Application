@@ -12,6 +12,7 @@ from gui import GuiController, MainChatWindow, configure_fixed_pixel_scaling
 from protocol import (
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
+    EVENT_GROUP_MSG,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
@@ -19,6 +20,7 @@ from protocol import (
     EVENT_USER_LIST,
     GroupErrorPayload,
     GroupListPayload,
+    GroupMessageServerPayload,
     MessageMeta,
     PrivateMessageServerPayload,
     ReadAckServerPayload,
@@ -46,6 +48,7 @@ class SessionSpy:
         self.sent_read_ack: list[tuple[str, str]] = []
         self.created_groups: list[str] = []
         self.joined_groups: list[str] = []
+        self.sent_group: list[tuple[str, str, str | None, str | None]] = []
         self.connect_result = connect_result
         self.send_read_ack_result = send_read_ack_result
 
@@ -80,6 +83,16 @@ class SessionSpy:
     def join_group(self, group_name: str) -> bool:
         self.joined_groups.append(group_name)
         return True
+
+    def send_group_message(
+        self,
+        group_name: str,
+        message: str,
+        message_id: str | None = None,
+        timestamp: str | None = None,
+    ) -> str | None:
+        self.sent_group.append((group_name, message, message_id, timestamp))
+        return message_id or "MSG_G_TEST"
 
     def get_next_event(self, *, block: bool = False) -> tuple[str, Any] | None:
         del block
@@ -376,6 +389,219 @@ def test_controller_polls_and_notifies_read_ack():
 
     assert len(acks) == 1
     assert acks[0] == ("MSG_001", "Bob")
+
+
+def test_controller_send_group_message_forwards_to_session():
+    session = SessionSpy()
+    controller = GuiController(session)
+
+    msg_id = controller.send_group_message("StudyGroup", "Hello all!")
+    assert msg_id == "MSG_G_TEST"
+    assert session.sent_group == [("StudyGroup", "Hello all!", None, None)]
+
+
+def test_controller_polls_and_records_incoming_group_messages():
+    meta = MessageMeta(message_id="MSG_G01", timestamp="14:32")
+    payload = GroupMessageServerPayload(
+        sender="Bob",
+        group_name="StudyGroup",
+        message="Hello group!",
+        meta=meta,
+    )
+    session = SessionSpy([(EVENT_GROUP_MSG, payload)])
+    controller = GuiController(session)
+    controller.username = "Alice"
+
+    received: list[tuple[str, GroupMessageServerPayload]] = []
+    controller.on_group_message = lambda gname, p: received.append((gname, p))
+
+    controller.poll_events()
+
+    assert "StudyGroup" in controller.group_messages
+    assert controller.group_messages["StudyGroup"] == [payload]
+    assert len(received) == 1
+    assert received[0] == ("StudyGroup", payload)
+
+
+def test_controller_polls_and_records_own_echo_group_messages():
+    meta = MessageMeta(message_id="MSG_G02", timestamp="14:33")
+    payload = GroupMessageServerPayload(
+        sender="Alice",
+        group_name="StudyGroup",
+        message="My message!",
+        meta=meta,
+    )
+    session = SessionSpy([(EVENT_GROUP_MSG, payload)])
+    controller = GuiController(session)
+    controller.username = "Alice"
+
+    controller.poll_events()
+
+    assert "StudyGroup" in controller.group_messages
+    assert controller.group_messages["StudyGroup"] == [payload]
+
+
+def test_controller_polls_and_notifies_group_message_error():
+    payload = GroupErrorPayload(error="User 'Charlie' is not a member of group 'StudyGroup'")
+    session = SessionSpy([(EVENT_GROUP_ERROR, payload)])
+    controller = GuiController(session)
+
+    errors: list[tuple[str, str]] = []
+    controller.on_group_message_error = lambda gname, err: errors.append((gname, err))
+
+    controller.poll_events()
+
+    assert controller.group_error == "User 'Charlie' is not a member of group 'StudyGroup'"
+    assert len(errors) == 1
+    assert "not a member" in errors[0][1]
+
+
+def test_open_group_room_sets_up_chat_room_tab_and_on_send(monkeypatch):
+    class FrameSpy:
+        def __init__(self) -> None:
+            self.packed = False
+
+        def pack(self, **_options: object) -> None:
+            self.packed = True
+
+    class RoomSpy:
+        def __init__(self, _parent: object, room_name: str, on_send: object) -> None:
+            assert callable(on_send)
+            self.room_name = room_name
+            self.on_send = on_send
+            self.frame = FrameSpy()
+
+    class TabsSpy:
+        def __init__(self) -> None:
+            self._tab_dict: dict[str, object] = {}
+            self.current_tab: str | None = None
+
+        def add(self, name: str) -> object:
+            tab = object()
+            self._tab_dict[name] = tab
+            return tab
+
+        def tab(self, name: str) -> object:
+            return self._tab_dict[name]
+
+        def set(self, name: str) -> None:
+            self.current_tab = name
+
+    monkeypatch.setattr("gui.ChatRoomTab", RoomSpy)
+    session = SessionSpy()
+    controller = GuiController(session)
+    controller.username = "Alice"
+
+    window = object.__new__(MainChatWindow)
+    window.controller = controller
+    window.tabs = TabsSpy()
+    window.rooms = {}
+    window._active_room = None
+
+    window.open_group_room("StudyGroup", select=True)
+
+    assert "StudyGroup" in window.rooms
+    assert window.rooms["StudyGroup"].frame.packed is True
+    assert window.tabs.current_tab == "StudyGroup"
+    assert window._active_room == "StudyGroup"
+
+    # Verify sending forwards to controller and session
+    window.rooms["StudyGroup"].on_send("Hello test group!")
+    assert session.sent_group == [("StudyGroup", "Hello test group!", None, None)]
+
+
+def test_main_chat_window_renders_and_deduplicates_incoming_group_message():
+    class DummyRoom:
+        def __init__(self) -> None:
+            self.messages: list[dict[str, Any]] = []
+
+        def add_message(
+            self,
+            sender: str,
+            message: str,
+            own: bool = False,
+            timestamp: str | None = None,
+            message_id: str | None = None,
+        ):
+            self.messages.append(
+                {
+                    "sender": sender,
+                    "message": message,
+                    "own": own,
+                    "timestamp": timestamp,
+                    "message_id": message_id,
+                }
+            )
+
+    window = object.__new__(MainChatWindow)
+    window.controller = type("Controller", (), {"username": "Alice"})()
+    window.rooms = {"StudyGroup": DummyRoom()}
+    window._rendered_messages = set()
+
+    meta = MessageMeta(message_id="MSG_G10", timestamp="14:40")
+    payload = GroupMessageServerPayload(
+        sender="Bob",
+        group_name="StudyGroup",
+        message="Group chat works!",
+        meta=meta,
+    )
+
+    # First delivery
+    window._handle_incoming_group_message("StudyGroup", payload)
+    assert len(window.rooms["StudyGroup"].messages) == 1
+    msg = window.rooms["StudyGroup"].messages[0]
+    assert msg["sender"] == "Bob"
+    assert msg["message"] == "Group chat works!"
+    assert msg["own"] is False
+    assert msg["message_id"] == "MSG_G10"
+
+    # Duplicate delivery with same message_id must be ignored
+    window._handle_incoming_group_message("StudyGroup", payload)
+    assert len(window.rooms["StudyGroup"].messages) == 1
+
+
+def test_main_chat_window_renders_own_echo_group_message():
+    class DummyRoom:
+        def __init__(self) -> None:
+            self.messages: list[dict[str, Any]] = []
+
+        def add_message(
+            self,
+            sender: str,
+            message: str,
+            own: bool = False,
+            timestamp: str | None = None,
+            message_id: str | None = None,
+        ):
+            self.messages.append(
+                {
+                    "sender": sender,
+                    "message": message,
+                    "own": own,
+                    "timestamp": timestamp,
+                    "message_id": message_id,
+                }
+            )
+
+    window = object.__new__(MainChatWindow)
+    window.controller = type("Controller", (), {"username": "Alice"})()
+    window.rooms = {"StudyGroup": DummyRoom()}
+    window._rendered_messages = set()
+
+    meta = MessageMeta(message_id="MSG_G11", timestamp="14:41")
+    payload = GroupMessageServerPayload(
+        sender="Alice",
+        group_name="StudyGroup",
+        message="My own group message",
+        meta=meta,
+    )
+
+    window._handle_incoming_group_message("StudyGroup", payload)
+    assert len(window.rooms["StudyGroup"].messages) == 1
+    msg = window.rooms["StudyGroup"].messages[0]
+    assert msg["sender"] == "You"
+    assert msg["own"] is True
+    assert msg["message"] == "My own group message"
 
 
 class DirectSession:

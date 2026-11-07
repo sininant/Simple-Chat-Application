@@ -37,6 +37,7 @@ from protocol import (
     EVENT_CONNECT,
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
+    EVENT_GROUP_MSG,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
@@ -44,6 +45,7 @@ from protocol import (
     EVENT_USER_LIST,
     GroupErrorPayload,
     GroupListPayload,
+    GroupMessageServerPayload,
     PrivateMessageServerPayload,
     ReadAckServerPayload,
     RegisterAckPayload,
@@ -84,6 +86,14 @@ class SessionPort(Protocol):
 
     def join_group(self, group_name: str) -> bool: ...
 
+    def send_group_message(
+        self,
+        group_name: str,
+        message: str,
+        message_id: str | None = None,
+        timestamp: str | None = None,
+    ) -> str | None: ...
+
 
 class GuiController:
     """Headless adapter that owns GUI-facing login, presence, and chat message state."""
@@ -98,6 +108,9 @@ class GuiController:
         self.groups: list[dict[str, Any]] = []
         self.group_error: str | None = None
         self.login_error: str | None = None
+        self.group_messages: dict[str, list[GroupMessageServerPayload]] = {}
+        self.on_group_message: Callable[[str, GroupMessageServerPayload], None] | None = None
+        self.on_group_message_error: Callable[[str, str], None] | None = None
         self.private_messages: dict[str, list[PrivateMessageServerPayload]] = {}
         self.on_private_message: Callable[[str, PrivateMessageServerPayload], None] | None = None
         self.on_private_message_error: Callable[[str, str], None] | None = None
@@ -127,6 +140,13 @@ class GuiController:
         """Request that the local user voluntarily joins a group (R10)."""
         join_fn = getattr(self.session, "join_group", None)
         return bool(join_fn and join_fn(group_name))
+
+    def send_group_message(self, group_name: str, message: str) -> str | None:
+        """Send a group message through the underlying session adapter (R11)."""
+        send_fn = getattr(self.session, "send_group_message", None)
+        if send_fn is None:
+            return None
+        return send_fn(group_name, message)
 
     def connect_and_register(
         self, host: str, port: str, username: str, avatar: str = "rabbit"
@@ -180,6 +200,13 @@ class GuiController:
                 changed = True
             elif event_name == EVENT_GROUP_ERROR and isinstance(payload, GroupErrorPayload):
                 self.group_error = payload.error
+                if self.on_group_message_error:
+                    self.on_group_message_error("", payload.error)
+                changed = True
+            elif event_name == EVENT_GROUP_MSG and isinstance(payload, GroupMessageServerPayload):
+                self.group_messages.setdefault(payload.group_name, []).append(payload)
+                if self.on_group_message:
+                    self.on_group_message(payload.group_name, payload)
                 changed = True
             elif event_name == EVENT_PRIVATE_MSG and isinstance(
                 payload, PrivateMessageServerPayload
@@ -1396,11 +1423,16 @@ class MainChatWindow:
         self.controller.on_private_message_error = self._handle_private_message_error
         self.controller.on_read_ack = self._handle_read_ack
         self.controller.on_reconnect = self._retry_pending_acks
+        self.controller.on_group_message = self._handle_incoming_group_message
+        self.controller.on_group_message_error = self._handle_group_message_error
         self.frame.bind("<Configure>", self._resize_content)
         # Process any messages received prior to MainChatWindow construction
         for peer, msgs in list(self.controller.private_messages.items()):
             for msg in msgs:
                 self._handle_incoming_private_message(peer, msg)
+        for gname, msgs in list(self.controller.group_messages.items()):
+            for msg in msgs:
+                self._handle_incoming_group_message(gname, msg)
 
     def _resize_content(self, event: Any) -> None:
         """Keep the Figma proportions while still adapting to smaller windows."""
@@ -1463,17 +1495,66 @@ class MainChatWindow:
         if segmented_button is not None:
             segmented_button.grid_forget()
 
-    def open_group_room(self, group_name: str) -> None:
-        """Open a joined Group Room; group message transport is introduced in R11."""
+    def open_group_room(self, group_name: str, select: bool = True) -> None:
+        """Open a joined Group Room tab with isolated ChatBox and ChatWindow (R5, R6, R11)."""
         if group_name not in self.rooms:
-            tab = self.tabs.add(group_name)
-            self.rooms[group_name] = ChatRoomTab(tab, group_name, on_send=lambda _message: None)
-            self.rooms[group_name].frame.pack(fill="both", expand=True)
-        self.tabs.set(group_name)
-        self._active_room = group_name
+            existing_tabs = getattr(self.tabs, "_tab_dict", {})
+            tab_exists = group_name in existing_tabs
+            tab = self.tabs.tab(group_name) if tab_exists else self.tabs.add(group_name)
+            try:
+                room = ChatRoomTab(
+                    tab,
+                    group_name,
+                    on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
+                )
+                room.frame.pack(fill="both", expand=True)
+                self.rooms[group_name] = room
+            except Exception:
+                if not tab_exists:
+                    self.tabs.delete(group_name)
+                raise
+        if select:
+            self.tabs.set(group_name)
+            self._active_room = group_name
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
             segmented_button.grid_forget()
+
+    def _send_group_message(self, group_name: str, message: str) -> None:
+        msg_id = self.controller.send_group_message(group_name, message)
+        if msg_id is None:
+            # Fallback for offline or mock sessions without live server echo
+            current_time = datetime.now().strftime("%H:%M")
+            self.rooms[group_name].add_message("You", message, own=True, timestamp=current_time)
+
+    def _handle_incoming_group_message(
+        self, group_name: str, payload: GroupMessageServerPayload
+    ) -> None:
+        if payload.meta.message_id in self._rendered_messages:
+            return
+        self._rendered_messages.add(payload.meta.message_id)
+        if group_name not in self.rooms:
+            self.open_group_room(group_name, select=False)
+        own = payload.sender == self.controller.username
+        display_sender = "You" if own else payload.sender
+        self.rooms[group_name].add_message(
+            sender=display_sender,
+            message=payload.message,
+            own=own,
+            timestamp=payload.meta.timestamp,
+            message_id=payload.meta.message_id,
+        )
+
+    def _handle_group_message_error(self, group_name: str, error: str) -> None:
+        target_room = group_name or self._active_room
+        if target_room and target_room in self.rooms:
+            current_time = datetime.now().strftime("%H:%M")
+            self.rooms[target_room].add_message(
+                sender="System",
+                message=f"⚠️ {error}",
+                own=False,
+                timestamp=current_time,
+            )
 
     def _send_private_message(self, peer: str, message: str) -> None:
         msg_id = self.controller.send_private_message(peer, message)

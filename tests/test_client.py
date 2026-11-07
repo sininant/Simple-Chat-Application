@@ -9,15 +9,18 @@ from protocol import (
     EVENT_CREATE_GROUP,
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
+    EVENT_GROUP_MSG,
     EVENT_JOIN_GROUP,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
+    EVENT_RECEIVE_GROUP,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
     GroupErrorPayload,
     GroupListPayload,
+    GroupMessageServerPayload,
     PrivateMessageServerPayload,
     ReadAckServerPayload,
     RegisterAckPayload,
@@ -512,3 +515,107 @@ def test_client_session_auto_reregisters_on_reconnect_and_guards_read_ack():
 
     # Now read_ack is permitted
     assert session.send_read_ack("MSG_001", "Bob") is True
+
+
+def test_client_session_send_group_message_emits_payload():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger("connect")
+    session.register("Alice")
+    spy.trigger("register_ack", {"success": True, "username": "Alice"})
+    spy.emitted.clear()
+
+    msg_id = session.send_group_message(
+        "StudyGroup", "Hello everyone!", message_id="MSG_G01", timestamp="14:32"
+    )
+    assert msg_id == "MSG_G01"
+    assert len(spy.emitted) == 1
+    event, data = spy.emitted[0]
+    assert event == EVENT_GROUP_MSG
+    assert data["group_name"] == "StudyGroup"
+    assert data["message"] == "Hello everyone!"
+    assert data["message_id"] == "MSG_G01"
+    assert data["timestamp"] == "14:32"
+
+
+def test_client_session_send_group_message_disconnected_or_unregistered():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    # Disconnected
+    assert session.send_group_message("StudyGroup", "Hello") is None
+    assert len(spy.emitted) == 0
+
+    # Connected but not registered
+    spy.trigger("connect")
+    assert session.send_group_message("StudyGroup", "Hello") is None
+    assert len(spy.emitted) == 0
+
+
+def test_client_session_send_group_message_validation_failure():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger("connect")
+    session.register("Alice")
+    spy.trigger("register_ack", {"success": True, "username": "Alice"})
+    spy.emitted.clear()
+
+    # Empty message
+    assert session.send_group_message("StudyGroup", "   ") is None
+    # Invalid group name (empty)
+    assert session.send_group_message("", "Hello") is None
+    assert len(spy.emitted) == 0
+
+
+def test_client_session_receives_and_enqueues_group_message():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger("connect")
+    _ = session.get_next_event(block=False)
+
+    msg_data = {
+        "sender": "Bob",
+        "group_name": "StudyGroup",
+        "message": "Welcome all!",
+        "message_id": "MSG_G02",
+        "timestamp": "14:33",
+    }
+    spy.trigger(EVENT_GROUP_MSG, msg_data)
+
+    event = session.get_next_event(block=False)
+    assert event is not None
+    event_type, payload = event
+    assert event_type == EVENT_GROUP_MSG
+    assert isinstance(payload, GroupMessageServerPayload)
+    assert payload.sender == "Bob"
+    assert payload.group_name == "StudyGroup"
+    assert payload.message == "Welcome all!"
+
+
+def test_client_session_receives_and_enqueues_receive_group():
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger("connect")
+    _ = session.get_next_event(block=False)
+
+    msg_data = {
+        "sender": "Bob",
+        "group_name": "StudyGroup",
+        "message": "Welcome via RECEIVE_GROUP!",
+        "message_id": "MSG_G03",
+        "timestamp": "14:34",
+    }
+    spy.trigger(EVENT_RECEIVE_GROUP, msg_data)
+
+    event = session.get_next_event(block=False)
+    assert event is not None
+    event_type, payload = event
+    assert event_type == EVENT_GROUP_MSG
+    assert isinstance(payload, GroupMessageServerPayload)
+    assert payload.sender == "Bob"
+    assert payload.group_name == "StudyGroup"
+    assert payload.message == "Welcome via RECEIVE_GROUP!"
