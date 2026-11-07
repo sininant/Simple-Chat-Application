@@ -1309,3 +1309,77 @@ def test_main_chat_window_isolates_group_and_private_rooms_with_same_name(monkey
     assert len(group_room.messages) == 1
     assert group_room.messages[0]["message"] == "Hello Bob group members!"
     assert len(private_room.messages) == 0
+
+
+def test_message_bubble_single_rendering_for_text_and_sticker(monkeypatch):
+    """Verify MessageBubble renders exactly one bubble without duplicate text or frames."""
+    from gui import MessageBubble
+
+    created_labels: list[dict[str, Any]] = []
+
+    class MockUI:
+        class CTkFrame:
+            def __init__(self, parent: Any = None, **kwargs: Any) -> None:
+                self.parent = parent
+                self.kwargs = kwargs
+
+            def pack(self, **kwargs: Any) -> None:
+                pass
+
+        class CTkLabel:
+            def __init__(self, parent: Any = None, **kwargs: Any) -> None:
+                self.parent = parent
+                self.kwargs = kwargs
+                created_labels.append(kwargs)
+
+            def pack(self, **kwargs: Any) -> None:
+                pass
+
+    monkeypatch.setattr("gui._require_ctk", lambda: MockUI)
+
+    # 1. Received text message with avatar:
+    created_labels.clear()
+    bubble_recv = MessageBubble(
+        parent=object(),
+        sender="Bob",
+        message="Hello Alice",
+        own=False,
+        timestamp="14:00",
+        avatar="dog",
+    )
+    text_labels = [lbl for lbl in created_labels if lbl.get("text") == "Hello Alice"]
+    assert len(text_labels) == 1
+    assert bubble_recv.avatar_label is not None
+
+    # 2. Sent text message:
+    created_labels.clear()
+    bubble_sent = MessageBubble(
+        parent=object(),
+        sender="Alice",
+        message="My reply",
+        own=True,
+        timestamp="14:01",
+    )
+    text_labels = [lbl for lbl in created_labels if lbl.get("text") == "My reply"]
+    assert len(text_labels) == 1
+    assert bubble_sent.status_label is not None
+
+    # 3. Sticker message:
+    created_labels.clear()
+    sticker_obj = object()
+    MessageBubble(
+        parent=object(),
+        sender="Bob",
+        message="",
+        own=False,
+        timestamp="14:02",
+        sticker_image=sticker_obj,
+    )
+    sticker_labels = [lbl for lbl in created_labels if lbl.get("image") is sticker_obj]
+    empty_bubbles = [
+        lbl
+        for lbl in created_labels
+        if lbl.get("text") == "" and lbl.get("image") is not sticker_obj
+    ]
+    assert len(sticker_labels) == 1
+    assert len(empty_bubbles) == 0

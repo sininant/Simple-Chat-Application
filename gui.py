@@ -1047,47 +1047,6 @@ class MessageBubble:
         avatar_img = _get_bubble_avatar(avatar) if avatar is not None else None
         self.frame = ui.CTkFrame(parent, fg_color="transparent")
 
-        if not own:
-            sender_label = f"{sender} • {timestamp}" if timestamp else sender
-            ui.CTkLabel(
-                self.frame,
-                text=sender_label,
-                text_color=INK,
-                font=(FONT, 12, "bold"),
-                anchor="w",
-            ).pack(anchor="w", padx=12, pady=(2, 0))
-        if sticker_image is not None:
-            bubble = ui.CTkLabel(
-                self.frame,
-                text="",
-                image=sticker_image,
-                fg_color="transparent",
-            )
-            bubble.pack(
-                anchor="e" if own else "w",
-                padx=8,
-                pady=4,
-            )
-        else:
-            bubble_shell = ui.CTkFrame(
-                self.frame,
-                fg_color=PINK if own else PINK_LIGHT,
-                border_color=INK,
-                border_width=2,
-                corner_radius=16,
-            )
-
-            bubble = ui.CTkLabel(
-                bubble_shell,
-                text=message,
-                justify="left",
-                wraplength=310,
-                text_color=WHITE if own else INK,
-                fg_color="transparent",
-                font=(FONT, 16),
-            )
-            bubble.pack(padx=12, pady=7)
-            bubble_shell.pack(anchor="e" if own else "w", padx=8, pady=4)
         if own:
             row = ui.CTkFrame(self.frame, fg_color="transparent")
             row.pack(anchor="e", padx=8, pady=4)
@@ -1095,25 +1054,34 @@ class MessageBubble:
             content_col = ui.CTkFrame(row, fg_color="transparent")
             content_col.pack(side="left", anchor="e")
 
-            bubble_shell = ui.CTkFrame(
-                content_col,
-                fg_color=PINK,
-                border_color=INK,
-                border_width=2,
-                corner_radius=16,
-            )
-            bubble_shell.pack(anchor="e")
+            if sticker_image is not None:
+                bubble = ui.CTkLabel(
+                    content_col,
+                    text="",
+                    image=sticker_image,
+                    fg_color="transparent",
+                )
+                bubble.pack(anchor="e")
+            else:
+                bubble_shell = ui.CTkFrame(
+                    content_col,
+                    fg_color=PINK,
+                    border_color=INK,
+                    border_width=2,
+                    corner_radius=16,
+                )
+                bubble_shell.pack(anchor="e")
 
-            bubble = ui.CTkLabel(
-                bubble_shell,
-                text=message,
-                justify="left",
-                wraplength=310,
-                text_color=INK,
-                fg_color="transparent",
-                font=(FONT, 16),
-            )
-            bubble.pack(padx=12, pady=7)
+                bubble = ui.CTkLabel(
+                    bubble_shell,
+                    text=message,
+                    justify="left",
+                    wraplength=310,
+                    text_color=WHITE,
+                    fg_color="transparent",
+                    font=(FONT, 16),
+                )
+                bubble.pack(padx=12, pady=7)
 
             status_text = f"{timestamp} • Sent" if timestamp else "Sent"
             self.status_label = ui.CTkLabel(
@@ -1152,25 +1120,34 @@ class MessageBubble:
                 anchor="w",
             ).pack(anchor="w", padx=4, pady=(0, 2))
 
-            bubble_shell = ui.CTkFrame(
-                content_col,
-                fg_color=PINK_LIGHT,
-                border_color=INK,
-                border_width=2,
-                corner_radius=16,
-            )
-            bubble_shell.pack(anchor="w")
+            if sticker_image is not None:
+                bubble = ui.CTkLabel(
+                    content_col,
+                    text="",
+                    image=sticker_image,
+                    fg_color="transparent",
+                )
+                bubble.pack(anchor="w")
+            else:
+                bubble_shell = ui.CTkFrame(
+                    content_col,
+                    fg_color=PINK_LIGHT,
+                    border_color=INK,
+                    border_width=2,
+                    corner_radius=16,
+                )
+                bubble_shell.pack(anchor="w")
 
-            bubble = ui.CTkLabel(
-                bubble_shell,
-                text=message,
-                justify="left",
-                wraplength=310,
-                text_color=INK,
-                fg_color="transparent",
-                font=(FONT, 16),
-            )
-            bubble.pack(padx=12, pady=7)
+                bubble = ui.CTkLabel(
+                    bubble_shell,
+                    text=message,
+                    justify="left",
+                    wraplength=310,
+                    text_color=INK,
+                    fg_color="transparent",
+                    font=(FONT, 16),
+                )
+                bubble.pack(padx=12, pady=7)
 
     def mark_read(self, text: str = "Read ✓✓") -> None:
         """Update the sender status indicator to Read (SP4)."""
