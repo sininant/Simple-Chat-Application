@@ -23,6 +23,7 @@ from protocol import (
     PrivateMessageServerPayload,
     ReadAckServerPayload,
     RegisterAckPayload,
+    StickerMessageServerPayload,
     UserListPayload,
     parse_server_event,
 )
@@ -817,3 +818,30 @@ def test_chat_room_tab_rapid_clicks_triggers_double_click():
     room._handle_sticker_click("STK_002")
     assert sent == ["STK_002"]
     assert room._chosen_sticker is None
+
+
+def test_main_chat_window_handle_incoming_sticker_message_opens_group_room():
+    """Verify incoming group sticker opens a group room rather than a private room."""
+    window = object.__new__(MainChatWindow)
+    window.rooms = {}
+    window._rendered_messages = set()
+    window.controller = type(
+        "Controller", (), {"username": "Alice", "groups": [{"group_name": "StudyGroup"}]}
+    )()
+
+    opened_rooms: list[tuple[str, str]] = []
+    window.open_group_room = lambda name: opened_rooms.append(("group", name))
+    window.open_private_room = lambda name, select=False: opened_rooms.append(("private", name))
+
+    payload = StickerMessageServerPayload(
+        sender="Bob",
+        sticker_id="STK_001",
+        meta=MessageMeta(message_id="STK_GRP_1", timestamp="12:00"),
+        target=None,
+        group_name="StudyGroup",
+    )
+
+    window._handle_incoming_sticker_message("StudyGroup", payload)
+
+    assert opened_rooms == [("group", "StudyGroup")]
+    assert "STK_GRP_1" in window._rendered_messages

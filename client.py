@@ -370,7 +370,7 @@ class ClientSession:
         Returns:
             The message_id if emission succeeded, or None if validation/emission failed.
         """
-        if not self.is_connected or (self._username is not None and not self.is_registered):
+        if not self.is_connected or not self.is_registered:
             logger.warning("Cannot send sticker: client is not connected and registered")
             return None
 

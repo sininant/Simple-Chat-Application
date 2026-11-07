@@ -15,12 +15,15 @@ from protocol import (
     EVENT_READ_ACK,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
+    EVENT_SEND_STICKER,
+    EVENT_STICKER_MSG,
     EVENT_USER_LIST,
     GroupErrorPayload,
     GroupListPayload,
     PrivateMessageServerPayload,
     ReadAckServerPayload,
     RegisterAckPayload,
+    StickerMessageServerPayload,
     UserListPayload,
 )
 
@@ -512,3 +515,123 @@ def test_client_session_auto_reregisters_on_reconnect_and_guards_read_ack():
 
     # Now read_ack is permitted
     assert session.send_read_ack("MSG_001", "Bob") is True
+
+
+def test_client_session_send_sticker_private_and_group():
+    """Verify session.send_sticker emits EVENT_SEND_STICKER for private and group destinations."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger("connect")
+    session.register("Alice")
+    spy.trigger("register_ack", {"success": True, "username": "Alice"})
+    spy.emitted.clear()
+
+    # 1. Private sticker destination
+    msg_id1 = session.send_sticker(
+        sticker_id="STK_001",
+        target="Bob",
+        message_id="STK_101",
+        timestamp="14:00",
+    )
+    assert msg_id1 == "STK_101"
+    assert len(spy.emitted) == 1
+    event_name, data = spy.emitted[0]
+    assert event_name == EVENT_SEND_STICKER
+    assert data["sticker_id"] == "STK_001"
+    assert data["target"] == "Bob"
+    assert data["group_name"] is None
+    assert data["message_id"] == "STK_101"
+    assert data["timestamp"] == "14:00"
+
+    # 2. Group sticker destination (with auto message_id and timestamp)
+    spy.emitted.clear()
+    msg_id2 = session.send_sticker(
+        sticker_id="STK_002",
+        group_name="StudyGroup",
+    )
+    assert msg_id2 is not None
+    assert len(spy.emitted) == 1
+    event_name, data = spy.emitted[0]
+    assert event_name == EVENT_SEND_STICKER
+    assert data["sticker_id"] == "STK_002"
+    assert data["target"] is None
+    assert data["group_name"] == "StudyGroup"
+    assert data["message_id"] == msg_id2
+    assert "timestamp" in data
+
+
+def test_client_session_send_sticker_rejected_when_disconnected_or_unregistered():
+    """Verify send_sticker returns None when disconnected or not yet registered."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    # Disconnected
+    assert session.is_connected is False
+    assert session.send_sticker("STK_001", target="Bob") is None
+    assert len(spy.emitted) == 0
+
+    # Connected but not registered
+    spy.trigger("connect")
+    assert session.is_connected is True
+    assert session.is_registered is False
+    assert session.send_sticker("STK_001", target="Bob") is None
+    assert len(spy.emitted) == 0
+
+
+def test_client_session_send_sticker_rejected_on_invalid_parameters():
+    """Verify send_sticker returns None on invalid sticker_id or invalid destinations."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger("connect")
+    session.register("Alice")
+    spy.trigger("register_ack", {"success": True, "username": "Alice"})
+    spy.emitted.clear()
+
+    # Unknown sticker ID (not in allowed registry STK_001-STK_009)
+    assert session.send_sticker("STK_999", target="Bob") is None
+    # Malformed sticker ID
+    assert session.send_sticker("INVALID", target="Bob") is None
+    # Both target and group_name
+    assert session.send_sticker("STK_001", target="Bob", group_name="StudyGroup") is None
+    # Missing destination
+    assert session.send_sticker("STK_001") is None
+    # Invalid target characters
+    assert session.send_sticker("STK_001", target="invalid@user") is None
+    # Invalid group_name
+    assert session.send_sticker("STK_001", group_name="   ") is None
+
+    assert len(spy.emitted) == 0
+
+
+def test_client_session_receives_sticker_message_event():
+    """Verify incoming EVENT_STICKER_MSG is parsed into StickerMessageServerPayload and queued."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    server_data = {
+        "sender": "Alice",
+        "sticker_id": "STK_001",
+        "target": "Bob",
+        "group_name": None,
+        "message_id": "STK_101",
+        "timestamp": "12:00",
+    }
+    spy.trigger(EVENT_STICKER_MSG, server_data)
+
+    event = session.get_next_event(block=False)
+    assert event is not None
+    event_name, payload = event
+    assert event_name == EVENT_STICKER_MSG
+    assert isinstance(payload, StickerMessageServerPayload)
+    assert payload.sender == "Alice"
+    assert payload.sticker_id == "STK_001"
+    assert payload.target == "Bob"
+    assert payload.group_name is None
+    assert payload.meta.message_id == "STK_101"
+    assert payload.meta.timestamp == "12:00"
+
+    # Malformed incoming sticker event is ignored (does not queue invalid payload)
+    spy.trigger(EVENT_STICKER_MSG, {"invalid": "missing fields"})
+    assert session.get_next_event(block=False) is None

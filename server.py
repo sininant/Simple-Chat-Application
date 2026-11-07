@@ -558,6 +558,22 @@ class ChatServer:
                 assert isinstance(payload, SendStickerPayload)
             except ProtocolValidationError as e:
                 logger.warning("Invalid send_sticker from sid=%s: %s", sid, e)
+                if isinstance(data, dict):
+                    if data.get("target"):
+                        self.sio.emit(
+                            EVENT_PRIVATE_MSG_ERROR,
+                            {
+                                "error": e.message,
+                                "target": data.get("target"),
+                            },
+                            room=sid,
+                        )
+                    elif data.get("group_name"):
+                        self.sio.emit(
+                            EVENT_GROUP_ERROR,
+                            {"error": e.message},
+                            room=sid,
+                        )
                 return
 
             result = self.engine.route_sticker(

@@ -3,6 +3,7 @@
 import pytest
 
 from protocol import (
+    ALLOWED_STICKERS,
     CLIENT_EVENT_PAYLOAD_MAP,
     EVENT_ANNOUNCEMENT,
     EVENT_PRIVATE_MSG,
@@ -11,6 +12,7 @@ from protocol import (
     EVENT_STICKER_MSG,
     EVENT_USER_LIST,
     SERVER_EVENT_PAYLOAD_MAP,
+    STICKER_REGISTRY,
     AnnouncementPayload,
     CreateGroupPayload,
     GroupListPayload,
@@ -203,9 +205,23 @@ def test_validate_timestamp_strict():
         validate_timestamp("invalid")
 
 
+def test_sticker_registry_constants():
+    assert len(ALLOWED_STICKERS) == 9
+    assert "STK_001" in ALLOWED_STICKERS
+    assert "STK_009" in ALLOWED_STICKERS
+    assert "STK_999" not in ALLOWED_STICKERS
+    assert STICKER_REGISTRY == ALLOWED_STICKERS
+
+
 def test_validate_sticker_id():
     assert validate_sticker_id("STK_001") == "STK_001"
-    assert validate_sticker_id("STK_999") == "STK_999"
+    assert validate_sticker_id("STK_009") == "STK_009"
+
+    # Unknown sticker ID outside allowed registry (STK_001-STK_009) must be rejected
+    with pytest.raises(ProtocolValidationError, match="Unknown sticker ID"):
+        validate_sticker_id("STK_999")
+    with pytest.raises(ProtocolValidationError, match="Unknown sticker ID"):
+        validate_sticker_id("STK_000")
 
     # Whitespace or newline padding must be rejected (no silent trim)
     with pytest.raises(ProtocolValidationError):
