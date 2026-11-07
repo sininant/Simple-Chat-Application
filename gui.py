@@ -1852,7 +1852,10 @@ class MainChatWindow:
             return
         self._rendered_messages.add(payload.meta.message_id)
         if destination not in self.rooms:
-            self.open_private_room(destination, select=False)
+            if payload.group_name:
+                self.open_group_room(destination)
+            else:
+                self.open_private_room(destination, select=False)
         own = payload.sender == self.controller.username
         display_sender = "You" if own else payload.sender
         if destination in self.rooms:
