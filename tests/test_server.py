@@ -17,6 +17,8 @@ from protocol import (
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
     EVENT_REGISTER_ACK,
+    EVENT_SEND_STICKER,
+    EVENT_STICKER_MSG,
     EVENT_USER_LIST,
     MessageMeta,
 )
@@ -681,6 +683,64 @@ def test_server_read_ack_routing_and_isolation():
 
     # 3. No global broadcast
     assert len([e for e in spy.get_events(EVENT_READ_ACK) if e["room"] is None]) == 0
+
+
+def test_server_sticker_routing_and_isolation():
+    """Verify sticker routing sends to target peer and echoes to sender without leaks (SP2)."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+    server.engine.register_user("sid_charlie", "Charlie")
+
+    sticker_data = {
+        "target": "Bob",
+        "sticker_id": "STK_001",
+        "message_id": "STK_101",
+        "timestamp": "12:00",
+        "sender": "SpoofedCharlie",
+    }
+    spy.trigger(EVENT_SEND_STICKER, "sid_alice", sticker_data)
+
+    # 1. Target recipient (Bob) receives verified sticker
+    bob_events = spy.get_events(EVENT_STICKER_MSG, room="sid_bob")
+    assert len(bob_events) == 1
+    assert bob_events[0]["data"]["sticker_id"] == "STK_001"
+    assert bob_events[0]["data"]["sender"] == "Alice"
+    assert bob_events[0]["data"]["target"] == "Bob"
+
+    # 2. Sender (Alice) receives echo confirmation
+    alice_events = spy.get_events(EVENT_STICKER_MSG, room="sid_alice")
+    assert len(alice_events) == 1
+    assert alice_events[0]["data"]["sticker_id"] == "STK_001"
+    assert alice_events[0]["data"]["sender"] == "Alice"
+
+    # 3. Third parties (Charlie) receive zero events
+    assert len(spy.get_events(EVENT_STICKER_MSG, room="sid_charlie")) == 0
+
+
+def test_server_sticker_group_routing():
+    """Verify sticker routing to a group sends to the group room (SP2)."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.create_group("sid_alice", "StudyGroup")
+
+    sticker_data = {
+        "group_name": "StudyGroup",
+        "sticker_id": "STK_002",
+        "message_id": "STK_102",
+        "timestamp": "12:01",
+    }
+    spy.trigger(EVENT_SEND_STICKER, "sid_alice", sticker_data)
+
+    group_events = spy.get_events(EVENT_STICKER_MSG, room="StudyGroup")
+    assert len(group_events) == 1
+    assert group_events[0]["data"]["sticker_id"] == "STK_002"
+    assert group_events[0]["data"]["sender"] == "Alice"
+    assert group_events[0]["data"]["group_name"] == "StudyGroup"
 
 
 def test_live_server_client_roundtrip():
