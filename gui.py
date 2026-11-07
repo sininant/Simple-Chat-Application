@@ -903,6 +903,21 @@ class SidebarPanel:
             )
 
 
+_BUBBLE_AVATARS: dict[str, Any] = {}
+
+
+def _get_bubble_avatar(avatar_or_name: Any, size: tuple[int, int] = (36, 36)) -> Any:
+    """Resolve an avatar string identifier or CTkImage for MessageBubble rendering."""
+    if avatar_or_name is None:
+        return None
+    if isinstance(avatar_or_name, str):
+        global _BUBBLE_AVATARS
+        if not _BUBBLE_AVATARS:
+            _BUBBLE_AVATARS = _load_avatars(size)
+        return _BUBBLE_AVATARS.get(avatar_or_name)
+    return avatar_or_name
+
+
 class MessageBubble:
     """Reusable message row for a ChatWindow."""
 
@@ -913,49 +928,100 @@ class MessageBubble:
         message: str,
         own: bool = False,
         timestamp: str | None = None,
+        avatar: Any | None = None,
     ) -> None:
         ui = _require_ctk()
         self.own = own
         self.timestamp = timestamp
         self.status_label: Any | None = None
+        self.avatar_label: Any | None = None
+        self.avatar = avatar
+        avatar_img = _get_bubble_avatar(avatar) if avatar is not None else None
         self.frame = ui.CTkFrame(parent, fg_color="transparent")
-        bubble_shell = ui.CTkFrame(
-            self.frame,
-            fg_color=PINK if own else PINK_LIGHT,
-            border_color=INK,
-            border_width=2,
-            corner_radius=16,
-        )
-        if not own:
-            sender_label = f"{sender} • {timestamp}" if timestamp else sender
-            ui.CTkLabel(
-                self.frame,
-                text=sender_label,
-                text_color=INK,
-                font=(FONT, 12, "bold"),
-                anchor="w",
-            ).pack(anchor="w", padx=12, pady=(2, 0))
-        bubble = ui.CTkLabel(
-            bubble_shell,
-            text=message,
-            justify="left",
-            wraplength=310,
-            text_color=INK,
-            fg_color="transparent",
-            font=(FONT, 16),
-        )
-        bubble.pack(padx=12, pady=7)
-        bubble_shell.pack(anchor="e" if own else "w", padx=8, pady=4)
+
         if own:
+            row = ui.CTkFrame(self.frame, fg_color="transparent")
+            row.pack(anchor="e", padx=8, pady=4)
+
+            content_col = ui.CTkFrame(row, fg_color="transparent")
+            content_col.pack(side="left", anchor="e")
+
+            bubble_shell = ui.CTkFrame(
+                content_col,
+                fg_color=PINK,
+                border_color=INK,
+                border_width=2,
+                corner_radius=16,
+            )
+            bubble_shell.pack(anchor="e")
+
+            bubble = ui.CTkLabel(
+                bubble_shell,
+                text=message,
+                justify="left",
+                wraplength=310,
+                text_color=INK,
+                fg_color="transparent",
+                font=(FONT, 16),
+            )
+            bubble.pack(padx=12, pady=7)
+
             status_text = f"{timestamp} • Sent" if timestamp else "Sent"
             self.status_label = ui.CTkLabel(
-                self.frame,
+                content_col,
                 text=status_text,
                 text_color="#888888",
                 font=(FONT, 10),
                 anchor="e",
             )
-            self.status_label.pack(anchor="e", padx=12, pady=(0, 2))
+            self.status_label.pack(anchor="e", padx=4, pady=(2, 0))
+            
+        else:
+            row = ui.CTkFrame(self.frame, fg_color="transparent")
+            row.pack(anchor="w", padx=8, pady=4)
+
+            if avatar_img is not None:
+                self.avatar_label = ui.CTkLabel(
+                    row,
+                    text="",
+                    image=avatar_img,
+                    width=36,
+                    height=36,
+                    fg_color="transparent",
+                )
+                self.avatar_label.pack(side="left", anchor="n", padx=(0, 8), pady=2)
+
+            content_col = ui.CTkFrame(row, fg_color="transparent")
+            content_col.pack(side="left", anchor="w")
+
+            sender_label = f"{sender} • {timestamp}" if timestamp else sender
+            ui.CTkLabel(
+                content_col,
+                text=sender_label,
+                text_color=INK,
+                font=(FONT, 12, "bold"),
+                anchor="w",
+            ).pack(anchor="w", padx=4, pady=(0, 2))
+
+            bubble_shell = ui.CTkFrame(
+                content_col,
+                fg_color=PINK_LIGHT,
+                border_color=INK,
+                border_width=2,
+                corner_radius=16,
+            )
+            bubble_shell.pack(anchor="w")
+
+            bubble = ui.CTkLabel(
+                bubble_shell,
+                text=message,
+                justify="left",
+                wraplength=310,
+                text_color=INK,
+                fg_color="transparent",
+                font=(FONT, 16),
+            )
+            bubble.pack(padx=12, pady=7)
 
     def mark_read(self, text: str = "Read ✓✓") -> None:
         """Update the sender status indicator to Read (SP4)."""
@@ -1318,8 +1384,11 @@ class ChatRoomTab:
         own: bool = False,
         timestamp: str | None = None,
         message_id: str | None = None,
+        avatar: Any | None = None,
     ) -> MessageBubble:
-        bubble = MessageBubble(self.window, sender, message, own, timestamp=timestamp)
+        bubble = MessageBubble(
+            self.window, sender, message, own, timestamp=timestamp, avatar=avatar
+        )
         bubble.frame.pack(fill="x")
         if message_id:
             self.bubbles[message_id] = bubble
@@ -1425,6 +1494,7 @@ class MainChatWindow:
         self.controller.on_reconnect = self._retry_pending_acks
         self.controller.on_group_message = self._handle_incoming_group_message
         self.controller.on_group_message_error = self._handle_group_message_error
+        self.avatar_images = _load_avatars((36, 36))
         self.frame.bind("<Configure>", self._resize_content)
         # Process any messages received prior to MainChatWindow construction
         for peer, msgs in list(self.controller.private_messages.items()):
@@ -1520,12 +1590,38 @@ class MainChatWindow:
         if segmented_button is not None:
             segmented_button.grid_forget()
 
+    def _get_user_avatar(self, username: str | None) -> Any:
+        if not username:
+            return None
+        if username == self.controller.username:
+            avatar_name = getattr(self.controller, "avatar", "rabbit")
+        else:
+            online_avatars = getattr(self.controller, "online_avatars", {})
+            avatar_name = online_avatars.get(username, "rabbit")
+        avatar_images = getattr(self, "avatar_images", None)
+        if avatar_images is None:
+            return avatar_name
+        return avatar_images.get(avatar_name, avatar_images.get("rabbit"))
+
+    def _add_room_message(self, room_name: str, *args: Any, **kwargs: Any) -> Any:
+        room = self.rooms.get(room_name)
+        if room is None:
+            return None
+        try:
+            return room.add_message(*args, **kwargs)
+        except TypeError:
+            kwargs.pop("avatar", None)
+            return room.add_message(*args, **kwargs)
+
     def _send_group_message(self, group_name: str, message: str) -> None:
         msg_id = self.controller.send_group_message(group_name, message)
         if msg_id is None:
             # Fallback for offline or mock sessions without live server echo
             current_time = datetime.now().strftime("%H:%M")
-            self.rooms[group_name].add_message("You", message, own=True, timestamp=current_time)
+            avatar = None
+            self._add_room_message(
+                group_name, "You", message, own=True, timestamp=current_time, avatar=avatar
+            )
 
     def _handle_incoming_group_message(
         self, group_name: str, payload: GroupMessageServerPayload
@@ -1537,19 +1633,23 @@ class MainChatWindow:
             self.open_group_room(group_name, select=False)
         own = payload.sender == self.controller.username
         display_sender = "You" if own else payload.sender
-        self.rooms[group_name].add_message(
+        avatar = None if own else self._get_user_avatar(payload.sender)
+        self._add_room_message(
+            group_name,
             sender=display_sender,
             message=payload.message,
             own=own,
             timestamp=payload.meta.timestamp,
             message_id=payload.meta.message_id,
+            avatar=avatar,
         )
 
     def _handle_group_message_error(self, group_name: str, error: str) -> None:
         target_room = group_name or self._active_room
         if target_room and target_room in self.rooms:
             current_time = datetime.now().strftime("%H:%M")
-            self.rooms[target_room].add_message(
+            self._add_room_message(
+                target_room,
                 sender="System",
                 message=f"⚠️ {error}",
                 own=False,
@@ -1561,7 +1661,10 @@ class MainChatWindow:
         if msg_id is None:
             # Fallback for offline or mock sessions without live server echo
             current_time = datetime.now().strftime("%H:%M")
-            self.rooms[peer].add_message("You", message, own=True, timestamp=current_time)
+            avatar = None
+            self._add_room_message(
+                peer, "You", message, own=True, timestamp=current_time, avatar=avatar
+            )
 
     def _handle_incoming_private_message(
         self, peer: str, payload: PrivateMessageServerPayload
@@ -1573,12 +1676,15 @@ class MainChatWindow:
             self.open_private_room(peer, select=False)
         own = payload.sender == self.controller.username
         display_sender = "You" if own else payload.sender
-        self.rooms[peer].add_message(
+        avatar = None if own else self._get_user_avatar(payload.sender)
+        self._add_room_message(
+            peer,
             sender=display_sender,
             message=payload.message,
             own=own,
             timestamp=payload.meta.timestamp,
             message_id=payload.meta.message_id,
+            avatar=avatar,
         )
         if not own:
             # Check user's actively selected room rather than relying on tabs.get()

@@ -560,6 +560,66 @@ def test_main_chat_window_renders_and_deduplicates_incoming_group_message():
     assert len(window.rooms["StudyGroup"].messages) == 1
 
 
+def test_main_chat_window_passes_sender_profile_avatar():
+    class DummyRoom:
+        def __init__(self) -> None:
+            self.messages: list[dict[str, Any]] = []
+
+        def add_message(
+            self,
+            sender: str,
+            message: str,
+            own: bool = False,
+            timestamp: str | None = None,
+            message_id: str | None = None,
+            avatar: Any | None = None,
+        ):
+            self.messages.append(
+                {
+                    "sender": sender,
+                    "message": message,
+                    "own": own,
+                    "timestamp": timestamp,
+                    "message_id": message_id,
+                    "avatar": avatar,
+                }
+            )
+
+    window = object.__new__(MainChatWindow)
+    window.controller = type(
+        "Controller",
+        (),
+        {"username": "Alice", "avatar": "rabbit", "online_avatars": {"Bob": "dog"}},
+    )()
+    window.rooms = {"StudyGroup": DummyRoom(), "Bob": DummyRoom()}
+    window._rendered_messages = set()
+    window._active_room = "Bob"
+    window._unread_messages = {}
+    window._send_read_ack = lambda *args: None
+
+    # Incoming message from Bob in group
+    meta = MessageMeta(message_id="MSG_AV01", timestamp="14:50")
+    payload = GroupMessageServerPayload(
+        sender="Bob",
+        group_name="StudyGroup",
+        message="Hello group!",
+        meta=meta,
+    )
+    window._handle_incoming_group_message("StudyGroup", payload)
+    assert window.rooms["StudyGroup"].messages[0]["avatar"] == "dog"
+
+    # Incoming private message from Bob
+    priv_meta = MessageMeta(message_id="MSG_AV02", timestamp="14:51")
+    priv_payload = PrivateMessageServerPayload(
+        sender="Bob",
+        target="Alice",
+        message="Hi Alice private!",
+        meta=priv_meta,
+    )
+    window._handle_incoming_private_message("Bob", priv_payload)
+    assert window.rooms["Bob"].messages[0]["avatar"] == "dog"
+
+
 def test_main_chat_window_renders_own_echo_group_message():
     class DummyRoom:
         def __init__(self) -> None:
