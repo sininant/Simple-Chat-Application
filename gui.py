@@ -996,7 +996,7 @@ class MessageBubble:
                 text=message,
                 justify="left",
                 wraplength=310,
-                text_color=INK,
+                text_color=WHITE if own else INK,
                 fg_color="transparent",
                 font=(FONT, 16),
             )
@@ -1051,7 +1051,7 @@ class ChatBoxBar:
             fg_color=PINK,
             border_width=0,
             corner_radius=12,
-            text_color=INK,
+            text_color=WHITE,
             wrap="word",
             font=(FONT, 16),
         )
