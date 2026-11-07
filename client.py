@@ -18,6 +18,7 @@ from typing import Any
 import socketio
 
 from protocol import (
+    EVENT_ANNOUNCEMENT,
     EVENT_CREATE_GROUP,
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
@@ -28,6 +29,7 @@ from protocol import (
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    AnnouncementPayload,
     CreateGroupPayload,
     GroupErrorPayload,
     GroupListPayload,
@@ -86,6 +88,7 @@ class ClientSession:
         self._avatar = "rabbit"
         self._online_users: list[str] = []
         self._groups: list[dict[str, Any]] = []
+        self._announcements: list[AnnouncementPayload] = []
         self._is_connected: bool = False
         self._is_registered: bool = False
 
@@ -179,6 +182,18 @@ class ClientSession:
             except ProtocolValidationError as e:
                 logger.warning("Received invalid read_ack from server: %s", e)
 
+        @self.sio.event
+        def announcement(data: Any) -> None:
+            try:
+                payload = parse_server_event(EVENT_ANNOUNCEMENT, data)
+                assert isinstance(payload, AnnouncementPayload)
+            except ProtocolValidationError as e:
+                logger.warning("Received invalid announcement from server: %s", e)
+                return
+            with self._lock:
+                self._announcements.append(payload)
+            self.event_queue.put((EVENT_ANNOUNCEMENT, payload))
+
         @self.sio.on("*")
         def catch_all(event: str, data: Any) -> None:
             # Pass unhandled server events through to the queue for downstream UI handlers.
@@ -192,6 +207,7 @@ class ClientSession:
                 EVENT_PRIVATE_MSG,
                 EVENT_PRIVATE_MSG_ERROR,
                 EVENT_READ_ACK,
+                EVENT_ANNOUNCEMENT,
                 "connect",
                 "disconnect",
             }:
@@ -381,6 +397,12 @@ class ClientSession:
         """Return the latest group list and member rosters received from the server (R9)."""
         with self._lock:
             return [group.copy() | {"members": list(group["members"])} for group in self._groups]
+
+    @property
+    def announcements(self) -> list[AnnouncementPayload]:
+        """Return the history of server announcements received during this session (SP3)."""
+        with self._lock:
+            return list(self._announcements)
 
     @property
     def sid(self) -> str | None:
