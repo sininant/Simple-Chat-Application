@@ -28,6 +28,8 @@ from protocol import (
     EVENT_READ_ACK,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
+    EVENT_SEND_STICKER,
+    EVENT_STICKER_MSG,
     EVENT_USER_LIST,
     CreateGroupPayload,
     GroupInfo,
@@ -41,10 +43,14 @@ from protocol import (
     ReadAckServerPayload,
     RegisterAckPayload,
     RegisterPayload,
+    SendStickerPayload,
+    StickerMessageServerPayload,
     UserListPayload,
     parse_client_event,
     validate_avatar,
+    validate_destination,
     validate_group_name,
+    validate_sticker_id,
     validate_username,
 )
 
@@ -71,6 +77,12 @@ class RouteResult(Generic[T]):
 @dataclass(frozen=True)
 class ReadAckRouteResult(RouteResult[ReadAckServerPayload]):
     """Encapsulates the result of routing a 1-to-1 read acknowledgment (SP4)."""
+
+
+# Specialized subclass for stickers (SP2)
+@dataclass(frozen=True)
+class StickerRouteResult(RouteResult[StickerMessageServerPayload]):
+    """Encapsulates the result of routing a sticker to a user or group (SP2)."""
 
 
 @dataclass(frozen=True)
@@ -307,6 +319,66 @@ class ChatEngine:
                 target_sid=target_sid,
             )
 
+    # --- Sticker Routing (SP2) ---
+    def route_sticker(
+        self,
+        sender_sid: str,
+        sticker_id: str,
+        meta: MessageMeta,
+        target: str | None = None,
+        group_name: str | None = None,
+    ) -> StickerRouteResult:
+        """Route a predefined sticker to a private peer or group room (SP2).
+
+        Enforces Server Trust Boundary, destination mutual exclusivity,
+        and group membership / peer presence verification
+        """
+
+        try:
+            sticker_id = validate_sticker_id(sticker_id)
+            target, group_name = validate_destination(target, group_name)
+        except ProtocolValidationError as e:
+            return StickerRouteResult(success=False, error=e.message)
+
+        with self._lock:
+            sender = self._sessions.get(sender_sid)
+            if sender is None:
+                return StickerRouteResult(success=False, error="Sender not registered")
+
+            if target is not None:
+                target_sid = self._users.get(target)
+                if target_sid is None:
+                    return StickerRouteResult(success=False, error=f"User '{target}' is offline")
+
+                server_payload = StickerMessageServerPayload(
+                    sender=sender,
+                    sticker_id=sticker_id,
+                    meta=meta,
+                    target=target,
+                    group_name=None,
+                )
+                self._private_messages[meta.message_id] = (sender, target)
+                return StickerRouteResult(
+                    success=True, payload=server_payload, target_sid=target_sid, group_name=None
+                )
+            assert group_name is not None
+            members = self._groups.get(group_name)
+            if members is None:
+                return StickerRouteResult(
+                    success=False, error=f"Group '{group_name}' does not exist"
+                )
+            if sender not in members:
+                return StickerRouteResult(
+                    success=False,
+                    error=f"User '{sender}' is not a member of group '{group_name}'",
+                )
+            server_payload = StickerMessageServerPayload(
+                sender=sender, sticker_id=sticker_id, meta=meta, target=None, group_name=group_name
+            )
+            return StickerRouteResult(
+                success=True, payload=server_payload, target_sid=None, group_name=group_name
+            )
+
 
 # -----------------------------------------------------------------------------
 # Multi-Threaded WSGI Server
@@ -476,6 +548,48 @@ class ChatServer:
 
             # Deliver strictly to original sender (SP4)
             self.sio.emit(EVENT_READ_ACK, result.payload.to_dict(), room=result.target_sid)
+
+        @self.sio.event
+        def send_sticker(sid: str, data: Any) -> None:
+            try:
+                payload = parse_client_event(EVENT_SEND_STICKER, data)
+                assert isinstance(payload, SendStickerPayload)
+            except ProtocolValidationError as e:
+                logger.warning("Invalid send_sticker from sid=%s: %s", sid, e)
+                return
+
+            result = self.engine.route_sticker(
+                sender_sid=sid,
+                sticker_id=payload.sticker_id,
+                meta=payload.meta,
+                target=payload.target,
+                group_name=payload.group_name,
+            )
+            if not result.success or result.payload is None:
+                logger.warning("Failed to route sticker from sid=%s: %s", sid, result.error)
+                if payload.target:
+                    self.sio.emit(
+                        EVENT_PRIVATE_MSG_ERROR,
+                        {
+                            "error": result.error or "Failed to deliver sticker",
+                            "target": payload.target,
+                        },
+                        room=sid,
+                    )
+                elif payload.group_name:
+                    self.sio.emit(
+                        EVENT_GROUP_ERROR,
+                        {"error": result.error or "Failed to deliver sticker"},
+                        room=sid,
+                    )
+                return
+            outbound_dict = result.payload.to_dict()
+            if result.target_sid is not None:
+                self.sio.emit(EVENT_STICKER_MSG, outbound_dict, room=result.target_sid)
+                if result.target_sid != sid:
+                    self.sio.emit(EVENT_STICKER_MSG, outbound_dict, room=sid)
+            elif result.group_name is not None:
+                self.sio.emit(EVENT_STICKER_MSG, outbound_dict, room=result.group_name)
 
     # --- Broadcast Helpers (R4) ---
 

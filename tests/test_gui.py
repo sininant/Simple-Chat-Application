@@ -621,3 +621,60 @@ def test_end_to_end_private_message_and_read_ack_flow():
         assert "Read ✓✓" in updated_text
     finally:
         root.destroy()
+
+
+def test_main_chat_window_open_sticker_picker_toggles_room_sticker_panel():
+    """Verify _open_sticker_picker delegates to the integrated room drawer."""
+
+    class RoomSpy:
+        def __init__(self) -> None:
+            self.toggled = 0
+
+        def toggle_sticker_panel(self) -> None:
+            self.toggled += 1
+
+    window = object.__new__(MainChatWindow)
+    window.rooms = {"Bob": RoomSpy()}
+    window.controller = type("Controller", (), {"groups": []})()
+
+    window._open_sticker_picker("Bob")
+    assert window.rooms["Bob"].toggled == 1
+
+    window._open_sticker_picker("Bob")
+    assert window.rooms["Bob"].toggled == 2
+
+
+def test_chat_room_tab_toggle_and_send_sticker():
+    """Verify ChatRoomTab integrated sticker drawer toggle and send handling."""
+    from gui import ChatRoomTab
+
+    class WidgetSpy:
+        def __init__(self) -> None:
+            self.packed = False
+
+        def pack(self, **kwargs) -> None:
+            self.packed = True
+
+        def pack_forget(self) -> None:
+            self.packed = False
+
+    room = object.__new__(ChatRoomTab)
+    room._sticker_panel_open = False
+    room.sticker_panel = WidgetSpy()
+    room._scroll_to_latest = lambda: None
+    sent: list[str] = []
+    room.on_send_sticker = lambda s: sent.append(s)
+
+    # Toggle open
+    room.toggle_sticker_panel()
+    assert room._sticker_panel_open is True
+    assert room.sticker_panel.packed is True
+
+    # Send sticker
+    room._on_sticker_clicked("STK_002")
+    assert sent == ["STK_002"]
+
+    # Toggle close
+    room.toggle_sticker_panel()
+    assert room._sticker_panel_open is False
+    assert room.sticker_panel.packed is False
