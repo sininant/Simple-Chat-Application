@@ -19,6 +19,8 @@ from protocol import (
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
     EVENT_REGISTER_ACK,
+    EVENT_SEND_STICKER,
+    EVENT_STICKER_MSG,
     EVENT_USER_LIST,
     AnnouncementPayload,
     MessageMeta,
@@ -687,6 +689,41 @@ def test_server_read_ack_routing_and_isolation():
     assert len([e for e in spy.get_events(EVENT_READ_ACK) if e["room"] is None]) == 0
 
 
+def test_server_sticker_routing_and_isolation():
+    """Verify sticker routing sends to target peer and echoes to sender without leaks (SP2)."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+    server.engine.register_user("sid_charlie", "Charlie")
+
+    sticker_data = {
+        "target": "Bob",
+        "sticker_id": "STK_001",
+        "message_id": "STK_101",
+        "timestamp": "12:00",
+        "sender": "SpoofedCharlie",
+    }
+    spy.trigger(EVENT_SEND_STICKER, "sid_alice", sticker_data)
+
+    # 1. Target recipient (Bob) receives verified sticker
+    bob_events = spy.get_events(EVENT_STICKER_MSG, room="sid_bob")
+    assert len(bob_events) == 1
+    assert bob_events[0]["data"]["sticker_id"] == "STK_001"
+    assert bob_events[0]["data"]["sender"] == "Alice"
+    assert bob_events[0]["data"]["target"] == "Bob"
+
+    # 2. Sender (Alice) receives echo confirmation
+    alice_events = spy.get_events(EVENT_STICKER_MSG, room="sid_alice")
+    assert len(alice_events) == 1
+    assert alice_events[0]["data"]["sticker_id"] == "STK_001"
+    assert alice_events[0]["data"]["sender"] == "Alice"
+
+    # 3. Third parties (Charlie) receive zero events
+    assert len(spy.get_events(EVENT_STICKER_MSG, room="sid_charlie")) == 0
+
+
 def test_server_broadcast_announcement_reaches_all_clients():
     """SP3: Server iterates over all active client sockets and delivers the announcement."""
     spy = SocketIOServerSpy()
@@ -713,6 +750,141 @@ def test_server_broadcast_announcement_reaches_all_clients():
     assert len(events) == 3
     assert [e["room"] for e in events] == ["sid_alice", "sid_bob", "sid_charlie"]
     assert all(e["data"] == expected_data for e in events)
+
+
+def test_server_sticker_group_routing():
+    """Verify sticker routing to a group sends to the group room (SP2)."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.create_group("sid_alice", "StudyGroup")
+
+    sticker_data = {
+        "group_name": "StudyGroup",
+        "sticker_id": "STK_002",
+        "message_id": "STK_102",
+        "timestamp": "12:01",
+    }
+    spy.trigger(EVENT_SEND_STICKER, "sid_alice", sticker_data)
+
+    group_events = spy.get_events(EVENT_STICKER_MSG, room="StudyGroup")
+    assert len(group_events) == 1
+    assert group_events[0]["data"]["sticker_id"] == "STK_002"
+    assert group_events[0]["data"]["sender"] == "Alice"
+    assert group_events[0]["data"]["group_name"] == "StudyGroup"
+
+
+def test_server_sticker_unauthorized_group_sender_rejected():
+    """Verify non-member sending sticker to group receives EVENT_GROUP_ERROR."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.create_group("sid_alice", "StudyGroup")
+    server.engine.register_user("sid_bob", "Bob")
+
+    # Bob (not a member of StudyGroup) attempts to send a sticker to StudyGroup
+    sticker_data = {
+        "group_name": "StudyGroup",
+        "sticker_id": "STK_001",
+        "message_id": "STK_201",
+        "timestamp": "12:05",
+    }
+    spy.trigger(EVENT_SEND_STICKER, "sid_bob", sticker_data)
+
+    # Bob must receive group error event
+    bob_errors = spy.get_events(EVENT_GROUP_ERROR, room="sid_bob")
+    assert len(bob_errors) == 1
+    assert "not a member" in bob_errors[0]["data"]["error"]
+
+    # Zero sticker messages emitted to the group room or to Bob
+    assert len(spy.get_events(EVENT_STICKER_MSG, room="StudyGroup")) == 0
+    assert len(spy.get_events(EVENT_STICKER_MSG, room="sid_bob")) == 0
+    assert len(spy.get_events(EVENT_STICKER_MSG, room="sid_alice")) == 0
+
+
+def test_server_sticker_unknown_and_invalid_id_rejection():
+    """Verify unknown/invalid sticker IDs are rejected with appropriate error events."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+    server.engine.create_group("sid_alice", "StudyGroup")
+
+    # 1. Unknown sticker ID (STK_999) sent to private peer
+    spy.trigger(
+        EVENT_SEND_STICKER,
+        "sid_alice",
+        {
+            "target": "Bob",
+            "sticker_id": "STK_999",
+            "message_id": "STK_301",
+            "timestamp": "12:10",
+        },
+    )
+    alice_p_errors = spy.get_events(EVENT_PRIVATE_MSG_ERROR, room="sid_alice")
+    assert len(alice_p_errors) == 1
+    assert "Unknown sticker ID" in alice_p_errors[0]["data"]["error"]
+    assert alice_p_errors[0]["data"]["target"] == "Bob"
+    assert len(spy.get_events(EVENT_STICKER_MSG, room="sid_bob")) == 0
+
+    # 2. Malformed sticker ID sent to private peer
+    spy.trigger(
+        EVENT_SEND_STICKER,
+        "sid_alice",
+        {
+            "target": "Bob",
+            "sticker_id": "INVALID_STK",
+            "message_id": "STK_302",
+            "timestamp": "12:11",
+        },
+    )
+    assert len(spy.get_events(EVENT_PRIVATE_MSG_ERROR, room="sid_alice")) == 2
+
+    # 3. Unknown sticker ID sent to group room
+    spy.trigger(
+        EVENT_SEND_STICKER,
+        "sid_alice",
+        {
+            "group_name": "StudyGroup",
+            "sticker_id": "STK_999",
+            "message_id": "STK_303",
+            "timestamp": "12:12",
+        },
+    )
+    alice_g_errors = spy.get_events(EVENT_GROUP_ERROR, room="sid_alice")
+    assert len(alice_g_errors) == 1
+    assert "Unknown sticker ID" in alice_g_errors[0]["data"]["error"]
+
+    # Zero sticker deliveries to group
+    assert len(spy.get_events(EVENT_STICKER_MSG, room="StudyGroup")) == 0
+
+
+def test_server_sticker_offline_target_rejection():
+    """Verify sending sticker to offline target emits EVENT_PRIVATE_MSG_ERROR."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+
+    server.engine.register_user("sid_alice", "Alice")
+
+    spy.trigger(
+        EVENT_SEND_STICKER,
+        "sid_alice",
+        {
+            "target": "OfflineBob",
+            "sticker_id": "STK_001",
+            "message_id": "STK_401",
+            "timestamp": "12:15",
+        },
+    )
+
+    alice_errors = spy.get_events(EVENT_PRIVATE_MSG_ERROR, room="sid_alice")
+    assert len(alice_errors) == 1
+    assert "offline" in alice_errors[0]["data"]["error"]
+    assert alice_errors[0]["data"]["target"] == "OfflineBob"
+    assert len(spy.get_events(EVENT_STICKER_MSG)) == 0
 
 
 def test_server_broadcast_announcement_rejects_invalid_input():
