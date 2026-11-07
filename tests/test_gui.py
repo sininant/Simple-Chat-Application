@@ -10,6 +10,7 @@ import pytest
 
 from gui import GuiController, MainChatWindow, configure_fixed_pixel_scaling
 from protocol import (
+    EVENT_ANNOUNCEMENT,
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
     EVENT_GROUP_MSG,
@@ -18,6 +19,7 @@ from protocol import (
     EVENT_READ_ACK,
     EVENT_REGISTER_ACK,
     EVENT_USER_LIST,
+    AnnouncementPayload,
     GroupErrorPayload,
     GroupListPayload,
     GroupMessageServerPayload,
@@ -662,6 +664,102 @@ def test_main_chat_window_renders_own_echo_group_message():
     assert msg["sender"] == "You"
     assert msg["own"] is True
     assert msg["message"] == "My own group message"
+def test_controller_polls_and_notifies_announcement():
+    """SP3: GuiController stores incoming AnnouncementPayload and invokes on_announcement."""
+    payload = AnnouncementPayload(
+        message="Server will restart in 5 minutes!",
+        timestamp="14:30",
+    )
+    session = SessionSpy([(EVENT_ANNOUNCEMENT, payload)])
+    controller = GuiController(session)
+
+    received: list[AnnouncementPayload] = []
+    controller.on_announcement = received.append
+
+    controller.poll_events()
+
+    assert controller.latest_announcement == payload
+    assert controller.announcements == [payload]
+    assert received == [payload]
+
+
+def test_main_chat_window_handle_announcement_reveals_banner():
+    """SP3: MainChatWindow._handle_announcement reveals global AnnouncementBanner across tabs."""
+
+    class BannerSpy:
+        def __init__(self) -> None:
+            self.shown: list[tuple[str, str | None]] = []
+
+        def show(self, message: str, timestamp: str | None = None) -> None:
+            self.shown.append((message, timestamp))
+
+    window = object.__new__(MainChatWindow)
+    window.banner = BannerSpy()  # type: ignore[assignment]
+
+    payload = AnnouncementPayload(
+        message="Server maintenance in 10 minutes!",
+        timestamp="15:00",
+    )
+    window._handle_announcement(payload)
+
+    assert window.banner.shown == [("Server maintenance in 10 minutes!", "15:00")]
+
+
+def test_server_announcement_reaches_multiple_client_controllers_simultaneously():
+    """SP3 Integration Gate: Server announcement reaches >= 2 connected clients simultaneously."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+    sessions: dict[str, DirectSession] = {}
+
+    orig_emit = spy.sio.emit
+
+    def direct_emit(
+        event: str,
+        data: Any = None,
+        to: Any = None,
+        room: Any = None,
+        **kwargs: Any,
+    ) -> None:
+        orig_emit(event, data, to=to, room=room, **kwargs)
+        target_sid = room or to
+        parsed = parse_server_event(event, data)
+        if target_sid and target_sid in sessions:
+            sessions[target_sid].events.append((event, parsed))
+        elif target_sid is None:
+            for sess in sessions.values():
+                sess.events.append((event, parsed))
+
+    spy.sio.emit = direct_emit
+
+    alice_sess = DirectSession(server, "sid_alice", "Alice")
+    bob_sess = DirectSession(server, "sid_bob", "Bob")
+    sessions["sid_alice"] = alice_sess
+    sessions["sid_bob"] = bob_sess
+
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+
+    alice_ctrl = GuiController(alice_sess)
+    bob_ctrl = GuiController(bob_sess)
+
+    alice_received: list[AnnouncementPayload] = []
+    bob_received: list[AnnouncementPayload] = []
+    alice_ctrl.on_announcement = alice_received.append
+    bob_ctrl.on_announcement = bob_received.append
+
+    server.broadcast_announcement("Server will restart in 5 minutes!", timestamp="14:35")
+
+    alice_ctrl.poll_events()
+    bob_ctrl.poll_events()
+
+    expected = AnnouncementPayload(
+        message="Server will restart in 5 minutes!",
+        timestamp="14:35",
+    )
+    assert alice_received == [expected]
+    assert bob_received == [expected]
+    assert alice_ctrl.latest_announcement == expected
+    assert bob_ctrl.latest_announcement == expected
 
 
 class DirectSession:
