@@ -14,10 +14,12 @@ from protocol import (
     EVENT_CREATE_GROUP,
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
+    EVENT_GROUP_MSG,
     EVENT_JOIN_GROUP,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
+    EVENT_RECEIVE_GROUP,
     EVENT_REGISTER_ACK,
     EVENT_SEND_STICKER,
     EVENT_STICKER_MSG,
@@ -364,6 +366,90 @@ def test_chat_engine_route_read_ack():
     assert res_offline.success is False
     assert res_offline.error == "Target user 'Alice' is offline"
     assert res_offline.payload is None
+
+
+def test_chat_engine_route_group_message_success():
+    engine = ChatEngine()
+    engine.register_user("sid_alice", "Alice")
+    engine.create_group("sid_alice", "StudyGroup")
+
+    meta = MessageMeta(message_id="MSG_G01", timestamp="14:32")
+    result = engine.route_group_message(
+        sender_sid="sid_alice",
+        group_name="StudyGroup",
+        message="Hello group!",
+        meta=meta,
+    )
+    assert result.success is True
+    assert result.error is None
+    assert result.payload is not None
+    assert result.payload.sender == "Alice"
+    assert result.payload.group_name == "StudyGroup"
+    assert result.payload.message == "Hello group!"
+    assert result.payload.meta.message_id == "MSG_G01"
+
+
+def test_chat_engine_route_group_message_non_member_rejected():
+    engine = ChatEngine()
+    engine.register_user("sid_alice", "Alice")
+    engine.register_user("sid_bob", "Bob")
+    engine.create_group("sid_alice", "StudyGroup")
+
+    meta = MessageMeta(message_id="MSG_G02", timestamp="14:33")
+    result = engine.route_group_message(
+        sender_sid="sid_bob",
+        group_name="StudyGroup",
+        message="Let me in!",
+        meta=meta,
+    )
+    assert result.success is False
+    assert "not a member" in result.error
+    assert result.payload is None
+
+
+def test_chat_engine_route_group_message_nonexistent_group():
+    engine = ChatEngine()
+    engine.register_user("sid_alice", "Alice")
+
+    meta = MessageMeta(message_id="MSG_G03", timestamp="14:34")
+    result = engine.route_group_message(
+        sender_sid="sid_alice",
+        group_name="GhostGroup",
+        message="Anyone here?",
+        meta=meta,
+    )
+    assert result.success is False
+    assert "does not exist" in result.error
+    assert result.payload is None
+
+
+def test_chat_engine_route_group_message_unregistered_sender():
+    engine = ChatEngine()
+    meta = MessageMeta(message_id="MSG_G04", timestamp="14:35")
+    result = engine.route_group_message(
+        sender_sid="sid_unregistered",
+        group_name="StudyGroup",
+        message="Hello",
+        meta=meta,
+    )
+    assert result.success is False
+    assert result.error == "Sender not registered"
+
+
+def test_chat_engine_route_group_message_validation_failure():
+    engine = ChatEngine()
+    engine.register_user("sid_alice", "Alice")
+    engine.create_group("sid_alice", "StudyGroup")
+
+    meta = MessageMeta(message_id="MSG_G05", timestamp="14:36")
+    result = engine.route_group_message(
+        sender_sid="sid_alice",
+        group_name="StudyGroup",
+        message="   ",
+        meta=meta,
+    )
+    assert result.success is False
+    assert "empty or whitespace-only" in result.error
 
 
 # -----------------------------------------------------------------------------
@@ -1009,3 +1095,129 @@ def test_live_server_client_roundtrip():
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_server_group_message_routing_to_room_only_and_charlie_isolation():
+    """Verify validated group messages are forwarded only to members of that group (R11)."""
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    # Alice and Bob register and join StudyGroup. Charlie registers but does NOT join.
+    spy.trigger("register", "sid_alice", {"username": "Alice"})
+    spy.trigger("register", "sid_bob", {"username": "Bob"})
+    spy.trigger("register", "sid_charlie", {"username": "Charlie"})
+    spy.trigger(EVENT_CREATE_GROUP, "sid_alice", {"group_name": "StudyGroup"})
+    spy.trigger(EVENT_JOIN_GROUP, "sid_bob", {"group_name": "StudyGroup"})
+    spy.clear()
+
+    # Alice sends a group message with an attempted spoofed sender
+    msg_data = {
+        "group_name": "StudyGroup",
+        "message": "Hello study group!",
+        "message_id": "MSG_G01",
+        "timestamp": "14:32",
+        "sender": "SpoofedCharlie",
+    }
+    spy.trigger(EVENT_GROUP_MSG, "sid_alice", msg_data)
+
+    # 1. Emission must be strictly targeted to the 'StudyGroup' room via RECEIVE_GROUP
+    group_events = spy.get_events(EVENT_RECEIVE_GROUP, room="StudyGroup")
+    assert len(group_events) == 1
+    assert len(spy.get_events(EVENT_GROUP_MSG, room="StudyGroup")) == 0
+    assert group_events[0]["data"]["sender"] == "Alice"
+    assert group_events[0]["data"]["group_name"] == "StudyGroup"
+    assert group_events[0]["data"]["group"] == "StudyGroup"
+    assert group_events[0]["data"]["message"] == "Hello study group!"
+    assert group_events[0]["data"]["message_id"] == "MSG_G01"
+
+    # 2. Non-member Charlie was never added to the StudyGroup Socket.IO room
+    assert ("sid_charlie", "StudyGroup") not in spy.entered_rooms
+
+    # 3. No global broadcast occurred (room must be StudyGroup, not None)
+    broadcast_events = [e for e in spy.get_events(EVENT_RECEIVE_GROUP) if e["room"] is None]
+    assert len(broadcast_events) == 0
+
+    # 4. Charlie received zero direct messages or events
+    assert len(spy.get_events(EVENT_RECEIVE_GROUP, room="sid_charlie")) == 0
+
+
+def test_server_group_message_via_send_group_event():
+    """Verify SEND_GROUP alias with target field is handled seamlessly (R11)."""
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    spy.trigger("register", "sid_alice", {"username": "Alice"})
+    spy.trigger(EVENT_CREATE_GROUP, "sid_alice", {"group_name": "StudyGroup"})
+    spy.clear()
+
+    msg_data = {
+        "target": "StudyGroup",
+        "message": "Message via SEND_GROUP",
+        "message_id": "MSG_G02",
+        "timestamp": "14:33",
+    }
+    spy.trigger("SEND_GROUP", "sid_alice", msg_data)
+
+    group_events = spy.get_events(EVENT_RECEIVE_GROUP, room="StudyGroup")
+    assert len(group_events) == 1
+    assert group_events[0]["data"]["sender"] == "Alice"
+    assert group_events[0]["data"]["group_name"] == "StudyGroup"
+    assert group_events[0]["data"]["message"] == "Message via SEND_GROUP"
+
+
+def test_server_group_message_non_member_rejected_with_error():
+    """Verify non-member attempting to send to a group is rejected with ERROR (R10, R11)."""
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    spy.trigger("register", "sid_alice", {"username": "Alice"})
+    spy.trigger("register", "sid_charlie", {"username": "Charlie"})
+    spy.trigger(EVENT_CREATE_GROUP, "sid_alice", {"group_name": "StudyGroup"})
+    spy.clear()
+
+    # Charlie (non-member) attempts to send to StudyGroup
+    msg_data = {
+        "group_name": "StudyGroup",
+        "message": "Intruder message",
+        "message_id": "MSG_G03",
+        "timestamp": "14:34",
+    }
+    spy.trigger(EVENT_GROUP_MSG, "sid_charlie", msg_data)
+
+    # 1. No message emitted to StudyGroup room
+    assert len(spy.get_events(EVENT_RECEIVE_GROUP, room="StudyGroup")) == 0
+
+    # 2. Rejection error emitted directly to Charlie
+    group_errors = spy.get_events(EVENT_GROUP_ERROR, room="sid_charlie")
+    assert len(group_errors) == 1
+    assert "not a member" in group_errors[0]["data"]["error"]
+
+    raw_errors = spy.get_events("ERROR", room="sid_charlie")
+    assert len(raw_errors) == 1
+    assert "not a member" in raw_errors[0]["data"]["error"]
+
+
+def test_server_group_message_invalid_payload_rejected():
+    """Verify malformed group message payloads are rejected with error."""
+    spy = SocketIOServerSpy()
+    _ = ChatServer(sio=spy.sio)
+
+    spy.trigger("register", "sid_alice", {"username": "Alice"})
+    spy.trigger(EVENT_CREATE_GROUP, "sid_alice", {"group_name": "StudyGroup"})
+    spy.clear()
+
+    # Empty message
+    spy.trigger(
+        EVENT_GROUP_MSG,
+        "sid_alice",
+        {
+            "group_name": "StudyGroup",
+            "message": "   ",
+            "message_id": "MSG_G04",
+            "timestamp": "14:35",
+        },
+    )
+    assert len(spy.get_events(EVENT_RECEIVE_GROUP, room="StudyGroup")) == 0
+    errors = spy.get_events(EVENT_GROUP_ERROR, room="sid_alice")
+    assert len(errors) == 1
+    assert "empty or whitespace-only" in errors[0]["data"]["error"]

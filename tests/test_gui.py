@@ -8,11 +8,12 @@ from typing import Any
 
 import pytest
 
-from gui import GuiController, MainChatWindow, configure_fixed_pixel_scaling
+from gui import GuiController, MainChatWindow, RoomRegistry, configure_fixed_pixel_scaling
 from protocol import (
     EVENT_ANNOUNCEMENT,
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
+    EVENT_GROUP_MSG,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
@@ -21,6 +22,7 @@ from protocol import (
     AnnouncementPayload,
     GroupErrorPayload,
     GroupListPayload,
+    GroupMessageServerPayload,
     MessageMeta,
     PrivateMessageServerPayload,
     ReadAckServerPayload,
@@ -49,6 +51,7 @@ class SessionSpy:
         self.sent_read_ack: list[tuple[str, str]] = []
         self.created_groups: list[str] = []
         self.joined_groups: list[str] = []
+        self.sent_group: list[tuple[str, str, str | None, str | None]] = []
         self.connect_result = connect_result
         self.send_read_ack_result = send_read_ack_result
 
@@ -83,6 +86,16 @@ class SessionSpy:
     def join_group(self, group_name: str) -> bool:
         self.joined_groups.append(group_name)
         return True
+
+    def send_group_message(
+        self,
+        group_name: str,
+        message: str,
+        message_id: str | None = None,
+        timestamp: str | None = None,
+    ) -> str | None:
+        self.sent_group.append((group_name, message, message_id, timestamp))
+        return message_id or "MSG_G_TEST"
 
     def get_next_event(self, *, block: bool = False) -> tuple[str, Any] | None:
         del block
@@ -379,6 +392,280 @@ def test_controller_polls_and_notifies_read_ack():
 
     assert len(acks) == 1
     assert acks[0] == ("MSG_001", "Bob")
+
+
+def test_controller_send_group_message_forwards_to_session():
+    session = SessionSpy()
+    controller = GuiController(session)
+
+    msg_id = controller.send_group_message("StudyGroup", "Hello all!")
+    assert msg_id == "MSG_G_TEST"
+    assert session.sent_group == [("StudyGroup", "Hello all!", None, None)]
+
+
+def test_controller_polls_and_records_incoming_group_messages():
+    meta = MessageMeta(message_id="MSG_G01", timestamp="14:32")
+    payload = GroupMessageServerPayload(
+        sender="Bob",
+        group_name="StudyGroup",
+        message="Hello group!",
+        meta=meta,
+    )
+    session = SessionSpy([(EVENT_GROUP_MSG, payload)])
+    controller = GuiController(session)
+    controller.username = "Alice"
+
+    received: list[tuple[str, GroupMessageServerPayload]] = []
+    controller.on_group_message = lambda gname, p: received.append((gname, p))
+
+    controller.poll_events()
+
+    assert "StudyGroup" in controller.group_messages
+    assert controller.group_messages["StudyGroup"] == [payload]
+    assert len(received) == 1
+    assert received[0] == ("StudyGroup", payload)
+
+
+def test_controller_polls_and_records_own_echo_group_messages():
+    meta = MessageMeta(message_id="MSG_G02", timestamp="14:33")
+    payload = GroupMessageServerPayload(
+        sender="Alice",
+        group_name="StudyGroup",
+        message="My message!",
+        meta=meta,
+    )
+    session = SessionSpy([(EVENT_GROUP_MSG, payload)])
+    controller = GuiController(session)
+    controller.username = "Alice"
+
+    controller.poll_events()
+
+    assert "StudyGroup" in controller.group_messages
+    assert controller.group_messages["StudyGroup"] == [payload]
+
+
+def test_controller_polls_and_notifies_group_message_error():
+    payload = GroupErrorPayload(error="User 'Charlie' is not a member of group 'StudyGroup'")
+    session = SessionSpy([(EVENT_GROUP_ERROR, payload)])
+    controller = GuiController(session)
+
+    errors: list[tuple[str, str]] = []
+    controller.on_group_message_error = lambda gname, err: errors.append((gname, err))
+
+    controller.poll_events()
+
+    assert controller.group_error == "User 'Charlie' is not a member of group 'StudyGroup'"
+    assert len(errors) == 1
+    assert "not a member" in errors[0][1]
+
+
+def test_open_group_room_sets_up_chat_room_tab_and_on_send(monkeypatch):
+    class FrameSpy:
+        def __init__(self) -> None:
+            self.packed = False
+
+        def pack(self, **_options: object) -> None:
+            self.packed = True
+
+    class RoomSpy:
+        def __init__(self, _parent: object, room_name: str, on_send: object) -> None:
+            assert callable(on_send)
+            self.room_name = room_name
+            self.on_send = on_send
+            self.frame = FrameSpy()
+
+    class TabsSpy:
+        def __init__(self) -> None:
+            self._tab_dict: dict[str, object] = {}
+            self.current_tab: str | None = None
+
+        def add(self, name: str) -> object:
+            tab = object()
+            self._tab_dict[name] = tab
+            return tab
+
+        def tab(self, name: str) -> object:
+            return self._tab_dict[name]
+
+        def set(self, name: str) -> None:
+            self.current_tab = name
+
+    monkeypatch.setattr("gui.ChatRoomTab", RoomSpy)
+    session = SessionSpy()
+    controller = GuiController(session)
+    controller.username = "Alice"
+
+    window = object.__new__(MainChatWindow)
+    window.controller = controller
+    window.tabs = TabsSpy()
+    window.rooms = {}
+    window._active_room = None
+
+    window.open_group_room("StudyGroup", select=True)
+
+    assert "StudyGroup" in window.rooms
+    assert "group:StudyGroup" in window.rooms
+    assert window.rooms["group:StudyGroup"].frame.packed is True
+    assert window.tabs.current_tab == "group:StudyGroup"
+    assert window._active_room == "group:StudyGroup"
+
+    # Verify sending forwards to controller and session
+    window.rooms["StudyGroup"].on_send("Hello test group!")
+    assert session.sent_group == [("StudyGroup", "Hello test group!", None, None)]
+
+
+def test_main_chat_window_renders_and_deduplicates_incoming_group_message():
+    class DummyRoom:
+        def __init__(self) -> None:
+            self.messages: list[dict[str, Any]] = []
+
+        def add_message(
+            self,
+            sender: str,
+            message: str,
+            own: bool = False,
+            timestamp: str | None = None,
+            message_id: str | None = None,
+        ):
+            self.messages.append(
+                {
+                    "sender": sender,
+                    "message": message,
+                    "own": own,
+                    "timestamp": timestamp,
+                    "message_id": message_id,
+                }
+            )
+
+    window = object.__new__(MainChatWindow)
+    window.controller = type("Controller", (), {"username": "Alice"})()
+    window.rooms = {"StudyGroup": DummyRoom()}
+    window._rendered_messages = set()
+
+    meta = MessageMeta(message_id="MSG_G10", timestamp="14:40")
+    payload = GroupMessageServerPayload(
+        sender="Bob",
+        group_name="StudyGroup",
+        message="Group chat works!",
+        meta=meta,
+    )
+
+    # First delivery
+    window._handle_incoming_group_message("StudyGroup", payload)
+    assert len(window.rooms["StudyGroup"].messages) == 1
+    msg = window.rooms["StudyGroup"].messages[0]
+    assert msg["sender"] == "Bob"
+    assert msg["message"] == "Group chat works!"
+    assert msg["own"] is False
+    assert msg["message_id"] == "MSG_G10"
+
+    # Duplicate delivery with same message_id must be ignored
+    window._handle_incoming_group_message("StudyGroup", payload)
+    assert len(window.rooms["StudyGroup"].messages) == 1
+
+
+def test_main_chat_window_passes_sender_profile_avatar():
+    class DummyRoom:
+        def __init__(self) -> None:
+            self.messages: list[dict[str, Any]] = []
+
+        def add_message(
+            self,
+            sender: str,
+            message: str,
+            own: bool = False,
+            timestamp: str | None = None,
+            message_id: str | None = None,
+            avatar: Any | None = None,
+        ):
+            self.messages.append(
+                {
+                    "sender": sender,
+                    "message": message,
+                    "own": own,
+                    "timestamp": timestamp,
+                    "message_id": message_id,
+                    "avatar": avatar,
+                }
+            )
+
+    window = object.__new__(MainChatWindow)
+    window.controller = type(
+        "Controller",
+        (),
+        {"username": "Alice", "avatar": "rabbit", "online_avatars": {"Bob": "dog"}},
+    )()
+    window.rooms = {"StudyGroup": DummyRoom(), "Bob": DummyRoom()}
+    window._rendered_messages = set()
+    window._active_room = "Bob"
+    window._unread_messages = {}
+    window._send_read_ack = lambda *args: None
+
+    # Incoming message from Bob in group
+    meta = MessageMeta(message_id="MSG_AV01", timestamp="14:50")
+    payload = GroupMessageServerPayload(
+        sender="Bob",
+        group_name="StudyGroup",
+        message="Hello group!",
+        meta=meta,
+    )
+    window._handle_incoming_group_message("StudyGroup", payload)
+    assert window.rooms["StudyGroup"].messages[0]["avatar"] == "dog"
+
+    # Incoming private message from Bob
+    priv_meta = MessageMeta(message_id="MSG_AV02", timestamp="14:51")
+    priv_payload = PrivateMessageServerPayload(
+        sender="Bob",
+        target="Alice",
+        message="Hi Alice private!",
+        meta=priv_meta,
+    )
+    window._handle_incoming_private_message("Bob", priv_payload)
+    assert window.rooms["Bob"].messages[0]["avatar"] == "dog"
+
+
+def test_main_chat_window_renders_own_echo_group_message():
+    class DummyRoom:
+        def __init__(self) -> None:
+            self.messages: list[dict[str, Any]] = []
+
+        def add_message(
+            self,
+            sender: str,
+            message: str,
+            own: bool = False,
+            timestamp: str | None = None,
+            message_id: str | None = None,
+        ):
+            self.messages.append(
+                {
+                    "sender": sender,
+                    "message": message,
+                    "own": own,
+                    "timestamp": timestamp,
+                    "message_id": message_id,
+                }
+            )
+
+    window = object.__new__(MainChatWindow)
+    window.controller = type("Controller", (), {"username": "Alice"})()
+    window.rooms = {"StudyGroup": DummyRoom()}
+    window._rendered_messages = set()
+
+    meta = MessageMeta(message_id="MSG_G11", timestamp="14:41")
+    payload = GroupMessageServerPayload(
+        sender="Alice",
+        group_name="StudyGroup",
+        message="My own group message",
+        meta=meta,
+    )
+
+    window._handle_incoming_group_message("StudyGroup", payload)
+    assert len(window.rooms["StudyGroup"].messages) == 1
+    msg = window.rooms["StudyGroup"].messages[0]
+    assert msg["sender"] == "You"
+    assert msg["own"] is True
+    assert msg["message"] == "My own group message"
 
 
 def test_controller_polls_and_notifies_announcement():
@@ -945,3 +1232,212 @@ def test_main_chat_window_handle_incoming_sticker_message_opens_group_room():
 
     assert opened_rooms == [("group", "StudyGroup")]
     assert "STK_GRP_1" in window._rendered_messages
+
+
+def test_main_chat_window_isolates_group_and_private_rooms_with_same_name(monkeypatch):
+    """Verify group and private rooms have distinct internal IDs and do not collide (Issue #9)."""
+
+    class RoomSpy:
+        def __init__(self, tab: Any, name: str, on_send: Any, **kwargs: Any) -> None:
+            self.tab = tab
+            self.name = name
+            self.on_send = on_send
+            self.frame = type("Frame", (), {"pack": lambda *a, **k: None})()
+            self.messages: list[dict[str, Any]] = []
+
+        def add_message(self, sender: str, message: str, **kwargs: Any) -> None:
+            self.messages.append({"sender": sender, "message": message, **kwargs})
+
+    class TabsSpy:
+        def __init__(self) -> None:
+            self._tab_dict: dict[str, Any] = {}
+            self.current_tab: str | None = None
+
+        def tab(self, name: str) -> Any:
+            return self._tab_dict[name]
+
+        def add(self, name: str) -> Any:
+            frame = object()
+            self._tab_dict[name] = frame
+            return frame
+
+        def set(self, name: str) -> None:
+            self.current_tab = name
+
+    monkeypatch.setattr("gui.ChatRoomTab", RoomSpy)
+    session = SessionSpy()
+    controller = GuiController(session)
+    controller.username = "Alice"
+
+    window = object.__new__(MainChatWindow)
+    window.controller = controller
+    window.tabs = TabsSpy()
+    window.rooms = RoomRegistry()
+    window._active_room = None
+    window._unread_messages = {}
+    window._acknowledged_messages = set()
+    window.sidebar = type("Sidebar", (), {"set_users": lambda *a: None})()
+    window._send_read_ack = lambda *a: None
+
+    # Open a private room for user 'Bob'
+    window.open_private_room("Bob", select=True)
+    assert "private:Bob" in window.rooms
+    assert window.tabs.current_tab == "private:Bob"
+    assert window._active_room == "private:Bob"
+
+    # Open a group room with the identical name 'Bob'
+    window.open_group_room("Bob", select=True)
+    assert "group:Bob" in window.rooms
+    assert window.tabs.current_tab == "group:Bob"
+    assert window._active_room == "group:Bob"
+
+    # Distinct room instances
+    private_room = window.rooms["private:Bob"]
+    group_room = window.rooms["group:Bob"]
+    assert private_room is not group_room
+
+    # Route message to group: does not leak into private room
+    group_payload = GroupMessageServerPayload(
+        sender="Charlie",
+        group_name="Bob",
+        message="Hello Bob group members!",
+        meta=MessageMeta(message_id="MSG_G_SAME", timestamp="12:00"),
+    )
+    window._rendered_messages = set()
+    window._handle_incoming_group_message("Bob", group_payload)
+
+    assert len(group_room.messages) == 1
+    assert group_room.messages[0]["message"] == "Hello Bob group members!"
+    assert len(private_room.messages) == 0
+
+
+def test_message_bubble_single_rendering_for_text_and_sticker(monkeypatch):
+    """Verify MessageBubble renders exactly one bubble without duplicate text or frames."""
+    from gui import MessageBubble
+
+    created_labels: list[dict[str, Any]] = []
+
+    class MockUI:
+        class CTkFrame:
+            def __init__(self, parent: Any = None, **kwargs: Any) -> None:
+                self.parent = parent
+                self.kwargs = kwargs
+
+            def pack(self, **kwargs: Any) -> None:
+                pass
+
+        class CTkLabel:
+            def __init__(self, parent: Any = None, **kwargs: Any) -> None:
+                self.parent = parent
+                self.kwargs = kwargs
+                created_labels.append(kwargs)
+
+            def pack(self, **kwargs: Any) -> None:
+                pass
+
+    monkeypatch.setattr("gui._require_ctk", lambda: MockUI)
+    monkeypatch.setattr("gui._get_bubble_avatar", lambda avatar: object())
+
+    # 1. Received text message with avatar:
+    created_labels.clear()
+    bubble_recv = MessageBubble(
+        parent=object(),
+        sender="Bob",
+        message="Hello Alice",
+        own=False,
+        timestamp="14:00",
+        avatar="dog",
+    )
+    text_labels = [lbl for lbl in created_labels if lbl.get("text") == "Hello Alice"]
+    assert len(text_labels) == 1
+    assert bubble_recv.avatar_label is not None
+
+    # 2. Sent text message:
+    created_labels.clear()
+    bubble_sent = MessageBubble(
+        parent=object(),
+        sender="Alice",
+        message="My reply",
+        own=True,
+        timestamp="14:01",
+    )
+    text_labels = [lbl for lbl in created_labels if lbl.get("text") == "My reply"]
+    assert len(text_labels) == 1
+    assert bubble_sent.status_label is not None
+
+    # 3. Sticker message:
+    created_labels.clear()
+    sticker_obj = object()
+    MessageBubble(
+        parent=object(),
+        sender="Bob",
+        message="",
+        own=False,
+        timestamp="14:02",
+        sticker_image=sticker_obj,
+    )
+    sticker_labels = [lbl for lbl in created_labels if lbl.get("image") is sticker_obj]
+    empty_bubbles = [
+        lbl
+        for lbl in created_labels
+        if lbl.get("text") == "" and lbl.get("image") is not sticker_obj
+    ]
+    assert len(sticker_labels) == 1
+    assert len(empty_bubbles) == 0
+
+
+def test_main_chat_window_incoming_sticker_from_other_passes_avatar():
+    """Verify incoming sticker from another user passes the sender's profile avatar."""
+
+    class DummyRoom:
+        def __init__(self) -> None:
+            self.stickers: list[dict[str, Any]] = []
+
+        def add_sticker(
+            self,
+            sender: str,
+            sticker_id: str,
+            own: bool = False,
+            timestamp: str | None = None,
+            message_id: str | None = None,
+            avatar: Any | None = None,
+        ) -> None:
+            self.stickers.append(
+                {
+                    "sender": sender,
+                    "sticker_id": sticker_id,
+                    "own": own,
+                    "timestamp": timestamp,
+                    "message_id": message_id,
+                    "avatar": avatar,
+                }
+            )
+
+    room = DummyRoom()
+    window = object.__new__(MainChatWindow)
+    window.rooms = {"Bob": room, "private:Bob": room}
+    window._rendered_messages = set()
+    window.controller = type(
+        "Controller",
+        (),
+        {"username": "Alice", "online_avatars": {"Bob": "cat"}, "groups": []},
+    )()
+    window.avatar_images = None
+    window._active_room = "private:Bob"
+    window._unread_messages = {}
+    window._send_read_ack = lambda *args: None
+
+    payload = StickerMessageServerPayload(
+        sender="Bob",
+        sticker_id="STK_001",
+        meta=MessageMeta(message_id="STK_001", timestamp="12:00"),
+        target="Alice",
+        group_name=None,
+    )
+
+    window._handle_incoming_sticker_message("Bob", payload)
+
+    assert len(room.stickers) == 1
+    assert room.stickers[0]["sender"] == "Bob"
+    assert room.stickers[0]["sticker_id"] == "STK_001"
+    assert room.stickers[0]["avatar"] == "cat"

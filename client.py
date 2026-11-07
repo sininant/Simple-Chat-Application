@@ -22,12 +22,15 @@ from protocol import (
     EVENT_CREATE_GROUP,
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
+    EVENT_GROUP_MSG,
     EVENT_JOIN_GROUP,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
+    EVENT_RECEIVE_GROUP,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
+    EVENT_SEND_GROUP,
     EVENT_SEND_STICKER,
     EVENT_STICKER_MSG,
     EVENT_USER_LIST,
@@ -35,6 +38,8 @@ from protocol import (
     CreateGroupPayload,
     GroupErrorPayload,
     GroupListPayload,
+    GroupMessagePayload,
+    GroupMessageServerPayload,
     JoinGroupPayload,
     MessageMeta,
     PrivateMessagePayload,
@@ -167,6 +172,24 @@ class ClientSession:
             self.event_queue.put((EVENT_GROUP_ERROR, payload))
 
         @self.sio.event
+        def group_message(data: Any) -> None:
+            try:
+                payload = parse_server_event(EVENT_GROUP_MSG, data)
+                assert isinstance(payload, GroupMessageServerPayload)
+                self.event_queue.put((EVENT_RECEIVE_GROUP, payload))
+            except ProtocolValidationError as e:
+                logger.warning("Received invalid group_message from server: %s", e)
+
+        @self.sio.on(EVENT_RECEIVE_GROUP)
+        def receive_group(data: Any) -> None:
+            try:
+                payload = parse_server_event(EVENT_RECEIVE_GROUP, data)
+                assert isinstance(payload, GroupMessageServerPayload)
+                self.event_queue.put((EVENT_RECEIVE_GROUP, payload))
+            except ProtocolValidationError as e:
+                logger.warning("Received invalid RECEIVE_GROUP from server: %s", e)
+
+        @self.sio.event
         def private_message(data: Any) -> None:
             try:
                 payload = parse_server_event(EVENT_PRIVATE_MSG, data)
@@ -220,6 +243,9 @@ class ClientSession:
                 EVENT_USER_LIST,
                 EVENT_GROUP_LIST,
                 EVENT_GROUP_ERROR,
+                EVENT_GROUP_MSG,
+                EVENT_RECEIVE_GROUP,
+                EVENT_SEND_GROUP,
                 EVENT_PRIVATE_MSG,
                 EVENT_PRIVATE_MSG_ERROR,
                 EVENT_READ_ACK,
@@ -351,6 +377,46 @@ class ClientSession:
             return False
         self.sio.emit(EVENT_JOIN_GROUP, payload.to_dict())
         return True
+
+    def send_group_message(
+        self,
+        group_name: str,
+        message: str,
+        message_id: str | None = None,
+        timestamp: str | None = None,
+    ) -> str | None:
+        """Send a message to a joined group over Socket.IO (R11).
+
+        Returns:
+            The message_id if emission succeeded, or None if validation/emission failed.
+        """
+        if not self.is_connected or not self.is_registered:
+            logger.warning("Cannot send group message: client is not connected and registered")
+            return None
+
+        try:
+            clean_group = validate_group_name(group_name, field_name="group_name")
+            clean_message = validate_message_text(message)
+        except ProtocolValidationError as e:
+            logger.warning("Invalid group message input: %s", e)
+            return None
+
+        msg_id = message_id or f"MSG_{uuid.uuid4().hex[:8]}"
+        ts = timestamp or datetime.now().strftime("%H:%M")
+
+        try:
+            meta = MessageMeta(message_id=msg_id, timestamp=ts)
+            payload = GroupMessagePayload(
+                group_name=clean_group,
+                message=clean_message,
+                meta=meta,
+            )
+        except ProtocolValidationError as e:
+            logger.warning("Group message metadata validation failed: %s", e)
+            return None
+
+        self.sio.emit(EVENT_SEND_GROUP, payload.to_dict())
+        return msg_id
 
     def send_read_ack(self, message_id: str, target: str) -> bool:
         """Send a 1-to-1 read receipt acknowledgment over Socket.IO (SP4).

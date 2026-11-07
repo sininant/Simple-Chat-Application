@@ -39,15 +39,18 @@ from protocol import (
     EVENT_CONNECT,
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
+    EVENT_GROUP_MSG,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
+    EVENT_RECEIVE_GROUP,
     EVENT_REGISTER_ACK,
     EVENT_STICKER_MSG,
     EVENT_USER_LIST,
     AnnouncementPayload,
     GroupErrorPayload,
     GroupListPayload,
+    GroupMessageServerPayload,
     PrivateMessageServerPayload,
     ReadAckServerPayload,
     RegisterAckPayload,
@@ -98,6 +101,14 @@ class SessionPort(Protocol):
 
     def join_group(self, group_name: str) -> bool: ...
 
+    def send_group_message(
+        self,
+        group_name: str,
+        message: str,
+        message_id: str | None = None,
+        timestamp: str | None = None,
+    ) -> str | None: ...
+
 
 class GuiController:
     """Headless adapter that owns GUI-facing login, presence, and chat message state."""
@@ -112,6 +123,9 @@ class GuiController:
         self.groups: list[dict[str, Any]] = []
         self.group_error: str | None = None
         self.login_error: str | None = None
+        self.group_messages: dict[str, list[GroupMessageServerPayload]] = {}
+        self.on_group_message: Callable[[str, GroupMessageServerPayload], None] | None = None
+        self.on_group_message_error: Callable[[str, str], None] | None = None
         self.announcements: list[AnnouncementPayload] = []
         self.latest_announcement: AnnouncementPayload | None = None
         self.private_messages: dict[str, list[PrivateMessageServerPayload]] = {}
@@ -158,6 +172,13 @@ class GuiController:
         """Request that the local user voluntarily joins a group (R10)."""
         join_fn = getattr(self.session, "join_group", None)
         return bool(join_fn and join_fn(group_name))
+
+    def send_group_message(self, group_name: str, message: str) -> str | None:
+        """Send a group message through the underlying session adapter (R11)."""
+        send_fn = getattr(self.session, "send_group_message", None)
+        if send_fn is None:
+            return None
+        return send_fn(group_name, message)
 
     def connect_and_register(
         self, host: str, port: str, username: str, avatar: str = "rabbit"
@@ -211,6 +232,15 @@ class GuiController:
                 changed = True
             elif event_name == EVENT_GROUP_ERROR and isinstance(payload, GroupErrorPayload):
                 self.group_error = payload.error
+                if self.on_group_message_error:
+                    self.on_group_message_error("", payload.error)
+                changed = True
+            elif event_name in (EVENT_RECEIVE_GROUP, EVENT_GROUP_MSG) and isinstance(
+                payload, GroupMessageServerPayload
+            ):
+                self.group_messages.setdefault(payload.group_name, []).append(payload)
+                if self.on_group_message:
+                    self.on_group_message(payload.group_name, payload)
                 changed = True
             elif event_name == EVENT_PRIVATE_MSG and isinstance(
                 payload, PrivateMessageServerPayload
@@ -980,6 +1010,21 @@ class SidebarPanel:
             )
 
 
+_BUBBLE_AVATARS: dict[str, Any] = {}
+
+
+def _get_bubble_avatar(avatar_or_name: Any, size: tuple[int, int] = (36, 36)) -> Any:
+    """Resolve an avatar string identifier or CTkImage for MessageBubble rendering."""
+    if avatar_or_name is None:
+        return None
+    if isinstance(avatar_or_name, str):
+        global _BUBBLE_AVATARS
+        if not _BUBBLE_AVATARS:
+            _BUBBLE_AVATARS = _load_avatars(size)
+        return _BUBBLE_AVATARS.get(avatar_or_name)
+    return avatar_or_name
+
+
 class MessageBubble:
     """Reusable message row for a ChatWindow."""
 
@@ -990,65 +1035,119 @@ class MessageBubble:
         message: str,
         own: bool = False,
         timestamp: str | None = None,
+        avatar: Any | None = None,
         sticker_image: Any | None = None,
     ) -> None:
         ui = _require_ctk()
         self.own = own
         self.timestamp = timestamp
         self.status_label: Any | None = None
+        self.avatar_label: Any | None = None
+        self.avatar = avatar
+        avatar_img = _get_bubble_avatar(avatar) if avatar is not None else None
         self.frame = ui.CTkFrame(parent, fg_color="transparent")
 
-        if not own:
-            sender_label = f"{sender} • {timestamp}" if timestamp else sender
-            ui.CTkLabel(
-                self.frame,
-                text=sender_label,
-                text_color=INK,
-                font=(FONT, 12, "bold"),
-                anchor="w",
-            ).pack(anchor="w", padx=12, pady=(2, 0))
-        if sticker_image is not None:
-            bubble = ui.CTkLabel(
-                self.frame,
-                text="",
-                image=sticker_image,
-                fg_color="transparent",
-            )
-            bubble.pack(
-                anchor="e" if own else "w",
-                padx=8,
-                pady=4,
-            )
-        else:
-            bubble_shell = ui.CTkFrame(
-                self.frame,
-                fg_color=PINK if own else PINK_LIGHT,
-                border_color=INK,
-                border_width=2,
-                corner_radius=16,
-            )
-
-            bubble = ui.CTkLabel(
-                bubble_shell,
-                text=message,
-                justify="left",
-                wraplength=310,
-                text_color=WHITE if own else INK,
-                fg_color="transparent",
-                font=(FONT, 16),
-            )
-            bubble.pack(padx=12, pady=7)
-            bubble_shell.pack(anchor="e" if own else "w", padx=8, pady=4)
         if own:
+            row = ui.CTkFrame(self.frame, fg_color="transparent")
+            row.pack(anchor="e", padx=8, pady=4)
+
+            content_col = ui.CTkFrame(row, fg_color="transparent")
+            content_col.pack(side="left", anchor="e")
+
+            if sticker_image is not None:
+                bubble = ui.CTkLabel(
+                    content_col,
+                    text="",
+                    image=sticker_image,
+                    fg_color="transparent",
+                )
+                bubble.pack(anchor="e")
+            else:
+                bubble_shell = ui.CTkFrame(
+                    content_col,
+                    fg_color=PINK,
+                    border_color=INK,
+                    border_width=2,
+                    corner_radius=16,
+                )
+                bubble_shell.pack(anchor="e")
+
+                bubble = ui.CTkLabel(
+                    bubble_shell,
+                    text=message,
+                    justify="left",
+                    wraplength=310,
+                    text_color=WHITE,
+                    fg_color="transparent",
+                    font=(FONT, 16),
+                )
+                bubble.pack(padx=12, pady=7)
+
             status_text = f"{timestamp} • Sent" if timestamp else "Sent"
             self.status_label = ui.CTkLabel(
-                self.frame,
+                content_col,
                 text=status_text,
                 text_color="#888888",
                 font=(FONT, 10),
                 anchor="e",
             )
-            self.status_label.pack(anchor="e", padx=12, pady=(0, 2))
+            self.status_label.pack(anchor="e", padx=4, pady=(2, 0))
+
+        else:
+            row = ui.CTkFrame(self.frame, fg_color="transparent")
+            row.pack(anchor="w", padx=8, pady=4)
+
+            if avatar_img is not None:
+                self.avatar_label = ui.CTkLabel(
+                    row,
+                    text="",
+                    image=avatar_img,
+                    width=36,
+                    height=36,
+                    fg_color="transparent",
+                )
+                self.avatar_label.pack(side="left", anchor="n", padx=(0, 8), pady=2)
+
+            content_col = ui.CTkFrame(row, fg_color="transparent")
+            content_col.pack(side="left", anchor="w")
+
+            sender_label = f"{sender} • {timestamp}" if timestamp else sender
+            ui.CTkLabel(
+                content_col,
+                text=sender_label,
+                text_color=INK,
+                font=(FONT, 12, "bold"),
+                anchor="w",
+            ).pack(anchor="w", padx=4, pady=(0, 2))
+
+            if sticker_image is not None:
+                bubble = ui.CTkLabel(
+                    content_col,
+                    text="",
+                    image=sticker_image,
+                    fg_color="transparent",
+                )
+                bubble.pack(anchor="w")
+            else:
+                bubble_shell = ui.CTkFrame(
+                    content_col,
+                    fg_color=PINK_LIGHT,
+                    border_color=INK,
+                    border_width=2,
+                    corner_radius=16,
+                )
+                bubble_shell.pack(anchor="w")
+
+                bubble = ui.CTkLabel(
+                    bubble_shell,
+                    text=message,
+                    justify="left",
+                    wraplength=310,
+                    text_color=INK,
+                    fg_color="transparent",
+                    font=(FONT, 16),
+                )
+                bubble.pack(padx=12, pady=7)
 
     def mark_read(self, text: str = "Read ✓✓") -> None:
         """Update the sender status indicator to Read (SP4)."""
@@ -1557,8 +1656,11 @@ class ChatRoomTab:
         own: bool = False,
         timestamp: str | None = None,
         message_id: str | None = None,
+        avatar: Any | None = None,
     ) -> MessageBubble:
-        bubble = MessageBubble(self.window, sender, message, own, timestamp=timestamp)
+        bubble = MessageBubble(
+            self.window, sender, message, own, timestamp=timestamp, avatar=avatar
+        )
         bubble.frame.pack(fill="x")
         if message_id:
             self.bubbles[message_id] = bubble
@@ -1572,6 +1674,7 @@ class ChatRoomTab:
         own: bool = False,
         timestamp: str | None = None,
         message_id: str | None = None,
+        avatar: Any | None = None,
     ) -> MessageBubble:
         sticker_images = getattr(self, "sticker_images", None)
         if sticker_images is None:
@@ -1590,6 +1693,7 @@ class ChatRoomTab:
             own=own,
             timestamp=timestamp,
             sticker_image=img,
+            avatar=avatar,
         )
         bubble.frame.pack(fill="x")
         if message_id:
@@ -1620,6 +1724,28 @@ class PopupDialog:
         self.window.transient(parent)
         self.frame = ui.CTkFrame(self.window, fg_color=BACKGROUND)
         self.frame.pack(fill="both", expand=True, padx=12, pady=12)
+
+
+class RoomRegistry(dict):
+    """Namespace-isolated room registry for internal keys ('group:<name>', 'private:<name>')."""
+
+    def __getitem__(self, key: str) -> Any:
+        if super().__contains__(key):
+            return super().__getitem__(key)
+        for prefix in ("group:", "private:"):
+            prefixed = f"{prefix}{key}"
+            if super().__contains__(prefixed):
+                return super().__getitem__(prefixed)
+        return super().__getitem__(key)
+
+    def __contains__(self, key: object) -> bool:
+        return super().__contains__(key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
 
 
 class MainChatWindow:
@@ -1685,7 +1811,7 @@ class MainChatWindow:
             segmented_button.grid_remove()
         for row in range(3):
             self.tabs.grid_rowconfigure(row, minsize=0)
-        self.rooms: dict[str, ChatRoomTab] = {}
+        self.rooms: RoomRegistry = RoomRegistry()
         self._active_room: str | None = None
         self._rendered_messages: set[str] = set()
         self._unread_messages: dict[str, set[str]] = {}
@@ -1695,6 +1821,9 @@ class MainChatWindow:
         self.controller.on_read_ack = self._handle_read_ack
         self.controller.on_announcement = self._handle_announcement
         self.controller.on_reconnect = self._retry_pending_acks
+        self.controller.on_group_message = self._handle_incoming_group_message
+        self.controller.on_group_message_error = self._handle_group_message_error
+        self.avatar_images = _load_avatars((36, 36))
         self.controller.on_sticker_message = self._handle_incoming_sticker_message
         self.frame.bind("<Configure>", self._resize_content)
         if self.controller.latest_announcement is not None:
@@ -1703,6 +1832,9 @@ class MainChatWindow:
         for peer, msgs in list(self.controller.private_messages.items()):
             for msg in msgs:
                 self._handle_incoming_private_message(peer, msg)
+        for gname, msgs in list(self.controller.group_messages.items()):
+            for msg in msgs:
+                self._handle_incoming_group_message(gname, msg)
 
         for dest, st_list in list(self.controller.stickers.items()):
             for st in st_list:
@@ -1736,13 +1868,30 @@ class MainChatWindow:
         if self._active_room and self._unread_messages.get(self._active_room):
             self._ack_unread_in_room(self._active_room)
 
+    def _get_room(self, name: str, kind: str | None = None) -> Any:
+        if kind == "group":
+            return self.rooms.get(f"group:{name}") or self.rooms.get(name)
+        if kind == "private":
+            return self.rooms.get(f"private:{name}") or self.rooms.get(name)
+        return (
+            self.rooms.get(name)
+            or self.rooms.get(f"group:{name}")
+            or self.rooms.get(f"private:{name}")
+        )
+
     def open_private_room(self, user: str, select: bool = True) -> None:
         if user == self.controller.username:
             return
-        if user not in self.rooms:
+        room_id = f"private:{user}"
+        if room_id not in self.rooms:
             existing_tabs = getattr(self.tabs, "_tab_dict", {})
-            tab_exists = user in existing_tabs
-            tab = self.tabs.tab(user) if tab_exists else self.tabs.add(user)
+            tab_exists = room_id in existing_tabs or user in existing_tabs
+            tab_key = (
+                room_id
+                if room_id in existing_tabs
+                else (user if user in existing_tabs else room_id)
+            )
+            tab = self.tabs.tab(tab_key) if tab_exists else self.tabs.add(room_id)
             try:
                 try:
                     room = ChatRoomTab(
@@ -1759,53 +1908,161 @@ class MainChatWindow:
                         on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
                     )
                 room.frame.pack(fill="both", expand=True)
-                self.rooms[user] = room
+                self.rooms[room_id] = room
+                if user not in self.rooms:
+                    self.rooms[user] = room
             except Exception:
                 if not tab_exists:
-                    self.tabs.delete(user)
+                    self.tabs.delete(room_id)
                 raise
         if select:
-            self.tabs.set(user)
-            self._active_room = user
+            active_tab = (
+                room_id if getattr(self.tabs, "_tab_dict", {}).get(room_id) is not None else user
+            )
+            self.tabs.set(active_tab)
+            self._active_room = room_id
             self._ack_unread_in_room(user)
             self.sidebar.set_users(
                 self.controller.online_users,
                 self.controller.username,
                 self.controller.online_avatars,
-                self._active_room,
+                user,
             )
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
             segmented_button.grid_forget()
 
-    def open_group_room(self, group_name: str) -> None:
-        """Open a joined Group Room; group message transport is introduced in R11."""
-        if group_name not in self.rooms:
-            tab = self.tabs.add(group_name)
+    def open_group_room(self, group_name: str, select: bool = True) -> None:
+        """Open a joined Group Room tab with isolated ChatBox and ChatWindow (R5, R6, R11)."""
+        room_id = f"group:{group_name}"
+        if room_id not in self.rooms:
+            existing_tabs = getattr(self.tabs, "_tab_dict", {})
+            tab_exists = room_id in existing_tabs
+            tab = self.tabs.tab(room_id) if tab_exists else self.tabs.add(room_id)
             try:
-                room = ChatRoomTab(
-                    tab,
-                    group_name,
-                    on_send=lambda _message: None,
-                    on_sticker=lambda g=group_name: self._open_sticker_picker(g),
-                    on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
-                )
-            except TypeError:
-                room = ChatRoomTab(tab, group_name, on_send=lambda _message: None)
-            self.rooms[group_name] = room
-            self.rooms[group_name].frame.pack(fill="both", expand=True)
-        self.tabs.set(group_name)
-        self._active_room = group_name
+                try:
+                    room = ChatRoomTab(
+                        tab,
+                        group_name,
+                        on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
+                        on_sticker=lambda g=group_name: self._open_sticker_picker(g),
+                        on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
+                    )
+                except TypeError:
+                    room = ChatRoomTab(
+                        tab,
+                        group_name,
+                        on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
+                    )
+                room.frame.pack(fill="both", expand=True)
+                self.rooms[room_id] = room
+                if group_name not in self.rooms:
+                    self.rooms[group_name] = room
+            except Exception:
+                if not tab_exists:
+                    self.tabs.delete(room_id)
+                raise
+        if select:
+            self.tabs.set(room_id)
+            self._active_room = room_id
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
             segmented_button.grid_forget()
+
+    def _get_user_avatar(self, username: str | None) -> Any:
+        if not username:
+            return None
+        if username == self.controller.username:
+            avatar_name = getattr(self.controller, "avatar", "rabbit")
+        else:
+            online_avatars = getattr(self.controller, "online_avatars", {})
+            avatar_name = online_avatars.get(username, "rabbit")
+        avatar_images = getattr(self, "avatar_images", None)
+        if avatar_images is None:
+            return avatar_name
+        return avatar_images.get(avatar_name, avatar_images.get("rabbit"))
+
+    def _add_room_message(
+        self, room_name: str, *args: Any, kind: str | None = None, **kwargs: Any
+    ) -> Any:
+        room = self._get_room(room_name, kind=kind)
+        if room is None:
+            return None
+        try:
+            return room.add_message(*args, **kwargs)
+        except TypeError:
+            kwargs.pop("avatar", None)
+            return room.add_message(*args, **kwargs)
+
+    def _send_group_message(self, group_name: str, message: str) -> None:
+        msg_id = self.controller.send_group_message(group_name, message)
+        if msg_id is None:
+            # Fallback for offline or mock sessions without live server echo
+            current_time = datetime.now().strftime("%H:%M")
+            avatar = None
+            self._add_room_message(
+                group_name,
+                "You",
+                message,
+                own=True,
+                timestamp=current_time,
+                avatar=avatar,
+                kind="group",
+            )
+
+    def _handle_incoming_group_message(
+        self, group_name: str, payload: GroupMessageServerPayload
+    ) -> None:
+        if payload.meta.message_id in self._rendered_messages:
+            return
+        self._rendered_messages.add(payload.meta.message_id)
+        room_id = f"group:{group_name}"
+        if room_id not in self.rooms and group_name not in self.rooms:
+            self.open_group_room(group_name, select=False)
+        own = payload.sender == self.controller.username
+        display_sender = "You" if own else payload.sender
+        avatar = None if own else self._get_user_avatar(payload.sender)
+        self._add_room_message(
+            group_name,
+            sender=display_sender,
+            message=payload.message,
+            own=own,
+            timestamp=payload.meta.timestamp,
+            message_id=payload.meta.message_id,
+            avatar=avatar,
+            kind="group",
+        )
+
+    def _handle_group_message_error(self, group_name: str, error: str) -> None:
+        target_room = group_name
+        if not target_room and self._active_room and self._active_room.startswith("group:"):
+            target_room = self._active_room.removeprefix("group:")
+        if target_room:
+            current_time = datetime.now().strftime("%H:%M")
+            self._add_room_message(
+                target_room,
+                sender="System",
+                message=f"⚠️ {error}",
+                own=False,
+                timestamp=current_time,
+                kind="group",
+            )
 
     def _send_private_message(self, peer: str, message: str) -> None:
         msg_id = self.controller.send_private_message(peer, message)
         if msg_id is None:
             # Fallback for offline or mock sessions without live server echo
             current_time = datetime.now().strftime("%H:%M")
-            self.rooms[peer].add_message("You", message, own=True, timestamp=current_time)
+            avatar = None
+            self._add_room_message(
+                peer,
+                "You",
+                message,
+                own=True,
+                timestamp=current_time,
+                avatar=avatar,
+                kind="private",
+            )
 
     def _handle_incoming_private_message(
         self, peer: str, payload: PrivateMessageServerPayload
@@ -1813,20 +2070,25 @@ class MainChatWindow:
         if payload.meta.message_id in self._rendered_messages:
             return
         self._rendered_messages.add(payload.meta.message_id)
-        if peer not in self.rooms:
+        room_id = f"private:{peer}"
+        if room_id not in self.rooms and peer not in self.rooms:
             self.open_private_room(peer, select=False)
         own = payload.sender == self.controller.username
         display_sender = "You" if own else payload.sender
-        self.rooms[peer].add_message(
+        avatar = None if own else self._get_user_avatar(payload.sender)
+        self._add_room_message(
+            peer,
             sender=display_sender,
             message=payload.message,
             own=own,
             timestamp=payload.meta.timestamp,
             message_id=payload.meta.message_id,
+            avatar=avatar,
+            kind="private",
         )
         if not own:
             # Check user's actively selected room rather than relying on tabs.get()
-            if self._active_room == peer:
+            if self._active_room in (room_id, peer):
                 self._send_read_ack(payload.meta.message_id, peer)
             else:
                 self._unread_messages.setdefault(peer, set()).add(payload.meta.message_id)
@@ -1874,20 +2136,23 @@ class MainChatWindow:
         msg_id = self.controller.send_sticker(
             sticker_id=sticker_id, target=target, group_name=group_name
         )
-        if msg_id is None and destination in self.rooms:
+        room = self._get_room(destination, kind="group" if is_group else "private")
+        if msg_id is None and room is not None:
             current_time = datetime.now().strftime("%H:%M")
-            self.rooms[destination].add_sticker("You", sticker_id, own=True, timestamp=current_time)
+            room.add_sticker("You", sticker_id, own=True, timestamp=current_time)
 
     def _open_sticker_picker(self, destination: str) -> None:
         """Toggle the sticker drawer for destination."""
-        if destination not in self.rooms:
-            is_group = any(g.get("group_name") == destination for g in self.controller.groups)
+        is_group = any(g.get("group_name") == destination for g in self.controller.groups)
+        room = self._get_room(destination, kind="group" if is_group else "private")
+        if room is None:
             if is_group:
                 self.open_group_room(destination)
             else:
                 self.open_private_room(destination)
-        if destination in self.rooms:
-            self.rooms[destination].toggle_sticker_panel()
+            room = self._get_room(destination, kind="group" if is_group else "private")
+        if room is not None:
+            room.toggle_sticker_panel()
 
     def _handle_incoming_sticker_message(
         self, destination: str, payload: StickerMessageServerPayload
@@ -1895,23 +2160,38 @@ class MainChatWindow:
         if payload.meta.message_id in self._rendered_messages:
             return
         self._rendered_messages.add(payload.meta.message_id)
-        if destination not in self.rooms:
-            if payload.group_name:
+        is_group = bool(payload.group_name)
+        room = self._get_room(destination, kind="group" if is_group else "private")
+        if room is None:
+            if is_group:
                 self.open_group_room(destination)
             else:
                 self.open_private_room(destination, select=False)
+            room = self._get_room(destination, kind="group" if is_group else "private")
         own = payload.sender == self.controller.username
         display_sender = "You" if own else payload.sender
-        if destination in self.rooms:
-            self.rooms[destination].add_sticker(
-                sender=display_sender,
-                sticker_id=payload.sticker_id,
-                own=own,
-                timestamp=payload.meta.timestamp,
-                message_id=payload.meta.message_id,
-            )
+        avatar = None if own else self._get_user_avatar(payload.sender)
+        if room is not None:
+            try:
+                room.add_sticker(
+                    sender=display_sender,
+                    sticker_id=payload.sticker_id,
+                    own=own,
+                    timestamp=payload.meta.timestamp,
+                    message_id=payload.meta.message_id,
+                    avatar=avatar,
+                )
+            except TypeError:
+                room.add_sticker(
+                    sender=display_sender,
+                    sticker_id=payload.sticker_id,
+                    own=own,
+                    timestamp=payload.meta.timestamp,
+                    message_id=payload.meta.message_id,
+                )
         if not own and payload.target:
-            if self._active_room == destination:
+            room_id = f"private:{destination}"
+            if self._active_room in (room_id, destination):
                 self._send_read_ack(payload.meta.message_id, destination)
             else:
                 self._unread_messages.setdefault(destination, set()).add(payload.meta.message_id)

@@ -33,6 +33,8 @@ EVENT_JOIN_GROUP = "join_group"
 EVENT_GROUP_LIST = "group_list"
 EVENT_GROUP_ERROR = "group_error"
 EVENT_GROUP_MSG = "group_message"
+EVENT_SEND_GROUP = "SEND_GROUP"
+EVENT_RECEIVE_GROUP = "RECEIVE_GROUP"
 
 # Special Points (SP1 - SP4)
 EVENT_SEND_STICKER = "send_sticker"  # SP2
@@ -503,7 +505,10 @@ class GroupMessagePayload:
     @classmethod
     def from_dict(cls, data: Any) -> Self:
         d = _ensure_dict(data)
-        group_name = validate_group_name(d.get("group_name"), field_name="group_name")
+        raw_group = d.get("group_name")
+        if raw_group is None:
+            raw_group = d.get("target") if "target" in d else d.get("group")
+        group_name = validate_group_name(raw_group, field_name="group_name")
         message = validate_message_text(d.get("message"), field_name="message")
         meta = MessageMeta.from_dict(d)
         return cls(group_name=group_name, message=message, meta=meta)
@@ -511,6 +516,8 @@ class GroupMessagePayload:
     def to_dict(self) -> dict[str, Any]:
         return {
             "group_name": self.group_name,
+            "target": self.group_name,
+            "group": self.group_name,
             "message": self.message,
             "message_id": self.meta.message_id,
             "timestamp": self.meta.timestamp,
@@ -530,7 +537,10 @@ class GroupMessageServerPayload:
     def from_dict(cls, data: Any) -> Self:
         d = _ensure_dict(data)
         sender = validate_username(d.get("sender"), field_name="sender")
-        group_name = validate_group_name(d.get("group_name"), field_name="group_name")
+        raw_group = d.get("group_name")
+        if raw_group is None:
+            raw_group = d.get("target") if "target" in d else d.get("group")
+        group_name = validate_group_name(raw_group, field_name="group_name")
         message = validate_message_text(d.get("message"), field_name="message")
         meta = MessageMeta.from_dict(d)
         return cls(sender=sender, group_name=group_name, message=message, meta=meta)
@@ -539,6 +549,8 @@ class GroupMessageServerPayload:
         return {
             "sender": self.sender,
             "group_name": self.group_name,
+            "target": self.group_name,
+            "group": self.group_name,
             "message": self.message,
             "message_id": self.meta.message_id,
             "timestamp": self.meta.timestamp,
@@ -707,6 +719,7 @@ CLIENT_EVENT_PAYLOAD_MAP: dict[str, type] = {
     EVENT_CREATE_GROUP: CreateGroupPayload,
     EVENT_JOIN_GROUP: JoinGroupPayload,
     EVENT_GROUP_MSG: GroupMessagePayload,
+    EVENT_SEND_GROUP: GroupMessagePayload,
     EVENT_SEND_STICKER: SendStickerPayload,
     EVENT_READ_ACK: ReadAckClientPayload,
 }
@@ -718,6 +731,7 @@ SERVER_EVENT_PAYLOAD_MAP: dict[str, type] = {
     EVENT_GROUP_LIST: GroupListPayload,
     EVENT_GROUP_ERROR: GroupErrorPayload,
     EVENT_GROUP_MSG: GroupMessageServerPayload,
+    EVENT_RECEIVE_GROUP: GroupMessageServerPayload,
     EVENT_STICKER_MSG: StickerMessageServerPayload,
     EVENT_ANNOUNCEMENT: AnnouncementPayload,
     EVENT_READ_ACK: ReadAckServerPayload,

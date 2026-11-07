@@ -25,12 +25,15 @@ from protocol import (
     EVENT_CREATE_GROUP,
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
+    EVENT_GROUP_MSG,
     EVENT_JOIN_GROUP,
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
+    EVENT_RECEIVE_GROUP,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
+    EVENT_SEND_GROUP,
     EVENT_SEND_STICKER,
     EVENT_STICKER_MSG,
     EVENT_USER_LIST,
@@ -38,6 +41,8 @@ from protocol import (
     CreateGroupPayload,
     GroupInfo,
     GroupListPayload,
+    GroupMessagePayload,
+    GroupMessageServerPayload,
     JoinGroupPayload,
     MessageMeta,
     PrivateMessagePayload,
@@ -249,6 +254,52 @@ class ChatEngine:
         """Return group rooms currently containing username, for transport cleanup."""
         with self._lock:
             return [name for name, members in self._groups.items() if username in members]
+
+    # --- Group Message Routing (R11) ---
+
+    def route_group_message(
+        self,
+        sender_sid: str,
+        group_name: str,
+        message: str,
+        meta: MessageMeta,
+    ) -> RouteResult[GroupMessageServerPayload]:
+        """Route a group message enforcing member verification (R10, R11).
+
+        Returns:
+            RouteResult: Encapsulates routing decision and verified group payload.
+        """
+        try:
+            group_name = validate_group_name(group_name)
+            message = validate_message_text(message)
+        except ProtocolValidationError as e:
+            return RouteResult(success=False, error=e.message)
+
+        with self._lock:
+            sender = self._sessions.get(sender_sid)
+            if sender is None:
+                return RouteResult(success=False, error="Sender not registered")
+
+            members = self._groups.get(group_name)
+            if members is None:
+                return RouteResult(success=False, error=f"Group '{group_name}' does not exist")
+
+            if sender not in members:
+                return RouteResult(
+                    success=False,
+                    error=f"User '{sender}' is not a member of group '{group_name}'",
+                )
+
+            server_payload = GroupMessageServerPayload(
+                sender=sender,
+                group_name=group_name,
+                message=message,
+                meta=meta,
+            )
+            return RouteResult(
+                success=True,
+                payload=server_payload,
+            )
 
     # --- 1-to-1 Private Message Routing (R7) ---
 
@@ -542,6 +593,14 @@ class ChatServer:
             self.broadcast_group_list()
 
         @self.sio.event
+        def group_message(sid: str, data: Any) -> None:
+            self._handle_group_message(sid, data)
+
+        @self.sio.on(EVENT_SEND_GROUP)
+        def handle_send_group(sid: str, data: Any) -> None:
+            self._handle_group_message(sid, data)
+
+        @self.sio.event
         def read_ack(sid: str, data: Any) -> None:
             try:
                 payload = parse_client_event(EVENT_READ_ACK, data)
@@ -627,6 +686,33 @@ class ChatServer:
                 "Rejected unauthorized client announcement spoof attempt from sid=%s",
                 sid,
             )
+
+    def _handle_group_message(self, sid: str, data: Any) -> None:
+        """Route group messages to group room members only (R11)."""
+        try:
+            payload = parse_client_event(EVENT_GROUP_MSG, data)
+            assert isinstance(payload, GroupMessagePayload)
+        except ProtocolValidationError as error:
+            logger.warning("Invalid group_message from sid=%s: %s", sid, error)
+            self.sio.emit(EVENT_GROUP_ERROR, {"error": error.message}, room=sid)
+            self.sio.emit("ERROR", {"error": error.message}, room=sid)
+            return
+
+        result = self.engine.route_group_message(
+            sender_sid=sid,
+            group_name=payload.group_name,
+            message=payload.message,
+            meta=payload.meta,
+        )
+        if not result.success or result.payload is None:
+            logger.warning("Failed to route group message from sid=%s: %s", sid, result.error)
+            error_msg = result.error or "Failed to deliver group message"
+            self.sio.emit(EVENT_GROUP_ERROR, {"error": error_msg}, room=sid)
+            self.sio.emit("ERROR", {"error": error_msg}, room=sid)
+            return
+
+        outbound_dict = result.payload.to_dict()
+        self.sio.emit(EVENT_RECEIVE_GROUP, outbound_dict, room=payload.group_name)
 
     # --- Broadcast Helpers (R4, R9, SP3) ---
 
