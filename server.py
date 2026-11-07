@@ -708,6 +708,7 @@ class ChatServer:
             logger.warning("Failed to route group message from sid=%s: %s", sid, result.error)
             error_msg = result.error or "Failed to deliver group message"
             self.sio.emit(EVENT_GROUP_ERROR, {"error": error_msg}, room=sid)
+            self.sio.emit("ERROR", {"error": error_msg}, room=sid)
             return
 
         outbound_dict = result.payload.to_dict()
