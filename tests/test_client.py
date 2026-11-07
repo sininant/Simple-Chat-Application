@@ -523,8 +523,6 @@ def test_client_session_auto_reregisters_on_reconnect_and_guards_read_ack():
 
 
 def test_client_session_send_group_message_emits_payload():
-def test_client_session_send_sticker_private_and_group():
-    """Verify session.send_sticker emits EVENT_SEND_STICKER for private and group destinations."""
     spy = SocketIOClientSpy()
     session = ClientSession(sio=spy.sio)
 
@@ -547,49 +545,11 @@ def test_client_session_send_sticker_private_and_group():
 
 
 def test_client_session_send_group_message_disconnected_or_unregistered():
-    # 1. Private sticker destination
-    msg_id1 = session.send_sticker(
-        sticker_id="STK_001",
-        target="Bob",
-        message_id="STK_101",
-        timestamp="14:00",
-    )
-    assert msg_id1 == "STK_101"
-    assert len(spy.emitted) == 1
-    event_name, data = spy.emitted[0]
-    assert event_name == EVENT_SEND_STICKER
-    assert data["sticker_id"] == "STK_001"
-    assert data["target"] == "Bob"
-    assert data["group_name"] is None
-    assert data["message_id"] == "STK_101"
-    assert data["timestamp"] == "14:00"
-
-    # 2. Group sticker destination (with auto message_id and timestamp)
-    spy.emitted.clear()
-    msg_id2 = session.send_sticker(
-        sticker_id="STK_002",
-        group_name="StudyGroup",
-    )
-    assert msg_id2 is not None
-    assert len(spy.emitted) == 1
-    event_name, data = spy.emitted[0]
-    assert event_name == EVENT_SEND_STICKER
-    assert data["sticker_id"] == "STK_002"
-    assert data["target"] is None
-    assert data["group_name"] == "StudyGroup"
-    assert data["message_id"] == msg_id2
-    assert "timestamp" in data
-
-
-def test_client_session_send_sticker_rejected_when_disconnected_or_unregistered():
-    """Verify send_sticker returns None when disconnected or not yet registered."""
     spy = SocketIOClientSpy()
     session = ClientSession(sio=spy.sio)
 
     # Disconnected
     assert session.send_group_message("StudyGroup", "Hello") is None
-    assert session.is_connected is False
-    assert session.send_sticker("STK_001", target="Bob") is None
     assert len(spy.emitted) == 0
 
     # Connected but not registered
@@ -599,14 +559,6 @@ def test_client_session_send_sticker_rejected_when_disconnected_or_unregistered(
 
 
 def test_client_session_send_group_message_validation_failure():
-    assert session.is_connected is True
-    assert session.is_registered is False
-    assert session.send_sticker("STK_001", target="Bob") is None
-    assert len(spy.emitted) == 0
-
-
-def test_client_session_send_sticker_rejected_on_invalid_parameters():
-    """Verify send_sticker returns None on invalid sticker_id or invalid destinations."""
     spy = SocketIOClientSpy()
     session = ClientSession(sio=spy.sio)
 
@@ -672,6 +624,80 @@ def test_client_session_receives_and_enqueues_receive_group():
     assert payload.sender == "Bob"
     assert payload.group_name == "StudyGroup"
     assert payload.message == "Welcome via RECEIVE_GROUP!"
+
+
+def test_client_session_send_sticker_private_and_group():
+    """Verify session.send_sticker emits EVENT_SEND_STICKER for private and group destinations."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger("connect")
+    session.register("Alice")
+    spy.trigger("register_ack", {"success": True, "username": "Alice"})
+    spy.emitted.clear()
+
+    # 1. Private sticker destination
+    msg_id1 = session.send_sticker(
+        sticker_id="STK_001",
+        target="Bob",
+        message_id="STK_101",
+        timestamp="14:00",
+    )
+    assert msg_id1 == "STK_101"
+    assert len(spy.emitted) == 1
+    event_name, data = spy.emitted[0]
+    assert event_name == EVENT_SEND_STICKER
+    assert data["sticker_id"] == "STK_001"
+    assert data["target"] == "Bob"
+    assert data["group_name"] is None
+    assert data["message_id"] == "STK_101"
+    assert data["timestamp"] == "14:00"
+
+    # 2. Group sticker destination (with auto message_id and timestamp)
+    spy.emitted.clear()
+    msg_id2 = session.send_sticker(
+        sticker_id="STK_002",
+        group_name="StudyGroup",
+    )
+    assert msg_id2 is not None
+    assert len(spy.emitted) == 1
+    event_name, data = spy.emitted[0]
+    assert event_name == EVENT_SEND_STICKER
+    assert data["sticker_id"] == "STK_002"
+    assert data["target"] is None
+    assert data["group_name"] == "StudyGroup"
+    assert data["message_id"] == msg_id2
+    assert "timestamp" in data
+
+
+def test_client_session_send_sticker_rejected_when_disconnected_or_unregistered():
+    """Verify send_sticker returns None when disconnected or not yet registered."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    # Disconnected
+    assert session.is_connected is False
+    assert session.send_sticker("STK_001", target="Bob") is None
+    assert len(spy.emitted) == 0
+
+    # Connected but not registered
+    spy.trigger("connect")
+    assert session.is_connected is True
+    assert session.is_registered is False
+    assert session.send_sticker("STK_001", target="Bob") is None
+    assert len(spy.emitted) == 0
+
+
+def test_client_session_send_sticker_rejected_on_invalid_parameters():
+    """Verify send_sticker returns None on invalid sticker_id or invalid destinations."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger("connect")
+    session.register("Alice")
+    spy.trigger("register_ack", {"success": True, "username": "Alice"})
+    spy.emitted.clear()
+
     # Unknown sticker ID (not in allowed registry STK_001-STK_009)
     assert session.send_sticker("STK_999", target="Bob") is None
     # Malformed sticker ID

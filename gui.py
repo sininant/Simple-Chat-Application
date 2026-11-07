@@ -1912,13 +1912,21 @@ class MainChatWindow:
             existing_tabs = getattr(self.tabs, "_tab_dict", {})
             tab_exists = group_name in existing_tabs
             tab = self.tabs.tab(group_name) if tab_exists else self.tabs.add(group_name)
-            tab = self.tabs.add(group_name)
             try:
-                room = ChatRoomTab(
-                    tab,
-                    group_name,
-                    on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
-                )
+                try:
+                    room = ChatRoomTab(
+                        tab,
+                        group_name,
+                        on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
+                        on_sticker=lambda g=group_name: self._open_sticker_picker(g),
+                        on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
+                    )
+                except TypeError:
+                    room = ChatRoomTab(
+                        tab,
+                        group_name,
+                        on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
+                    )
                 room.frame.pack(fill="both", expand=True)
                 self.rooms[group_name] = room
             except Exception:
@@ -1928,16 +1936,6 @@ class MainChatWindow:
         if select:
             self.tabs.set(group_name)
             self._active_room = group_name
-                    on_send=lambda _message: None,
-                    on_sticker=lambda g=group_name: self._open_sticker_picker(g),
-                    on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
-                )
-            except TypeError:
-                room = ChatRoomTab(tab, group_name, on_send=lambda _message: None)
-            self.rooms[group_name] = room
-            self.rooms[group_name].frame.pack(fill="both", expand=True)
-        self.tabs.set(group_name)
-        self._active_room = group_name
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
             segmented_button.grid_forget()
