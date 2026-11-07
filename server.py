@@ -547,6 +547,14 @@ class ChatServer:
             # Deliver strictly to original sender (SP4)
             self.sio.emit(EVENT_READ_ACK, result.payload.to_dict(), room=result.target_sid)
 
+        @self.sio.event
+        def announcement(sid: str, data: Any = None) -> None:
+            del data
+            logger.warning(
+                "Rejected unauthorized client announcement spoof attempt from sid=%s",
+                sid,
+            )
+
     def _handle_group_message(self, sid: str, data: Any) -> None:
         """Route group messages to group room members only (R11)."""
         try:
@@ -574,15 +582,6 @@ class ChatServer:
         outbound_dict = result.payload.to_dict()
         self.sio.emit(EVENT_GROUP_MSG, outbound_dict, room=payload.group_name)
         self.sio.emit(EVENT_RECEIVE_GROUP, outbound_dict, room=payload.group_name)
-
-    # --- Broadcast Helpers (R4) ---
-        @self.sio.event
-        def announcement(sid: str, data: Any = None) -> None:
-            del data
-            logger.warning(
-                "Rejected unauthorized client announcement spoof attempt from sid=%s",
-                sid,
-            )
 
     # --- Broadcast Helpers (R4, R9, SP3) ---
 

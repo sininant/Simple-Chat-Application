@@ -621,6 +621,8 @@ def test_client_session_receives_and_enqueues_receive_group():
     assert payload.sender == "Bob"
     assert payload.group_name == "StudyGroup"
     assert payload.message == "Welcome via RECEIVE_GROUP!"
+
+
 def test_client_session_receives_announcement_event():
     """SP3: ClientSession parses incoming server announcements and enqueues AnnouncementPayload."""
     spy = SocketIOClientSpy()

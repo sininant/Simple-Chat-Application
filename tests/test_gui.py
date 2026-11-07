@@ -664,6 +664,8 @@ def test_main_chat_window_renders_own_echo_group_message():
     assert msg["sender"] == "You"
     assert msg["own"] is True
     assert msg["message"] == "My own group message"
+
+
 def test_controller_polls_and_notifies_announcement():
     """SP3: GuiController stores incoming AnnouncementPayload and invokes on_announcement."""
     payload = AnnouncementPayload(

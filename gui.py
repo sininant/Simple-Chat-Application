@@ -1013,7 +1013,7 @@ class MessageBubble:
                 anchor="e",
             )
             self.status_label.pack(anchor="e", padx=4, pady=(2, 0))
-            
+
         else:
             row = ui.CTkFrame(self.frame, fg_color="transparent")
             row.pack(anchor="w", padx=8, pady=4)
