@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +42,7 @@ from protocol import (
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
     EVENT_REGISTER_ACK,
+    EVENT_STICKER_MSG,
     EVENT_USER_LIST,
     GroupErrorPayload,
     GroupListPayload,
@@ -222,6 +224,18 @@ class GuiController:
             elif event_name == EVENT_READ_ACK and isinstance(payload, ReadAckServerPayload):
                 if self.on_read_ack:
                     self.on_read_ack(payload.message_id, payload.reader)
+                changed = True
+            elif event_name == EVENT_STICKER_MSG and isinstance(
+                payload, StickerMessageServerPayload
+            ):
+                dest = (
+                    payload.group_name
+                    if payload.group_name
+                    else (payload.target if payload.sender == self.username else payload.sender)
+                )
+                self.stickers.setdefault(dest, []).append(payload)
+                if self.on_sticker_message:
+                    self.on_sticker_message(dest, payload)
                 changed = True
             elif event_name in (EVENT_CONNECT, "connect"):
                 changed = True
@@ -946,13 +960,7 @@ class MessageBubble:
         self.timestamp = timestamp
         self.status_label: Any | None = None
         self.frame = ui.CTkFrame(parent, fg_color="transparent")
-        bubble_shell = ui.CTkFrame(
-            self.frame,
-            fg_color=PINK if own else PINK_LIGHT,
-            border_color=INK,
-            border_width=2,
-            corner_radius=16,
-        )
+
         if not own:
             sender_label = f"{sender} • {timestamp}" if timestamp else sender
             ui.CTkLabel(
@@ -964,12 +972,25 @@ class MessageBubble:
             ).pack(anchor="w", padx=12, pady=(2, 0))
         if sticker_image is not None:
             bubble = ui.CTkLabel(
-                bubble_shell,
+                self.frame,
                 text="",
                 image=sticker_image,
                 fg_color="transparent",
             )
+            bubble.pack(
+                anchor="e" if own else "w",
+                padx=8,
+                pady=4,
+            )
         else:
+            bubble_shell = ui.CTkFrame(
+                self.frame,
+                fg_color=PINK if own else PINK_LIGHT,
+                border_color=INK,
+                border_width=2,
+                corner_radius=16,
+            )
+
             bubble = ui.CTkLabel(
                 bubble_shell,
                 text=message,
@@ -979,8 +1000,8 @@ class MessageBubble:
                 fg_color="transparent",
                 font=(FONT, 16),
             )
-        bubble.pack(padx=12, pady=7)
-        bubble_shell.pack(anchor="e" if own else "w", padx=8, pady=4)
+            bubble.pack(padx=12, pady=7)
+            bubble_shell.pack(anchor="e" if own else "w", padx=8, pady=4)
         if own:
             status_text = f"{timestamp} • Sent" if timestamp else "Sent"
             self.status_label = ui.CTkLabel(
@@ -1019,7 +1040,7 @@ class ChatBoxBar:
         self.microphone_icon = _load_icons().get("microphone")
         self.pause_icon = _load_icons().get("pause")
         self.send_icon = _load_icons().get("send")
-        self.frame = ui.CTkFrame(parent, fg_color=PINK, corner_radius=18)
+        self.frame = ui.CTkFrame(parent, fg_color=PINK_LIGHT, corner_radius=0)
         self.frame.grid_columnconfigure(0, weight=1)
         self.entry = ui.CTkTextbox(
             self.frame,
@@ -1029,7 +1050,7 @@ class ChatBoxBar:
             height=37,
             fg_color=PINK,
             border_width=0,
-            corner_radius=18,
+            corner_radius=12,
             text_color=INK,
             wrap="word",
             font=(FONT, 16),
@@ -1078,6 +1099,8 @@ class ChatBoxBar:
         message = self._entry_text().strip()
         if message:
             self.on_send(message)
+        elif getattr(self, "on_send_chosen", None):
+            self.on_send_chosen()
 
     def _submit_and_consume(self) -> str:
         """Send an Entry draft and prevent Tk from processing Return a second time."""
@@ -1101,6 +1124,8 @@ class ChatBoxBar:
     def _handle_action(self) -> None:
         if self._entry_text().strip():
             self._submit()
+        elif getattr(self, "on_send_chosen", None) and self.on_send_chosen():
+            return
         elif self._is_listening:
             if self.speech_input.pause():
                 self._hide_sticker_button()
@@ -1238,8 +1263,10 @@ class ChatBoxBar:
             label.grid_remove()
 
     def _update_action_icon(self) -> None:
+        has_text = bool(self._entry_text().strip())
+        has_chosen = bool(getattr(self, "is_sticker_chosen", lambda: False)())
         self.action_button.configure(
-            image=self.send_icon if self._entry_text().strip() else self.microphone_icon
+            image=self.send_icon if (has_text or has_chosen) else self.microphone_icon
         )
 
 
@@ -1269,8 +1296,6 @@ class ChatRoomTab:
         self.header.bind("<Configure>", lambda _event: self._draw_header(room_name))
         self.window = ui.CTkScrollableFrame(self.frame, fg_color=BACKGROUND, corner_radius=10)
         self.window.pack(fill="both", expand=True, padx=4, pady=(4, 0))
-        self.divider = ui.CTkFrame(self.frame, height=2, fg_color=INK, corner_radius=0)
-        self.divider.pack(fill="x", padx=0, pady=0)
         self.on_send = on_send or self._send_local
         self.on_send_sticker = on_send_sticker
         self.box = ChatBoxBar(
@@ -1279,8 +1304,15 @@ class ChatRoomTab:
             on_sticker=on_sticker or self.toggle_sticker_panel,
             transcriber=transcriber,
         )
-        self.box.frame.pack(fill="x", padx=12, pady=(10, 8))
+        self.box.is_sticker_chosen = lambda: self._chosen_sticker is not None
+        self.box.on_send_chosen = self._send_chosen_sticker
+        self.box.frame.pack(fill="x", padx=4, pady=(0, 4))
         self._sticker_panel_open = False
+        self._chosen_sticker: str | None = None
+        self.sticker_buttons: dict[str, Any] = {}
+        self._last_sticker_click_time: float = 0.0
+        self._last_clicked_sticker_id: str | None = None
+        self._last_double_click_time: float = 0.0
         self.sticker_panel = ui.CTkScrollableFrame(
             self.frame,
             height=190,
@@ -1298,9 +1330,22 @@ class ChatRoomTab:
         stickers = get_available_stickers()
         sticker_images = _load_stickers(size=(96, 96))
         self.sticker_images = sticker_images
+        self.sticker_buttons = {}
 
         for col in range(3):
             self.sticker_panel.grid_columnconfigure(col, weight=1)
+
+        def _bind_double(widget: Any, s: str) -> None:
+            def handler(_e: Any, stk: str = s) -> None:
+                self._on_sticker_double_clicked(stk)
+
+            widget.bind("<Double-Button-1>", handler)
+            if hasattr(widget, "_canvas"):
+                widget._canvas.bind("<Double-Button-1>", handler)
+            if getattr(widget, "_image_label", None):
+                widget._image_label.bind("<Double-Button-1>", handler)
+            if getattr(widget, "_text_label", None):
+                widget._text_label.bind("<Double-Button-1>", handler)
 
         for i, stk_id in enumerate(stickers):
             img = sticker_images.get(stk_id)
@@ -1315,9 +1360,12 @@ class ChatRoomTab:
                 border_width=0,
                 corner_radius=12,
                 cursor="hand2",
-                command=lambda s=stk_id: self._on_sticker_clicked(s),
+                command=lambda s=stk_id: self._handle_sticker_click(s),
             )
+            _bind_double(btn, stk_id)
+            btn.bind("<Configure>", lambda _e, b=btn, s=stk_id: _bind_double(b, s))
             btn.grid(row=i // 3, column=i % 3, padx=10, pady=8)
+            self.sticker_buttons[stk_id] = btn
 
     def toggle_sticker_panel(self) -> None:
         if self._sticker_panel_open:
@@ -1327,7 +1375,7 @@ class ChatRoomTab:
 
     def open_sticker_panel(self) -> None:
         if not self._sticker_panel_open:
-            self.sticker_panel.pack(fill="x", padx=8, pady=(0, 10))
+            self.sticker_panel.pack(fill="x", padx=4, pady=(0, 4))
             self._sticker_panel_open = True
             self._scroll_to_latest()
 
@@ -1336,11 +1384,62 @@ class ChatRoomTab:
             self.sticker_panel.pack_forget()
             self._sticker_panel_open = False
 
-    def _on_sticker_clicked(self, sticker_id: str) -> None:
+    def _handle_sticker_click(self, sticker_id: str) -> None:
+        now = time.time()
+        if (
+            sticker_id == getattr(self, "_last_clicked_sticker_id", None)
+            and (now - getattr(self, "_last_sticker_click_time", 0.0)) < 0.50
+        ):
+            self._last_sticker_click_time = 0.0
+            self._last_clicked_sticker_id = None
+            self._on_sticker_double_clicked(sticker_id)
+        else:
+            self._last_sticker_click_time = now
+            self._last_clicked_sticker_id = sticker_id
+            self._on_sticker_single_clicked(sticker_id)
+
+    def _on_sticker_single_clicked(self, sticker_id: str) -> None:
+        """Single click chooses sticker: highlights it and changes mic icon to send icon."""
+        self._chosen_sticker = sticker_id
+        self._highlight_chosen_sticker(sticker_id)
+        self.box._update_action_icon()
+
+    def _send_chosen_sticker(self) -> bool:
+        """Send the chosen sticker as a sticker picture when the send action is triggered."""
+        if self._chosen_sticker is not None:
+            sticker_id = self._chosen_sticker
+            self._clear_chosen_sticker()
+            self.box._update_action_icon()
+            if self.on_send_sticker is not None:
+                self.on_send_sticker(sticker_id)
+            else:
+                self._send_sticker_local(sticker_id)
+            return True
+        return False
+
+    def _on_sticker_double_clicked(self, sticker_id: str) -> None:
+        """Double click immediately transmits the sticker as a rich sticker image."""
+        now = time.time()
+        if (now - getattr(self, "_last_double_click_time", 0.0)) < 0.3:
+            return
+        self._last_double_click_time = now
+        self._clear_chosen_sticker()
+        self.box._update_action_icon()
         if self.on_send_sticker is not None:
             self.on_send_sticker(sticker_id)
         else:
             self._send_sticker_local(sticker_id)
+
+    def _highlight_chosen_sticker(self, sticker_id: str | None) -> None:
+        for stk, btn in getattr(self, "sticker_buttons", {}).items():
+            if stk == sticker_id:
+                btn.configure(fg_color=PINK_LIGHT)
+            else:
+                btn.configure(fg_color="transparent", border_width=0)
+
+    def _clear_chosen_sticker(self) -> None:
+        self._chosen_sticker = None
+        self._highlight_chosen_sticker(None)
 
     def _send_sticker_local(self, sticker_id: str) -> None:
         current_time = datetime.now().strftime("%H:%M")
@@ -1408,6 +1507,7 @@ class ChatRoomTab:
             self.on_send(message)
             self.box.clear_entry()
             self.box._update_action_icon()
+            self._clear_chosen_sticker()
 
     def _send_local(self, message: str) -> None:
         """Render a local demonstration message until private transport (R7) is wired."""
@@ -1438,9 +1538,13 @@ class ChatRoomTab:
     ) -> MessageBubble:
         sticker_images = getattr(self, "sticker_images", None)
         if sticker_images is None:
-            self.sticker_images = _load_stickers()
+            self.sticker_images = _load_stickers(size=(96, 96))
             sticker_images = self.sticker_images
-        img = sticker_images.get(sticker_id)
+        normalized_stk = sticker_id.upper() if sticker_id else ""
+        img = sticker_images.get(normalized_stk)
+        if img is None:
+            self.sticker_images.update(_load_stickers(size=(96, 96)))
+            img = self.sticker_images.get(normalized_stk)
         fallback_msg = f"[Sticker: {sticker_id}]" if img is None else ""
         bubble = MessageBubble(
             self.window,
@@ -1553,6 +1657,7 @@ class MainChatWindow:
         self.controller.on_private_message_error = self._handle_private_message_error
         self.controller.on_read_ack = self._handle_read_ack
         self.controller.on_reconnect = self._retry_pending_acks
+        self.controller.on_sticker_message = self._handle_incoming_sticker_message
         self.frame.bind("<Configure>", self._resize_content)
         # Process any messages received prior to MainChatWindow construction
         for peer, msgs in list(self.controller.private_messages.items()):

@@ -644,37 +644,176 @@ def test_main_chat_window_open_sticker_picker_toggles_room_sticker_panel():
     assert window.rooms["Bob"].toggled == 2
 
 
-def test_chat_room_tab_toggle_and_send_sticker():
-    """Verify ChatRoomTab integrated sticker drawer toggle and send handling."""
+def test_controller_polls_and_notifies_incoming_sticker_message():
+    """Verify GuiController drains EVENT_STICKER_MSG and notifies on_sticker_message."""
+    from protocol import EVENT_STICKER_MSG, MessageMeta, StickerMessageServerPayload
+
+    payload = StickerMessageServerPayload(
+        sender="Bob",
+        sticker_id="STK_001",
+        target="Alice",
+        meta=MessageMeta(message_id="MSG_001", timestamp="14:30"),
+    )
+    session = SessionSpy([(EVENT_STICKER_MSG, payload)])
+    controller = GuiController(session)
+    controller.username = "Alice"
+
+    dispatched: list[tuple[str, StickerMessageServerPayload]] = []
+    controller.on_sticker_message = lambda dest, p: dispatched.append((dest, p))
+
+    controller.poll_events()
+
+    assert "Bob" in controller.stickers
+    assert controller.stickers["Bob"] == [payload]
+    assert len(dispatched) == 1
+    assert dispatched[0] == ("Bob", payload)
+
+
+def test_chat_room_tab_single_click_chooses_sticker_and_sends_picture_on_send():
+    """Verify single-click chooses sticker, and send action transmits sticker picture."""
     from gui import ChatRoomTab
 
-    class WidgetSpy:
+    class ActionButtonSpy:
         def __init__(self) -> None:
-            self.packed = False
+            self.image = "mic"
 
-        def pack(self, **kwargs) -> None:
-            self.packed = True
+        def configure(self, **kwargs: Any) -> None:
+            if "image" in kwargs:
+                self.image = kwargs["image"]
 
-        def pack_forget(self) -> None:
-            self.packed = False
+    class BoxSpy:
+        def __init__(self) -> None:
+            self.action_button = ActionButtonSpy()
+            self.send_icon = "send_icon"
+            self.microphone_icon = "mic_icon"
+            self.is_sticker_chosen = lambda: False
+            self.on_send_chosen = None
+
+        def _entry_text(self) -> str:
+            return ""
+
+        def _update_action_icon(self) -> None:
+            has_text = bool(self._entry_text().strip())
+            has_chosen = bool(self.is_sticker_chosen())
+            self.action_button.configure(
+                image=self.send_icon if (has_text or has_chosen) else self.microphone_icon
+            )
 
     room = object.__new__(ChatRoomTab)
-    room._sticker_panel_open = False
-    room.sticker_panel = WidgetSpy()
-    room._scroll_to_latest = lambda: None
+    box = BoxSpy()
+    box.is_sticker_chosen = lambda: room._chosen_sticker is not None
+    box.on_send_chosen = room._send_chosen_sticker
+    room.box = box
+    room.sticker_buttons = {}
+    room._chosen_sticker = None
+    sent_stickers: list[str] = []
+    room.on_send_sticker = lambda s: sent_stickers.append(s)
+
+    # 1. Single click chooses sticker without putting filename in entry
+    room._on_sticker_single_clicked("STK_001")
+    assert room._chosen_sticker == "STK_001"
+    assert room.box.action_button.image == "send_icon"
+    assert room.box._entry_text() == ""
+
+    # 2. Triggering send action transmits the chosen sticker as a sticker picture
+    assert room._send_chosen_sticker() is True
+    assert sent_stickers == ["STK_001"]
+    assert room._chosen_sticker is None
+    assert room.box.action_button.image == "mic_icon"
+
+
+def test_chat_room_tab_double_click_sends_sticker_directly():
+    """Verify double-clicking a sticker transmits the sticker directly."""
+    from gui import ChatRoomTab
+
+    class ActionButtonSpy:
+        def __init__(self) -> None:
+            self.image = "send_icon"
+
+        def configure(self, **kwargs: Any) -> None:
+            if "image" in kwargs:
+                self.image = kwargs["image"]
+
+    class BoxSpy:
+        def __init__(self) -> None:
+            self.action_button = ActionButtonSpy()
+            self.send_icon = "send_icon"
+            self.microphone_icon = "mic_icon"
+            self.is_sticker_chosen = lambda: False
+
+        def _entry_text(self) -> str:
+            return ""
+
+        def _update_action_icon(self) -> None:
+            has_text = bool(self._entry_text().strip())
+            has_chosen = bool(self.is_sticker_chosen())
+            self.action_button.configure(
+                image=self.send_icon if (has_text or has_chosen) else self.microphone_icon
+            )
+
+    room = object.__new__(ChatRoomTab)
+    box = BoxSpy()
+    box.is_sticker_chosen = lambda: room._chosen_sticker is not None
+    room.box = box
+    room.sticker_buttons = {}
+    room._chosen_sticker = "STK_001"
     sent: list[str] = []
     room.on_send_sticker = lambda s: sent.append(s)
 
-    # Toggle open
-    room.toggle_sticker_panel()
-    assert room._sticker_panel_open is True
-    assert room.sticker_panel.packed is True
+    # Double click transmits sticker as sticker image and clears chosen state
+    room._on_sticker_double_clicked("STK_001")
+    assert sent == ["STK_001"]
+    assert room._chosen_sticker is None
+    assert room.box.action_button.image == "mic_icon"
 
-    # Send sticker
-    room._on_sticker_clicked("STK_002")
+
+def test_chat_room_tab_rapid_clicks_triggers_double_click():
+    """Verify two clicks within 500ms trigger double click immediately."""
+    from gui import ChatRoomTab
+
+    class ActionButtonSpy:
+        def __init__(self) -> None:
+            self.image = "mic_icon"
+
+        def configure(self, **kwargs: Any) -> None:
+            if "image" in kwargs:
+                self.image = kwargs["image"]
+
+    class BoxSpy:
+        def __init__(self) -> None:
+            self.action_button = ActionButtonSpy()
+            self.send_icon = "send_icon"
+            self.microphone_icon = "mic_icon"
+            self.is_sticker_chosen = lambda: False
+
+        def _entry_text(self) -> str:
+            return ""
+
+        def _update_action_icon(self) -> None:
+            has_text = bool(self._entry_text().strip())
+            has_chosen = bool(self.is_sticker_chosen())
+            self.action_button.configure(
+                image=self.send_icon if (has_text or has_chosen) else self.microphone_icon
+            )
+
+    room = object.__new__(ChatRoomTab)
+    box = BoxSpy()
+    box.is_sticker_chosen = lambda: room._chosen_sticker is not None
+    room.box = box
+    room.sticker_buttons = {}
+    room._chosen_sticker = None
+    room._last_sticker_click_time = 0.0
+    room._last_clicked_sticker_id = None
+    room._last_double_click_time = 0.0
+    sent: list[str] = []
+    room.on_send_sticker = lambda s: sent.append(s)
+
+    # First click selects sticker
+    room._handle_sticker_click("STK_002")
+    assert room._chosen_sticker == "STK_002"
+    assert sent == []
+
+    # Second click (immediate) triggers double click send
+    room._handle_sticker_click("STK_002")
     assert sent == ["STK_002"]
-
-    # Toggle close
-    room.toggle_sticker_panel()
-    assert room._sticker_panel_open is False
-    assert room.sticker_panel.packed is False
+    assert room._chosen_sticker is None

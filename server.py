@@ -84,6 +84,8 @@ class ReadAckRouteResult(RouteResult[ReadAckServerPayload]):
 class StickerRouteResult(RouteResult[StickerMessageServerPayload]):
     """Encapsulates the result of routing a sticker to a user or group (SP2)."""
 
+    group_name: str | None = None
+
 
 @dataclass(frozen=True)
 class GroupRouteResult:
