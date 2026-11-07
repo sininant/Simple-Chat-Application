@@ -1674,6 +1674,7 @@ class ChatRoomTab:
         own: bool = False,
         timestamp: str | None = None,
         message_id: str | None = None,
+        avatar: Any | None = None,
     ) -> MessageBubble:
         sticker_images = getattr(self, "sticker_images", None)
         if sticker_images is None:
@@ -1692,6 +1693,7 @@ class ChatRoomTab:
             own=own,
             timestamp=timestamp,
             sticker_image=img,
+            avatar=avatar,
         )
         bubble.frame.pack(fill="x")
         if message_id:
@@ -2168,14 +2170,25 @@ class MainChatWindow:
             room = self._get_room(destination, kind="group" if is_group else "private")
         own = payload.sender == self.controller.username
         display_sender = "You" if own else payload.sender
+        avatar = None if own else self._get_user_avatar(payload.sender)
         if room is not None:
-            room.add_sticker(
-                sender=display_sender,
-                sticker_id=payload.sticker_id,
-                own=own,
-                timestamp=payload.meta.timestamp,
-                message_id=payload.meta.message_id,
-            )
+            try:
+                room.add_sticker(
+                    sender=display_sender,
+                    sticker_id=payload.sticker_id,
+                    own=own,
+                    timestamp=payload.meta.timestamp,
+                    message_id=payload.meta.message_id,
+                    avatar=avatar,
+                )
+            except TypeError:
+                room.add_sticker(
+                    sender=display_sender,
+                    sticker_id=payload.sticker_id,
+                    own=own,
+                    timestamp=payload.meta.timestamp,
+                    message_id=payload.meta.message_id,
+                )
         if not own and payload.target:
             room_id = f"private:{destination}"
             if self._active_room in (room_id, destination):

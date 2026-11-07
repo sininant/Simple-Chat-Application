@@ -1336,6 +1336,7 @@ def test_message_bubble_single_rendering_for_text_and_sticker(monkeypatch):
                 pass
 
     monkeypatch.setattr("gui._require_ctk", lambda: MockUI)
+    monkeypatch.setattr("gui._get_bubble_avatar", lambda avatar: object())
 
     # 1. Received text message with avatar:
     created_labels.clear()
@@ -1383,3 +1384,60 @@ def test_message_bubble_single_rendering_for_text_and_sticker(monkeypatch):
     ]
     assert len(sticker_labels) == 1
     assert len(empty_bubbles) == 0
+
+
+def test_main_chat_window_incoming_sticker_from_other_passes_avatar():
+    """Verify incoming sticker from another user passes the sender's profile avatar."""
+
+    class DummyRoom:
+        def __init__(self) -> None:
+            self.stickers: list[dict[str, Any]] = []
+
+        def add_sticker(
+            self,
+            sender: str,
+            sticker_id: str,
+            own: bool = False,
+            timestamp: str | None = None,
+            message_id: str | None = None,
+            avatar: Any | None = None,
+        ) -> None:
+            self.stickers.append(
+                {
+                    "sender": sender,
+                    "sticker_id": sticker_id,
+                    "own": own,
+                    "timestamp": timestamp,
+                    "message_id": message_id,
+                    "avatar": avatar,
+                }
+            )
+
+    room = DummyRoom()
+    window = object.__new__(MainChatWindow)
+    window.rooms = {"Bob": room, "private:Bob": room}
+    window._rendered_messages = set()
+    window.controller = type(
+        "Controller",
+        (),
+        {"username": "Alice", "online_avatars": {"Bob": "cat"}, "groups": []},
+    )()
+    window.avatar_images = None
+    window._active_room = "private:Bob"
+    window._unread_messages = {}
+    window._send_read_ack = lambda *args: None
+
+    payload = StickerMessageServerPayload(
+        sender="Bob",
+        sticker_id="STK_001",
+        meta=MessageMeta(message_id="STK_001", timestamp="12:00"),
+        target="Alice",
+        group_name=None,
+    )
+
+    window._handle_incoming_sticker_message("Bob", payload)
+
+    assert len(room.stickers) == 1
+    assert room.stickers[0]["sender"] == "Bob"
+    assert room.stickers[0]["sticker_id"] == "STK_001"
+    assert room.stickers[0]["avatar"] == "cat"
