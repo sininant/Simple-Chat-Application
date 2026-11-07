@@ -196,6 +196,8 @@ class ClientSession:
                 self.event_queue.put((EVENT_STICKER_MSG, payload))
             except ProtocolValidationError as e:
                 logger.warning("Received invalid sticker_message from server: %s", e)
+
+        @self.sio.event
         def announcement(data: Any) -> None:
             try:
                 payload = parse_server_event(EVENT_ANNOUNCEMENT, data)

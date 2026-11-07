@@ -637,6 +637,8 @@ def test_client_session_receives_sticker_message_event():
     # Malformed incoming sticker event is ignored (does not queue invalid payload)
     spy.trigger(EVENT_STICKER_MSG, {"invalid": "missing fields"})
     assert session.get_next_event(block=False) is None
+
+
 def test_client_session_receives_announcement_event():
     """SP3: ClientSession parses incoming server announcements and enqueues AnnouncementPayload."""
     spy = SocketIOClientSpy()

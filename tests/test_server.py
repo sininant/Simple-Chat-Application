@@ -691,8 +691,6 @@ def test_server_read_ack_routing_and_isolation():
 
 def test_server_sticker_routing_and_isolation():
     """Verify sticker routing sends to target peer and echoes to sender without leaks (SP2)."""
-def test_server_broadcast_announcement_reaches_all_clients():
-    """SP3: Server iterates over all active client sockets and delivers the announcement."""
     spy = SocketIOServerSpy()
     server = ChatServer(sio=spy.sio)
 
@@ -724,6 +722,34 @@ def test_server_broadcast_announcement_reaches_all_clients():
 
     # 3. Third parties (Charlie) receive zero events
     assert len(spy.get_events(EVENT_STICKER_MSG, room="sid_charlie")) == 0
+
+
+def test_server_broadcast_announcement_reaches_all_clients():
+    """SP3: Server iterates over all active client sockets and delivers the announcement."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+    server.engine.register_user("sid_charlie", "Charlie")
+    spy.clear()
+
+    payload = server.broadcast_announcement(
+        "Server will restart in 5 minutes!",
+        timestamp="14:35",
+    )
+    assert isinstance(payload, AnnouncementPayload)
+    assert payload.message == "Server will restart in 5 minutes!"
+    assert payload.timestamp == "14:35"
+
+    expected_data = {
+        "message": "Server will restart in 5 minutes!",
+        "timestamp": "14:35",
+    }
+    events = spy.get_events(EVENT_ANNOUNCEMENT)
+    assert len(events) == 3
+    assert [e["room"] for e in events] == ["sid_alice", "sid_bob", "sid_charlie"]
+    assert all(e["data"] == expected_data for e in events)
 
 
 def test_server_sticker_group_routing():
@@ -859,24 +885,6 @@ def test_server_sticker_offline_target_rejection():
     assert "offline" in alice_errors[0]["data"]["error"]
     assert alice_errors[0]["data"]["target"] == "OfflineBob"
     assert len(spy.get_events(EVENT_STICKER_MSG)) == 0
-    spy.clear()
-
-    payload = server.broadcast_announcement(
-        "Server will restart in 5 minutes!",
-        timestamp="14:35",
-    )
-    assert isinstance(payload, AnnouncementPayload)
-    assert payload.message == "Server will restart in 5 minutes!"
-    assert payload.timestamp == "14:35"
-
-    expected_data = {
-        "message": "Server will restart in 5 minutes!",
-        "timestamp": "14:35",
-    }
-    events = spy.get_events(EVENT_ANNOUNCEMENT)
-    assert len(events) == 3
-    assert [e["room"] for e in events] == ["sid_alice", "sid_bob", "sid_charlie"]
-    assert all(e["data"] == expected_data for e in events)
 
 
 def test_server_broadcast_announcement_rejects_invalid_input():

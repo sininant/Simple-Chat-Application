@@ -54,8 +54,8 @@ from protocol import (
     validate_avatar,
     validate_destination,
     validate_group_name,
-    validate_sticker_id,
     validate_message_text,
+    validate_sticker_id,
     validate_timestamp,
     validate_username,
 )
@@ -620,7 +620,7 @@ class ChatServer:
             elif result.group_name is not None:
                 self.sio.emit(EVENT_STICKER_MSG, outbound_dict, room=result.group_name)
 
-    # --- Broadcast Helpers (R4) ---
+        @self.sio.event
         def announcement(sid: str, data: Any = None) -> None:
             del data
             logger.warning(
