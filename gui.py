@@ -35,6 +35,7 @@ except ImportError:  # pragma: no cover - exercised only on machines without GUI
 
 from client import ClientSession
 from protocol import (
+    EVENT_ANNOUNCEMENT,
     EVENT_CONNECT,
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
@@ -44,6 +45,7 @@ from protocol import (
     EVENT_REGISTER_ACK,
     EVENT_STICKER_MSG,
     EVENT_USER_LIST,
+    AnnouncementPayload,
     GroupErrorPayload,
     GroupListPayload,
     PrivateMessageServerPayload,
@@ -110,10 +112,13 @@ class GuiController:
         self.groups: list[dict[str, Any]] = []
         self.group_error: str | None = None
         self.login_error: str | None = None
+        self.announcements: list[AnnouncementPayload] = []
+        self.latest_announcement: AnnouncementPayload | None = None
         self.private_messages: dict[str, list[PrivateMessageServerPayload]] = {}
         self.on_private_message: Callable[[str, PrivateMessageServerPayload], None] | None = None
         self.on_private_message_error: Callable[[str, str], None] | None = None
         self.on_read_ack: Callable[[str, str], None] | None = None
+        self.on_announcement: Callable[[AnnouncementPayload], None] | None = None
         self.on_reconnect: Callable[[], None] | None = None
         self.stickers: dict[str, list[StickerMessageServerPayload]] = {}
         self.on_sticker_message: Callable[[str, StickerMessageServerPayload], None] | None = None
@@ -236,6 +241,11 @@ class GuiController:
                 self.stickers.setdefault(dest, []).append(payload)
                 if self.on_sticker_message:
                     self.on_sticker_message(dest, payload)
+            elif event_name == EVENT_ANNOUNCEMENT and isinstance(payload, AnnouncementPayload):
+                self.announcements.append(payload)
+                self.latest_announcement = payload
+                if self.on_announcement:
+                    self.on_announcement(payload)
                 changed = True
             elif event_name in (EVENT_CONNECT, "connect"):
                 changed = True
@@ -563,7 +573,13 @@ class AnnouncementBanner:
 
     def __init__(self, parent: Any) -> None:
         ui = _require_ctk()
-        self.frame = ui.CTkFrame(parent, fg_color=YELLOW)
+        self.frame = ui.CTkFrame(
+            parent,
+            fg_color=YELLOW,
+            border_color=INK,
+            border_width=2,
+            corner_radius=12,
+        )
         self.label = ui.CTkLabel(
             self.frame,
             text="",
@@ -571,16 +587,37 @@ class AnnouncementBanner:
             compound="left",
             text_color=INK,
             anchor="w",
-            font=(FONT, 16),
+            font=(FONT, 16, "bold"),
         )
         self.label.pack(side="left", fill="x", expand=True, padx=14, pady=7)
         ui.CTkButton(
-            self.frame, text="Hide", width=55, font=(FONT, 14), command=self.frame.grid_remove
-        ).pack(side="right", padx=8, pady=4)
+            self.frame,
+            text="Hide",
+            width=60,
+            height=28,
+            fg_color=WHITE,
+            hover_color=PINK_LIGHT,
+            text_color=INK,
+            border_color=INK,
+            border_width=1,
+            corner_radius=10,
+            font=(FONT, 13, "bold"),
+            command=self.hide,
+        ).pack(side="right", padx=10, pady=5)
 
-    def show(self, message: str) -> None:
-        self.label.configure(text=f"📢  {message}")
+    def show(self, message: str, timestamp: str | None = None) -> None:
+        """Display the announcement text and timestamp in the global top banner."""
+        prefix = f"[{timestamp}] " if timestamp else ""
+        self.label.configure(text=f"  {prefix}{message}")
         self.frame.grid()
+        try:
+            self.frame.bell()
+        except Exception:
+            pass
+
+    def hide(self) -> None:
+        """Dismiss the global announcement banner until the next broadcast arrives."""
+        self.frame.grid_remove()
 
 
 class SidebarPanel:
@@ -1628,7 +1665,7 @@ class MainChatWindow:
             text_color=INK,
         ).pack(pady=(4, 0))
         self.banner = AnnouncementBanner(self.content)
-        self.banner.frame.grid(row=0, column=0, columnspan=3, sticky="ew")
+        self.banner.frame.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         self.banner.frame.grid_remove()
         self.sidebar = SidebarPanel(
             self.content,
@@ -1656,9 +1693,12 @@ class MainChatWindow:
         self.controller.on_private_message = self._handle_incoming_private_message
         self.controller.on_private_message_error = self._handle_private_message_error
         self.controller.on_read_ack = self._handle_read_ack
+        self.controller.on_announcement = self._handle_announcement
         self.controller.on_reconnect = self._retry_pending_acks
         self.controller.on_sticker_message = self._handle_incoming_sticker_message
         self.frame.bind("<Configure>", self._resize_content)
+        if self.controller.latest_announcement is not None:
+            self._handle_announcement(self.controller.latest_announcement)
         # Process any messages received prior to MainChatWindow construction
         for peer, msgs in list(self.controller.private_messages.items()):
             for msg in msgs:
@@ -1812,6 +1852,10 @@ class MainChatWindow:
     def _handle_read_ack(self, message_id: str, reader: str) -> None:
         if reader in self.rooms:
             self.rooms[reader].mark_message_read(message_id)
+
+    def _handle_announcement(self, payload: AnnouncementPayload) -> None:
+        """Reveal and update the global top-level AnnouncementBanner across all tabs (SP3)."""
+        self.banner.show(payload.message, timestamp=payload.timestamp)
 
     def _handle_private_message_error(self, target: str, error: str) -> None:
         if target and target in self.rooms:

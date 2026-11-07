@@ -1,5 +1,6 @@
 """Unit and integration tests for Socket.IO server and ChatEngine (R2, R3, R4)."""
 
+import io
 import threading
 import time
 from typing import Any
@@ -9,6 +10,7 @@ import socketio
 
 from client import ClientSession
 from protocol import (
+    EVENT_ANNOUNCEMENT,
     EVENT_CREATE_GROUP,
     EVENT_GROUP_ERROR,
     EVENT_GROUP_LIST,
@@ -20,7 +22,9 @@ from protocol import (
     EVENT_SEND_STICKER,
     EVENT_STICKER_MSG,
     EVENT_USER_LIST,
+    AnnouncementPayload,
     MessageMeta,
+    ProtocolValidationError,
 )
 from server import ChatEngine, ChatServer, ReadAckRouteResult, RouteResult
 
@@ -687,6 +691,8 @@ def test_server_read_ack_routing_and_isolation():
 
 def test_server_sticker_routing_and_isolation():
     """Verify sticker routing sends to target peer and echoes to sender without leaks (SP2)."""
+def test_server_broadcast_announcement_reaches_all_clients():
+    """SP3: Server iterates over all active client sockets and delivers the announcement."""
     spy = SocketIOServerSpy()
     server = ChatServer(sio=spy.sio)
 
@@ -853,6 +859,116 @@ def test_server_sticker_offline_target_rejection():
     assert "offline" in alice_errors[0]["data"]["error"]
     assert alice_errors[0]["data"]["target"] == "OfflineBob"
     assert len(spy.get_events(EVENT_STICKER_MSG)) == 0
+    spy.clear()
+
+    payload = server.broadcast_announcement(
+        "Server will restart in 5 minutes!",
+        timestamp="14:35",
+    )
+    assert isinstance(payload, AnnouncementPayload)
+    assert payload.message == "Server will restart in 5 minutes!"
+    assert payload.timestamp == "14:35"
+
+    expected_data = {
+        "message": "Server will restart in 5 minutes!",
+        "timestamp": "14:35",
+    }
+    events = spy.get_events(EVENT_ANNOUNCEMENT)
+    assert len(events) == 3
+    assert [e["room"] for e in events] == ["sid_alice", "sid_bob", "sid_charlie"]
+    assert all(e["data"] == expected_data for e in events)
+
+
+def test_server_broadcast_announcement_rejects_invalid_input():
+    """SP3: Invalid announcement messages or timestamps are rejected before emission."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+
+    with pytest.raises(ProtocolValidationError):
+        server.broadcast_announcement("   ", timestamp="14:35")
+
+    with pytest.raises(ProtocolValidationError):
+        server.broadcast_announcement("Valid text", timestamp="99:99")
+
+    assert spy.get_events(EVENT_ANNOUNCEMENT) == []
+
+
+def test_server_rejects_unauthorized_client_announcement_spoof():
+    """SP3: Unauthorized client attempts to spoof a system announcement are rejected."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+    server.engine.register_user("sid_attacker", "Attacker")
+    spy.clear()
+
+    spy.trigger(
+        EVENT_ANNOUNCEMENT,
+        "sid_attacker",
+        {"message": "Fake admin broadcast!", "timestamp": "14:35"},
+    )
+
+    assert spy.get_events(EVENT_ANNOUNCEMENT) == []
+
+
+def test_server_console_loop_triggers_announcements():
+    """SP3: Operator console input triggers one-to-all announcements and ignores invalid lines."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+    spy.clear()
+
+    console_input = io.StringIO(
+        "\n  \n/announce\n/announce Scheduled maintenance at 15:00\nDirect broadcast message\n"
+    )
+    server.run_console_loop(stream=console_input)
+
+    alice_events = spy.get_events(EVENT_ANNOUNCEMENT, room="sid_alice")
+    bob_events = spy.get_events(EVENT_ANNOUNCEMENT, room="sid_bob")
+    assert len(alice_events) == 2
+    assert len(bob_events) == 2
+    assert alice_events[0]["data"]["message"] == "Scheduled maintenance at 15:00"
+    assert alice_events[1]["data"]["message"] == "Direct broadcast message"
+    assert bob_events[0]["data"]["message"] == "Scheduled maintenance at 15:00"
+    assert bob_events[1]["data"]["message"] == "Direct broadcast message"
+
+
+def test_live_server_announcement_reaches_multiple_clients_simultaneously():
+    """SP3 Integration Gate: Verify an announcement broadcast reaches >= 2 connected clients."""
+    server = ChatServer()
+    try:
+        httpd = server.create_http_server("127.0.0.1", 0)
+    except OSError:
+        pytest.skip("Local socket binding not permitted in this environment")
+
+    port = httpd.server_port
+    server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    server_thread.start()
+
+    alice = ClientSession(f"http://127.0.0.1:{port}")
+    bob = ClientSession(f"http://127.0.0.1:{port}")
+    try:
+        if not alice.connect(transports=["polling"]) or not bob.connect(transports=["polling"]):
+            pytest.skip("Local socket connection not permitted in this environment")
+
+        alice.register("Alice")
+        bob.register("Bob")
+        time.sleep(0.2)
+
+        server.broadcast_announcement("Global LAN Alert!", timestamp="16:45")
+        time.sleep(0.2)
+
+        assert len(alice.announcements) == 1
+        assert alice.announcements[0].message == "Global LAN Alert!"
+        assert alice.announcements[0].timestamp == "16:45"
+
+        assert len(bob.announcements) == 1
+        assert bob.announcements[0].message == "Global LAN Alert!"
+        assert bob.announcements[0].timestamp == "16:45"
+    finally:
+        alice.disconnect()
+        bob.disconnect()
+        httpd.shutdown()
+        httpd.server_close()
 
 
 def test_live_server_client_roundtrip():
