@@ -19,6 +19,7 @@ from protocol import (
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
+    EVENT_RECEIVE_GROUP,
     EVENT_REGISTER_ACK,
     EVENT_SEND_STICKER,
     EVENT_STICKER_MSG,
@@ -1119,9 +1120,10 @@ def test_server_group_message_routing_to_room_only_and_charlie_isolation():
     }
     spy.trigger(EVENT_GROUP_MSG, "sid_alice", msg_data)
 
-    # 1. Emission must be strictly targeted to the 'StudyGroup' room
-    group_events = spy.get_events(EVENT_GROUP_MSG, room="StudyGroup")
+    # 1. Emission must be strictly targeted to the 'StudyGroup' room via RECEIVE_GROUP
+    group_events = spy.get_events(EVENT_RECEIVE_GROUP, room="StudyGroup")
     assert len(group_events) == 1
+    assert len(spy.get_events(EVENT_GROUP_MSG, room="StudyGroup")) == 0
     assert group_events[0]["data"]["sender"] == "Alice"
     assert group_events[0]["data"]["group_name"] == "StudyGroup"
     assert group_events[0]["data"]["group"] == "StudyGroup"
@@ -1132,11 +1134,11 @@ def test_server_group_message_routing_to_room_only_and_charlie_isolation():
     assert ("sid_charlie", "StudyGroup") not in spy.entered_rooms
 
     # 3. No global broadcast occurred (room must be StudyGroup, not None)
-    broadcast_events = [e for e in spy.get_events(EVENT_GROUP_MSG) if e["room"] is None]
+    broadcast_events = [e for e in spy.get_events(EVENT_RECEIVE_GROUP) if e["room"] is None]
     assert len(broadcast_events) == 0
 
     # 4. Charlie received zero direct messages or events
-    assert len(spy.get_events(EVENT_GROUP_MSG, room="sid_charlie")) == 0
+    assert len(spy.get_events(EVENT_RECEIVE_GROUP, room="sid_charlie")) == 0
 
 
 def test_server_group_message_via_send_group_event():
@@ -1156,7 +1158,7 @@ def test_server_group_message_via_send_group_event():
     }
     spy.trigger("SEND_GROUP", "sid_alice", msg_data)
 
-    group_events = spy.get_events(EVENT_GROUP_MSG, room="StudyGroup")
+    group_events = spy.get_events(EVENT_RECEIVE_GROUP, room="StudyGroup")
     assert len(group_events) == 1
     assert group_events[0]["data"]["sender"] == "Alice"
     assert group_events[0]["data"]["group_name"] == "StudyGroup"
@@ -1183,7 +1185,7 @@ def test_server_group_message_non_member_rejected_with_error():
     spy.trigger(EVENT_GROUP_MSG, "sid_charlie", msg_data)
 
     # 1. No message emitted to StudyGroup room
-    assert len(spy.get_events(EVENT_GROUP_MSG, room="StudyGroup")) == 0
+    assert len(spy.get_events(EVENT_RECEIVE_GROUP, room="StudyGroup")) == 0
 
     # 2. Rejection error emitted directly to Charlie
     group_errors = spy.get_events(EVENT_GROUP_ERROR, room="sid_charlie")
@@ -1215,7 +1217,7 @@ def test_server_group_message_invalid_payload_rejected():
             "timestamp": "14:35",
         },
     )
-    assert len(spy.get_events(EVENT_GROUP_MSG, room="StudyGroup")) == 0
+    assert len(spy.get_events(EVENT_RECEIVE_GROUP, room="StudyGroup")) == 0
     errors = spy.get_events(EVENT_GROUP_ERROR, room="sid_alice")
     assert len(errors) == 1
     assert "empty or whitespace-only" in errors[0]["data"]["error"]

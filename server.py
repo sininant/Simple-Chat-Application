@@ -712,7 +712,6 @@ class ChatServer:
             return
 
         outbound_dict = result.payload.to_dict()
-        self.sio.emit(EVENT_GROUP_MSG, outbound_dict, room=payload.group_name)
         self.sio.emit(EVENT_RECEIVE_GROUP, outbound_dict, room=payload.group_name)
 
     # --- Broadcast Helpers (R4, R9, SP3) ---

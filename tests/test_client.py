@@ -18,6 +18,7 @@ from protocol import (
     EVENT_RECEIVE_GROUP,
     EVENT_REGISTER,
     EVENT_REGISTER_ACK,
+    EVENT_SEND_GROUP,
     EVENT_SEND_STICKER,
     EVENT_STICKER_MSG,
     EVENT_USER_LIST,
@@ -537,7 +538,8 @@ def test_client_session_send_group_message_emits_payload():
     assert msg_id == "MSG_G01"
     assert len(spy.emitted) == 1
     event, data = spy.emitted[0]
-    assert event == EVENT_GROUP_MSG
+    assert event == EVENT_SEND_GROUP
+    assert data["target"] == "StudyGroup"
     assert data["group_name"] == "StudyGroup"
     assert data["message"] == "Hello everyone!"
     assert data["message_id"] == "MSG_G01"
@@ -593,7 +595,7 @@ def test_client_session_receives_and_enqueues_group_message():
     event = session.get_next_event(block=False)
     assert event is not None
     event_type, payload = event
-    assert event_type == EVENT_GROUP_MSG
+    assert event_type == EVENT_RECEIVE_GROUP
     assert isinstance(payload, GroupMessageServerPayload)
     assert payload.sender == "Bob"
     assert payload.group_name == "StudyGroup"
@@ -619,7 +621,7 @@ def test_client_session_receives_and_enqueues_receive_group():
     event = session.get_next_event(block=False)
     assert event is not None
     event_type, payload = event
-    assert event_type == EVENT_GROUP_MSG
+    assert event_type == EVENT_RECEIVE_GROUP
     assert isinstance(payload, GroupMessageServerPayload)
     assert payload.sender == "Bob"
     assert payload.group_name == "StudyGroup"

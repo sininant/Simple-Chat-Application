@@ -43,6 +43,7 @@ from protocol import (
     EVENT_PRIVATE_MSG,
     EVENT_PRIVATE_MSG_ERROR,
     EVENT_READ_ACK,
+    EVENT_RECEIVE_GROUP,
     EVENT_REGISTER_ACK,
     EVENT_STICKER_MSG,
     EVENT_USER_LIST,
@@ -234,7 +235,9 @@ class GuiController:
                 if self.on_group_message_error:
                     self.on_group_message_error("", payload.error)
                 changed = True
-            elif event_name == EVENT_GROUP_MSG and isinstance(payload, GroupMessageServerPayload):
+            elif event_name in (EVENT_RECEIVE_GROUP, EVENT_GROUP_MSG) and isinstance(
+                payload, GroupMessageServerPayload
+            ):
                 self.group_messages.setdefault(payload.group_name, []).append(payload)
                 if self.on_group_message:
                     self.on_group_message(payload.group_name, payload)
@@ -1744,6 +1747,28 @@ class PopupDialog:
         self.frame.pack(fill="both", expand=True, padx=12, pady=12)
 
 
+class RoomRegistry(dict):
+    """Namespace-isolated room registry for internal keys ('group:<name>', 'private:<name>')."""
+
+    def __getitem__(self, key: str) -> Any:
+        if super().__contains__(key):
+            return super().__getitem__(key)
+        for prefix in ("group:", "private:"):
+            prefixed = f"{prefix}{key}"
+            if super().__contains__(prefixed):
+                return super().__getitem__(prefixed)
+        return super().__getitem__(key)
+
+    def __contains__(self, key: object) -> bool:
+        return super().__contains__(key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+
 class MainChatWindow:
     """Reusable responsive main view for authenticated sessions."""
 
@@ -1807,7 +1832,7 @@ class MainChatWindow:
             segmented_button.grid_remove()
         for row in range(3):
             self.tabs.grid_rowconfigure(row, minsize=0)
-        self.rooms: dict[str, ChatRoomTab] = {}
+        self.rooms: RoomRegistry = RoomRegistry()
         self._active_room: str | None = None
         self._rendered_messages: set[str] = set()
         self._unread_messages: dict[str, set[str]] = {}
@@ -1864,13 +1889,30 @@ class MainChatWindow:
         if self._active_room and self._unread_messages.get(self._active_room):
             self._ack_unread_in_room(self._active_room)
 
+    def _get_room(self, name: str, kind: str | None = None) -> Any:
+        if kind == "group":
+            return self.rooms.get(f"group:{name}") or self.rooms.get(name)
+        if kind == "private":
+            return self.rooms.get(f"private:{name}") or self.rooms.get(name)
+        return (
+            self.rooms.get(name)
+            or self.rooms.get(f"group:{name}")
+            or self.rooms.get(f"private:{name}")
+        )
+
     def open_private_room(self, user: str, select: bool = True) -> None:
         if user == self.controller.username:
             return
-        if user not in self.rooms:
+        room_id = f"private:{user}"
+        if room_id not in self.rooms:
             existing_tabs = getattr(self.tabs, "_tab_dict", {})
-            tab_exists = user in existing_tabs
-            tab = self.tabs.tab(user) if tab_exists else self.tabs.add(user)
+            tab_exists = room_id in existing_tabs or user in existing_tabs
+            tab_key = (
+                room_id
+                if room_id in existing_tabs
+                else (user if user in existing_tabs else room_id)
+            )
+            tab = self.tabs.tab(tab_key) if tab_exists else self.tabs.add(room_id)
             try:
                 try:
                     room = ChatRoomTab(
@@ -1887,20 +1929,25 @@ class MainChatWindow:
                         on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
                     )
                 room.frame.pack(fill="both", expand=True)
-                self.rooms[user] = room
+                self.rooms[room_id] = room
+                if user not in self.rooms:
+                    self.rooms[user] = room
             except Exception:
                 if not tab_exists:
-                    self.tabs.delete(user)
+                    self.tabs.delete(room_id)
                 raise
         if select:
-            self.tabs.set(user)
-            self._active_room = user
+            active_tab = (
+                room_id if getattr(self.tabs, "_tab_dict", {}).get(room_id) is not None else user
+            )
+            self.tabs.set(active_tab)
+            self._active_room = room_id
             self._ack_unread_in_room(user)
             self.sidebar.set_users(
                 self.controller.online_users,
                 self.controller.username,
                 self.controller.online_avatars,
-                self._active_room,
+                user,
             )
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
@@ -1908,10 +1955,11 @@ class MainChatWindow:
 
     def open_group_room(self, group_name: str, select: bool = True) -> None:
         """Open a joined Group Room tab with isolated ChatBox and ChatWindow (R5, R6, R11)."""
-        if group_name not in self.rooms:
+        room_id = f"group:{group_name}"
+        if room_id not in self.rooms:
             existing_tabs = getattr(self.tabs, "_tab_dict", {})
-            tab_exists = group_name in existing_tabs
-            tab = self.tabs.tab(group_name) if tab_exists else self.tabs.add(group_name)
+            tab_exists = room_id in existing_tabs
+            tab = self.tabs.tab(room_id) if tab_exists else self.tabs.add(room_id)
             try:
                 try:
                     room = ChatRoomTab(
@@ -1928,14 +1976,16 @@ class MainChatWindow:
                         on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
                     )
                 room.frame.pack(fill="both", expand=True)
-                self.rooms[group_name] = room
+                self.rooms[room_id] = room
+                if group_name not in self.rooms:
+                    self.rooms[group_name] = room
             except Exception:
                 if not tab_exists:
-                    self.tabs.delete(group_name)
+                    self.tabs.delete(room_id)
                 raise
         if select:
-            self.tabs.set(group_name)
-            self._active_room = group_name
+            self.tabs.set(room_id)
+            self._active_room = room_id
         segmented_button = getattr(self.tabs, "_segmented_button", None)
         if segmented_button is not None:
             segmented_button.grid_forget()
@@ -1953,8 +2003,10 @@ class MainChatWindow:
             return avatar_name
         return avatar_images.get(avatar_name, avatar_images.get("rabbit"))
 
-    def _add_room_message(self, room_name: str, *args: Any, **kwargs: Any) -> Any:
-        room = self.rooms.get(room_name)
+    def _add_room_message(
+        self, room_name: str, *args: Any, kind: str | None = None, **kwargs: Any
+    ) -> Any:
+        room = self._get_room(room_name, kind=kind)
         if room is None:
             return None
         try:
@@ -1970,7 +2022,13 @@ class MainChatWindow:
             current_time = datetime.now().strftime("%H:%M")
             avatar = None
             self._add_room_message(
-                group_name, "You", message, own=True, timestamp=current_time, avatar=avatar
+                group_name,
+                "You",
+                message,
+                own=True,
+                timestamp=current_time,
+                avatar=avatar,
+                kind="group",
             )
 
     def _handle_incoming_group_message(
@@ -1979,7 +2037,8 @@ class MainChatWindow:
         if payload.meta.message_id in self._rendered_messages:
             return
         self._rendered_messages.add(payload.meta.message_id)
-        if group_name not in self.rooms:
+        room_id = f"group:{group_name}"
+        if room_id not in self.rooms and group_name not in self.rooms:
             self.open_group_room(group_name, select=False)
         own = payload.sender == self.controller.username
         display_sender = "You" if own else payload.sender
@@ -1992,11 +2051,14 @@ class MainChatWindow:
             timestamp=payload.meta.timestamp,
             message_id=payload.meta.message_id,
             avatar=avatar,
+            kind="group",
         )
 
     def _handle_group_message_error(self, group_name: str, error: str) -> None:
-        target_room = group_name or self._active_room
-        if target_room and target_room in self.rooms:
+        target_room = group_name
+        if not target_room and self._active_room and self._active_room.startswith("group:"):
+            target_room = self._active_room.removeprefix("group:")
+        if target_room:
             current_time = datetime.now().strftime("%H:%M")
             self._add_room_message(
                 target_room,
@@ -2004,6 +2066,7 @@ class MainChatWindow:
                 message=f"⚠️ {error}",
                 own=False,
                 timestamp=current_time,
+                kind="group",
             )
 
     def _send_private_message(self, peer: str, message: str) -> None:
@@ -2013,7 +2076,13 @@ class MainChatWindow:
             current_time = datetime.now().strftime("%H:%M")
             avatar = None
             self._add_room_message(
-                peer, "You", message, own=True, timestamp=current_time, avatar=avatar
+                peer,
+                "You",
+                message,
+                own=True,
+                timestamp=current_time,
+                avatar=avatar,
+                kind="private",
             )
 
     def _handle_incoming_private_message(
@@ -2022,7 +2091,8 @@ class MainChatWindow:
         if payload.meta.message_id in self._rendered_messages:
             return
         self._rendered_messages.add(payload.meta.message_id)
-        if peer not in self.rooms:
+        room_id = f"private:{peer}"
+        if room_id not in self.rooms and peer not in self.rooms:
             self.open_private_room(peer, select=False)
         own = payload.sender == self.controller.username
         display_sender = "You" if own else payload.sender
@@ -2035,10 +2105,11 @@ class MainChatWindow:
             timestamp=payload.meta.timestamp,
             message_id=payload.meta.message_id,
             avatar=avatar,
+            kind="private",
         )
         if not own:
             # Check user's actively selected room rather than relying on tabs.get()
-            if self._active_room == peer:
+            if self._active_room in (room_id, peer):
                 self._send_read_ack(payload.meta.message_id, peer)
             else:
                 self._unread_messages.setdefault(peer, set()).add(payload.meta.message_id)
@@ -2086,20 +2157,23 @@ class MainChatWindow:
         msg_id = self.controller.send_sticker(
             sticker_id=sticker_id, target=target, group_name=group_name
         )
-        if msg_id is None and destination in self.rooms:
+        room = self._get_room(destination, kind="group" if is_group else "private")
+        if msg_id is None and room is not None:
             current_time = datetime.now().strftime("%H:%M")
-            self.rooms[destination].add_sticker("You", sticker_id, own=True, timestamp=current_time)
+            room.add_sticker("You", sticker_id, own=True, timestamp=current_time)
 
     def _open_sticker_picker(self, destination: str) -> None:
         """Toggle the sticker drawer for destination."""
-        if destination not in self.rooms:
-            is_group = any(g.get("group_name") == destination for g in self.controller.groups)
+        is_group = any(g.get("group_name") == destination for g in self.controller.groups)
+        room = self._get_room(destination, kind="group" if is_group else "private")
+        if room is None:
             if is_group:
                 self.open_group_room(destination)
             else:
                 self.open_private_room(destination)
-        if destination in self.rooms:
-            self.rooms[destination].toggle_sticker_panel()
+            room = self._get_room(destination, kind="group" if is_group else "private")
+        if room is not None:
+            room.toggle_sticker_panel()
 
     def _handle_incoming_sticker_message(
         self, destination: str, payload: StickerMessageServerPayload
@@ -2107,15 +2181,18 @@ class MainChatWindow:
         if payload.meta.message_id in self._rendered_messages:
             return
         self._rendered_messages.add(payload.meta.message_id)
-        if destination not in self.rooms:
-            if payload.group_name:
+        is_group = bool(payload.group_name)
+        room = self._get_room(destination, kind="group" if is_group else "private")
+        if room is None:
+            if is_group:
                 self.open_group_room(destination)
             else:
                 self.open_private_room(destination, select=False)
+            room = self._get_room(destination, kind="group" if is_group else "private")
         own = payload.sender == self.controller.username
         display_sender = "You" if own else payload.sender
-        if destination in self.rooms:
-            self.rooms[destination].add_sticker(
+        if room is not None:
+            room.add_sticker(
                 sender=display_sender,
                 sticker_id=payload.sticker_id,
                 own=own,
@@ -2123,7 +2200,8 @@ class MainChatWindow:
                 message_id=payload.meta.message_id,
             )
         if not own and payload.target:
-            if self._active_room == destination:
+            room_id = f"private:{destination}"
+            if self._active_room in (room_id, destination):
                 self._send_read_ack(payload.meta.message_id, destination)
             else:
                 self._unread_messages.setdefault(destination, set()).add(payload.meta.message_id)

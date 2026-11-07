@@ -56,8 +56,8 @@ the rabbit character for every listed user.
 | `join_group` | Client -> Server | `{"group_name": "StudyGroup"}` | Client voluntarily joins an existing group (`R10`); server adds user to room via `sio.enter_room(sid, group_name)` and broadcasts updated `group_list`. |
 | `group_list` | Server -> All Clients | `{"groups": [{"group_name": "StudyGroup", "members": ["Alice", "Bob"]}]}` | Broadcast listing all existing groups and their current member lists (`R9`). |
 | `group_error` | Server -> Requesting Client | `{"error": "Group name already exists"}` | Rejects an invalid, duplicate, or otherwise unavailable group create/join request. |
-| `group_message` | Client -> Server | `{"group_name": "StudyGroup", "message": "Hello all!", "message_id": "MSG_002", "timestamp": "14:32"}` | Client sends a message to a joined group (`R11`). |
-| `group_message` | Server -> Group Room | `{"sender": "Alice", "group_name": "StudyGroup", "message": "Hello all!", "message_id": "MSG_002", "timestamp": "14:32"}` | Server emits message exclusively to members in that room (`sio.emit(..., room=group_name)`) (`R11`). |
+| `SEND_GROUP` (alias `group_message`) | Client -> Server | `{"target": "StudyGroup", "group_name": "StudyGroup", "message": "Hello all!", "message_id": "MSG_002", "timestamp": "14:32"}` | Client sends a message to a joined group (`R11`). |
+| `RECEIVE_GROUP` | Server -> Group Room | `{"sender": "Alice", "group": "StudyGroup", "group_name": "StudyGroup", "target": "StudyGroup", "message": "Hello all!", "message_id": "MSG_002", "timestamp": "14:32"}` | Server emits message exclusively to members in that room (`sio.emit("RECEIVE_GROUP", ..., room=group_name)`) (`R11`). |
 
 ### Special Points (Part 3 — 4 Points)
 
@@ -90,7 +90,7 @@ the rabbit character for every listed user.
 1. **Identity Verification**:
    - Clients send only payload data. The server derives the sender's username from the authenticated session registry (`sessions[sid]`) to prevent identity spoofing.
 2. **Room Access Control**:
-   - When receiving `group_message`, the server verifies that the sending `sid` is currently in the requested room before emitting to the group.
+   - When receiving `SEND_GROUP` (or alias `group_message`), the server verifies that the sending `sid` is currently a member of the group (`groups[target]`) before forwarding via `RECEIVE_GROUP` to that room (`room=group_name`). Non-members are rejected with `ERROR` (`R11`).
 3. **Thread Safety in Client GUI**:
    - `socketio.Client()` event callbacks run on background network threads.
    - Incoming events must be pushed into a thread-safe `queue.Queue` so the CustomTkinter GUI thread polls and renders updates via `.after()` without race conditions.

@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from gui import GuiController, MainChatWindow, configure_fixed_pixel_scaling
+from gui import GuiController, MainChatWindow, RoomRegistry, configure_fixed_pixel_scaling
 from protocol import (
     EVENT_ANNOUNCEMENT,
     EVENT_GROUP_ERROR,
@@ -504,9 +504,10 @@ def test_open_group_room_sets_up_chat_room_tab_and_on_send(monkeypatch):
     window.open_group_room("StudyGroup", select=True)
 
     assert "StudyGroup" in window.rooms
-    assert window.rooms["StudyGroup"].frame.packed is True
-    assert window.tabs.current_tab == "StudyGroup"
-    assert window._active_room == "StudyGroup"
+    assert "group:StudyGroup" in window.rooms
+    assert window.rooms["group:StudyGroup"].frame.packed is True
+    assert window.tabs.current_tab == "group:StudyGroup"
+    assert window._active_room == "group:StudyGroup"
 
     # Verify sending forwards to controller and session
     window.rooms["StudyGroup"].on_send("Hello test group!")
@@ -1231,3 +1232,80 @@ def test_main_chat_window_handle_incoming_sticker_message_opens_group_room():
 
     assert opened_rooms == [("group", "StudyGroup")]
     assert "STK_GRP_1" in window._rendered_messages
+
+
+def test_main_chat_window_isolates_group_and_private_rooms_with_same_name(monkeypatch):
+    """Verify group and private rooms have distinct internal IDs and do not collide (Issue #9)."""
+
+    class RoomSpy:
+        def __init__(self, tab: Any, name: str, on_send: Any, **kwargs: Any) -> None:
+            self.tab = tab
+            self.name = name
+            self.on_send = on_send
+            self.frame = type("Frame", (), {"pack": lambda *a, **k: None})()
+            self.messages: list[dict[str, Any]] = []
+
+        def add_message(self, sender: str, message: str, **kwargs: Any) -> None:
+            self.messages.append({"sender": sender, "message": message, **kwargs})
+
+    class TabsSpy:
+        def __init__(self) -> None:
+            self._tab_dict: dict[str, Any] = {}
+            self.current_tab: str | None = None
+
+        def tab(self, name: str) -> Any:
+            return self._tab_dict[name]
+
+        def add(self, name: str) -> Any:
+            frame = object()
+            self._tab_dict[name] = frame
+            return frame
+
+        def set(self, name: str) -> None:
+            self.current_tab = name
+
+    monkeypatch.setattr("gui.ChatRoomTab", RoomSpy)
+    session = SessionSpy()
+    controller = GuiController(session)
+    controller.username = "Alice"
+
+    window = object.__new__(MainChatWindow)
+    window.controller = controller
+    window.tabs = TabsSpy()
+    window.rooms = RoomRegistry()
+    window._active_room = None
+    window._unread_messages = {}
+    window._acknowledged_messages = set()
+    window.sidebar = type("Sidebar", (), {"set_users": lambda *a: None})()
+    window._send_read_ack = lambda *a: None
+
+    # Open a private room for user 'Bob'
+    window.open_private_room("Bob", select=True)
+    assert "private:Bob" in window.rooms
+    assert window.tabs.current_tab == "private:Bob"
+    assert window._active_room == "private:Bob"
+
+    # Open a group room with the identical name 'Bob'
+    window.open_group_room("Bob", select=True)
+    assert "group:Bob" in window.rooms
+    assert window.tabs.current_tab == "group:Bob"
+    assert window._active_room == "group:Bob"
+
+    # Distinct room instances
+    private_room = window.rooms["private:Bob"]
+    group_room = window.rooms["group:Bob"]
+    assert private_room is not group_room
+
+    # Route message to group: does not leak into private room
+    group_payload = GroupMessageServerPayload(
+        sender="Charlie",
+        group_name="Bob",
+        message="Hello Bob group members!",
+        meta=MessageMeta(message_id="MSG_G_SAME", timestamp="12:00"),
+    )
+    window._rendered_messages = set()
+    window._handle_incoming_group_message("Bob", group_payload)
+
+    assert len(group_room.messages) == 1
+    assert group_room.messages[0]["message"] == "Hello Bob group members!"
+    assert len(private_room.messages) == 0
