@@ -8,9 +8,9 @@ This keeps the interface safe to import and test without a display server.
 from __future__ import annotations
 
 import argparse
-import os
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
@@ -55,6 +55,7 @@ from chat.protocol import (
     RegisterAckPayload,
     StickerMessageServerPayload,
     UserListPayload,
+    get_server_host_and_port,
 )
 from chat.speech import GoogleSpeechTranscriber, SpeechInputController, SpeechTranscriber
 
@@ -683,6 +684,17 @@ class AnnouncementBanner:
                 self.frame.pack(fill="x", padx=10, pady=(6, 2), before=before_widget)
             except Exception:
                 pass
+        else:
+            try:
+                if getattr(self.frame, "grid_info", lambda: None)():
+                    self.frame.grid()
+                else:
+                    self.frame.pack(fill="x", padx=10, pady=(6, 2))
+            except Exception:
+                try:
+                    self.frame.grid()
+                except Exception:
+                    pass
         try:
             self.frame.bell()
         except Exception:
@@ -1597,6 +1609,17 @@ class ChatBoxBar:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class RoomActions:
+    """Action object encapsulating room event callbacks to prevent data clumps."""
+
+    on_send: Callable[[str], None] | None = None
+    on_sticker: Callable[[], None] | None = None
+    on_send_sticker: Callable[[str], None] | None = None
+    on_announce: Callable[[str], None] | None = None
+    on_close_announcement: Callable[[], None] | None = None
+
+
 class ChatRoomTab:
     """Reusable R5/R6 tab with ChatWindow, ChatBoxBar, and StickerPanel."""
 
@@ -1610,7 +1633,15 @@ class ChatRoomTab:
         on_send_sticker: Callable[[str], None] | None = None,
         on_announce: Callable[[str], None] | None = None,
         on_close_announcement: Callable[[], None] | None = None,
+        *,
+        actions: RoomActions | None = None,
     ) -> None:
+        if actions is not None:
+            on_send = on_send or actions.on_send
+            on_sticker = on_sticker or actions.on_sticker
+            on_send_sticker = on_send_sticker or actions.on_send_sticker
+            on_announce = on_announce or actions.on_announce
+            on_close_announcement = on_close_announcement or actions.on_close_announcement
         ui = _require_ctk()
         self.frame = ui.CTkFrame(
             parent,
@@ -1982,48 +2013,62 @@ class RoomRegistry(dict):
 def _create_room_tab(
     tab: Any,
     title: str,
-    on_send: Any,
-    on_sticker: Any,
-    on_send_sticker: Any,
-    on_announce: Any,
+    actions_or_on_send: RoomActions | Any,
+    on_sticker: Any = None,
+    on_send_sticker: Any = None,
+    on_announce: Any = None,
     on_close_announcement: Any = None,
 ) -> ChatRoomTab:
-    """Instantiate ChatRoomTab with backward-compatible fallback for varied test doubles."""
-    try:
-        return ChatRoomTab(
-            tab,
-            title,
-            on_send=on_send,
+    """Instantiate ChatRoomTab using RoomActions (or backward-compatible loose callbacks)."""
+    if isinstance(actions_or_on_send, RoomActions):
+        actions = actions_or_on_send
+    else:
+        actions = RoomActions(
+            on_send=actions_or_on_send,
             on_sticker=on_sticker,
             on_send_sticker=on_send_sticker,
             on_announce=on_announce,
             on_close_announcement=on_close_announcement,
         )
+
+    try:
+        return ChatRoomTab(tab, title, actions=actions)
     except TypeError:
         try:
             return ChatRoomTab(
                 tab,
                 title,
-                on_send=on_send,
-                on_sticker=on_sticker,
-                on_send_sticker=on_send_sticker,
-                on_announce=on_announce,
+                on_send=actions.on_send,
+                on_sticker=actions.on_sticker,
+                on_send_sticker=actions.on_send_sticker,
+                on_announce=actions.on_announce,
+                on_close_announcement=actions.on_close_announcement,
             )
         except TypeError:
             try:
                 return ChatRoomTab(
                     tab,
                     title,
-                    on_send=on_send,
-                    on_sticker=on_sticker,
-                    on_send_sticker=on_send_sticker,
+                    on_send=actions.on_send,
+                    on_sticker=actions.on_sticker,
+                    on_send_sticker=actions.on_send_sticker,
+                    on_announce=actions.on_announce,
                 )
             except TypeError:
-                return ChatRoomTab(
-                    tab,
-                    title,
-                    on_send=on_send,
-                )
+                try:
+                    return ChatRoomTab(
+                        tab,
+                        title,
+                        on_send=actions.on_send,
+                        on_sticker=actions.on_sticker,
+                        on_send_sticker=actions.on_send_sticker,
+                    )
+                except TypeError:
+                    return ChatRoomTab(
+                        tab,
+                        title,
+                        on_send=actions.on_send,
+                    )
 
 
 class MainChatWindow:
@@ -2068,7 +2113,7 @@ class MainChatWindow:
             font=(FONT, 20),
             text_color=INK,
         ).pack(pady=(4, 0))
-        self.banner = AnnouncementBanner(self.content)
+        self.banner = AnnouncementBanner(self.content, on_close=self._clear_announcements)
         self.banner.frame.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         self.banner.frame.grid_remove()
         self.sidebar = SidebarPanel(
@@ -2190,16 +2235,15 @@ class MainChatWindow:
                 else (user if user in existing_tabs else room_id)
             )
             tab = self.tabs.tab(tab_key) if tab_exists else self.tabs.add(room_id)
+            actions = RoomActions(
+                on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
+                on_sticker=lambda peer=user: self._open_sticker_picker(peer),
+                on_send_sticker=lambda s, peer=user: self._send_sticker(peer, s),
+                on_announce=lambda msg: self.controller.send_announcement(msg),
+                on_close_announcement=self._clear_announcements,
+            )
             try:
-                room = _create_room_tab(
-                    tab,
-                    user,
-                    on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
-                    on_sticker=lambda peer=user: self._open_sticker_picker(peer),
-                    on_send_sticker=lambda s, peer=user: self._send_sticker(peer, s),
-                    on_announce=lambda msg: self.controller.send_announcement(msg),
-                    on_close_announcement=self._clear_announcements,
-                )
+                room = _create_room_tab(tab, user, actions)
                 self._attach_room_tab(room_id, user, room)
             except Exception:
                 if not tab_exists:
@@ -2229,16 +2273,15 @@ class MainChatWindow:
             existing_tabs = getattr(self.tabs, "_tab_dict", {})
             tab_exists = room_id in existing_tabs
             tab = self.tabs.tab(room_id) if tab_exists else self.tabs.add(room_id)
+            actions = RoomActions(
+                on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
+                on_sticker=lambda g=group_name: self._open_sticker_picker(g),
+                on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
+                on_announce=lambda msg: self.controller.send_announcement(msg),
+                on_close_announcement=self._clear_announcements,
+            )
             try:
-                room = _create_room_tab(
-                    tab,
-                    group_name,
-                    on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
-                    on_sticker=lambda g=group_name: self._open_sticker_picker(g),
-                    on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
-                    on_announce=lambda msg: self.controller.send_announcement(msg),
-                    on_close_announcement=self._clear_announcements,
-                )
+                room = _create_room_tab(tab, group_name, actions)
                 self._attach_room_tab(room_id, group_name, room)
             except Exception:
                 if not tab_exists:
@@ -2495,8 +2538,11 @@ class ChatApplication:
         port: str | None = None,
     ) -> None:
         load_dotenv()
-        host = host or os.getenv("SERVER_HOST") or os.getenv("CHAT_SERVER_HOST", "127.0.0.1")
-        port = port or os.getenv("SERVER_PORT") or os.getenv("CHAT_SERVER_PORT", "5000")
+        default_host, default_port = get_server_host_and_port(
+            default_host="127.0.0.1", default_port=5000
+        )
+        host = host or default_host
+        port = port or str(default_port)
         ui = _require_ctk()
         configure_fixed_pixel_scaling(ui)
         ui.set_appearance_mode("light")

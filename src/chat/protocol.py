@@ -699,6 +699,7 @@ ClientPayload = (
     | GroupMessagePayload
     | SendStickerPayload
     | ReadAckClientPayload
+    | AnnouncementPayload
 )
 
 ServerPayload = (
@@ -755,3 +756,34 @@ def parse_client_event(event: str, data: Any) -> ClientPayload:
 def parse_server_event(event: str, data: Any) -> ServerPayload:
     """Parse and validate an inbound event payload received by a client from server."""
     return _parse_event(event, data, SERVER_EVENT_PAYLOAD_MAP, "server")
+
+
+# -----------------------------------------------------------------------------
+# Centralized Host & Port Configuration Resolver
+# -----------------------------------------------------------------------------
+
+
+def get_server_host_and_port(
+    default_host: str = "127.0.0.1",
+    default_port: int = 5000,
+) -> tuple[str, int]:
+    """Resolve server host and port with environment precedence (SERVER_* then CHAT_SERVER_*)."""
+    import os
+
+    host = os.getenv("SERVER_HOST") or os.getenv("CHAT_SERVER_HOST", default_host)
+    raw_port = os.getenv("SERVER_PORT") or os.getenv("CHAT_SERVER_PORT", str(default_port))
+    try:
+        port = int(raw_port)
+    except (ValueError, TypeError):
+        port = default_port
+    return host, port
+
+
+def get_server_url(default_host: str = "127.0.0.1", default_port: int = 5000) -> str:
+    """Resolve full Socket.IO server URL with environment fallback precedence."""
+    import os
+
+    if url := (os.getenv("SERVER_URL") or os.getenv("CHAT_SERVER_URL")):
+        return url
+    host, port = get_server_host_and_port(default_host, default_port)
+    return f"http://{host}:{port}"

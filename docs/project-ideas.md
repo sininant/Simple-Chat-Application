@@ -132,7 +132,14 @@ To keep the Socket.IO server and desktop client in Python (`server.py`, `client.
   - Can be triggered directly by server-wide broadcast or client-initiated message pinning (LINE-style announcement UX):
     - **Client-Initiated Pinning:** Hovering over any text message bubble reveals a centered bell action icon (`announce_btn`); clicking it emits a validated `announcement` event to the server.
     - **Server Broadcast & Trust Boundary:** The server validates that the emitting client session is currently registered, then broadcasts the announcement payload to all connected clients.
-  - Every connected client displays the announcement in a prominent, pinned top banner styled in pastel pink (`#F8E8EE`), complete with an audible notification alert (`self.frame.bell()`), a collapsible `[v]`/`[^]` toggle for multi-line text, and a `[Hide]` dismissal option.
+  - Every connected client displays the announcement in a prominent, pinned top banner styled in pastel pink (`#F8E8EE`), complete with an audible announcement chime (`self.frame.bell()`) and a `[✕]` cancellation button to dismiss the announcement.
+
+### 5. Architectural Quality Invariants & UX Hardening
+- **Sticker Composer Lock & Focus Management:**
+  - Selecting a sticker locks the text entry composer (`state="disabled"`) and clears the active cursor focus to eliminate accidental typing while choosing visual stickers.
+  - Clicking anywhere outside text input fields blurs focus cleanly, preventing ghost cursors.
+- **Server Bounded Memory Invariant:**
+  - `ChatEngine` manages in-memory message history using a bounded deque (`max_message_history = 10000`, FIFO eviction) to prevent memory leak vulnerabilities during long-running server sessions while providing reliable message ID lookup for `READ_ACK` (`SP4`).
 
 ### 4. Private-Message Read Receipt (`READ_ACK`)
 - **Architecture (Inspired by Reliable Data Transfer `rdt2.0` ACK):**

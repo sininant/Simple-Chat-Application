@@ -1801,7 +1801,7 @@ def test_main_chat_window_clear_announcements_clears_state_and_hides_rooms():
     from gui import MainChatWindow
 
     window = object.__new__(MainChatWindow)
-    window._latest_announcement = ("Active alert", "12:00")
+    window._latest_announcement = ("Active announcement", "12:00")
 
     class MockRoom:
         def __init__(self) -> None:
@@ -1820,17 +1820,57 @@ def test_main_chat_window_clear_announcements_clears_state_and_hides_rooms():
     assert room2.hidden is True
 
 
-def test_gui_server_host_port_env_precedence(monkeypatch):
-    """Verify SERVER_HOST and SERVER_PORT environment variables take precedence in gui.py."""
-    import os
+def test_announcement_banner_show_restores_grid_when_before_widget_is_none():
+    """Verify AnnouncementBanner.show() restores grid() for main window top banner."""
+    from gui import AnnouncementBanner
 
-    monkeypatch.setenv("SERVER_HOST", "192.168.1.55")
-    monkeypatch.setenv("SERVER_PORT", "8888")
-    monkeypatch.setenv("CHAT_SERVER_HOST", "127.0.0.1")
-    monkeypatch.setenv("CHAT_SERVER_PORT", "5000")
+    banner = object.__new__(AnnouncementBanner)
+    gridded: list[bool] = []
 
-    host = os.getenv("SERVER_HOST") or os.getenv("CHAT_SERVER_HOST", "127.0.0.1")
-    port = os.getenv("SERVER_PORT") or os.getenv("CHAT_SERVER_PORT", "5000")
+    class MockFrame:
+        def grid_info(self) -> dict[str, Any]:
+            return {"row": 0, "column": 0}
 
-    assert host == "192.168.1.55"
-    assert port == "8888"
+        def grid(self) -> None:
+            gridded.append(True)
+
+        def bell(self) -> None:
+            pass
+
+    class MockLabel:
+        def configure(self, **kwargs: Any) -> None:
+            pass
+
+    banner.frame = MockFrame()
+    banner.label = MockLabel()
+
+    banner.show("System-wide announcement")
+    assert gridded == [True]
+
+
+def test_room_actions_encapsulates_callbacks():
+    """Verify RoomActions encapsulates callbacks cleanly."""
+    from gui import RoomActions
+
+    actions = RoomActions(
+        on_send=lambda msg: None,
+        on_sticker=lambda: None,
+        on_send_sticker=lambda s: None,
+        on_announce=lambda msg: None,
+        on_close_announcement=lambda: None,
+    )
+    assert actions.on_send is not None
+    assert actions.on_announce is not None
+
+
+def test_protocol_get_server_host_port_and_url(monkeypatch):
+    """Verify centralized host, port, and URL resolvers in protocol.py."""
+    from chat.protocol import get_server_host_and_port, get_server_url
+
+    monkeypatch.setenv("SERVER_HOST", "192.168.1.100")
+    monkeypatch.setenv("SERVER_PORT", "9000")
+
+    host, port = get_server_host_and_port()
+    assert host == "192.168.1.100"
+    assert port == 9000
+    assert get_server_url() == "http://192.168.1.100:9000"

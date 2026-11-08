@@ -839,10 +839,9 @@ def main() -> None:
     except ImportError:
         pass
 
-    import os
+    from chat.protocol import get_server_host_and_port
 
-    default_host = os.getenv("SERVER_HOST") or os.getenv("CHAT_SERVER_HOST", "0.0.0.0")
-    default_port = int(os.getenv("SERVER_PORT") or os.getenv("CHAT_SERVER_PORT", "5000"))
+    default_host, default_port = get_server_host_and_port(default_host="0.0.0.0", default_port=5000)
 
     parser = argparse.ArgumentParser(description="Simple Chat Application Socket.IO Server")
     parser.add_argument(

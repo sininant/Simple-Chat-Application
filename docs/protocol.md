@@ -98,3 +98,7 @@ the rabbit character for every listed user.
 4. **System Announcement & Trust Boundary (SP3)**:
    - The server operator can trigger announcements directly via terminal console stdin (`run_console_loop` or `/announce <msg>`).
    - When a client emits `announcement`, the server verifies that the sending `sid` is authenticated and registered before broadcasting, preventing unauthorized broadcast spoofing.
+5. **Server Memory Boundary (SP4 Read Receipt Invariant)**:
+   - The server maintains private message history using a bounded FIFO queue (`max_message_history = 10000`) so long-running deployments never experience memory exhaustion while maintaining `READ_ACK` validation.
+6. **Client-Side Composer State Invariant (SP2 Sticker Exclusivity)**:
+   - Selecting a sticker disables the text composer to prevent simultaneous text and sticker dispatch; clicking outside unfocuses the composer to prevent cursor blinking.
