@@ -1441,3 +1441,22 @@ def test_main_chat_window_incoming_sticker_from_other_passes_avatar():
     assert room.stickers[0]["sender"] == "Bob"
     assert room.stickers[0]["sticker_id"] == "STK_001"
     assert room.stickers[0]["avatar"] == "cat"
+
+
+def test_find_assets_dir_locates_existing_assets_directory():
+    """Verify _find_assets_dir reliably discovers project assets."""
+    from chat.gui import _find_assets_dir
+
+    assets_dir = _find_assets_dir()
+    assert assets_dir.is_dir()
+    assert (assets_dir / "stickers").is_dir()
+    assert (assets_dir / "avatar_cat.png").is_file()
+
+
+def test_controller_poll_events_handles_unknown_or_corrupt_events_gracefully():
+    """Verify GuiController drains unknown or malformed events without crashing."""
+    session = SessionSpy([("UNKNOWN_EVENT", {"data": 123}), ("corrupted", None)])
+    controller = GuiController(session)
+
+    # Should not throw any exception
+    controller.poll_events()

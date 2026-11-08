@@ -300,14 +300,26 @@ def configure_fixed_pixel_scaling(ui: Any) -> None:
     ui.set_window_scaling(1.0)
 
 
+def _find_assets_dir() -> Path:
+    """Locate the project assets directory reliably across package layouts."""
+    here = Path(__file__).resolve().parent
+    if (here / "assets").is_dir():
+        return here / "assets"
+    for parent in here.parents:
+        candidate = parent / "assets"
+        if candidate.is_dir():
+            return candidate
+    return here / "assets"
+
+
 def _load_avatars(size: tuple[int, int] = (120, 120)) -> dict[str, Any]:
     """Load the supplied character PNGs, returning an empty map when unavailable."""
     if ctk is None or Image is None:
         return {}
-    root = Path(__file__).resolve().parent
+    assets_dir = _find_assets_dir()
     avatars: dict[str, Any] = {}
     for name in ("cat", "dog", "rabbit"):
-        path = root / "assets" / f"avatar_{name}.png"
+        path = assets_dir / f"avatar_{name}.png"
         if path.is_file():
             image = Image.open(path)
             avatars[name] = ctk.CTkImage(light_image=image, dark_image=image, size=size)
@@ -318,10 +330,10 @@ def _load_avatar_photos(size: tuple[int, int] = (112, 112)) -> dict[str, Any]:
     """Load avatar photos for Canvas rendering without widget-level image clipping."""
     if Image is None or ImageTk is None:
         return {}
-    root = Path(__file__).resolve().parent
+    assets_dir = _find_assets_dir()
     photos: dict[str, Any] = {}
     for name in ("cat", "dog", "rabbit"):
-        path = root / "assets" / f"avatar_{name}.png"
+        path = assets_dir / f"avatar_{name}.png"
         if path.is_file():
             image = Image.open(path).convert("RGBA").resize(size)
             photos[name] = ImageTk.PhotoImage(image)
@@ -332,8 +344,7 @@ def _load_stickers(size: tuple[int, int] = (96, 96)) -> dict[str, Any]:
     """Load sticker PNGs from assets/stickers, mapping sticker_id -> CTkImage."""
     if ctk is None or Image is None:
         return {}
-    root = Path(__file__).resolve().parent
-    stickers_dir = root / "assets" / "stickers"
+    stickers_dir = _find_assets_dir() / "stickers"
     stickers: dict[str, Any] = {}
     if stickers_dir.is_dir():
         for path in sorted(stickers_dir.glob("*.png")):
@@ -348,8 +359,7 @@ def _load_stickers(size: tuple[int, int] = (96, 96)) -> dict[str, Any]:
 
 def get_available_stickers() -> list[str]:
     """Return list of available sticker IDs found in assets/stickers."""
-    root = Path(__file__).resolve().parent
-    stickers_dir = root / "assets" / "stickers"
+    stickers_dir = _find_assets_dir() / "stickers"
     if stickers_dir.is_dir():
         found = [path.stem.upper() for path in sorted(stickers_dir.glob("*.png"))]
         if found:
@@ -361,7 +371,7 @@ def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
     """Load the supplied UI icons as CustomTkinter images."""
     if ctk is None or Image is None:
         return {}
-    root = Path(__file__).resolve().parent
+    assets_dir = _find_assets_dir()
     icons: dict[str, Any] = {}
     for name in (
         "friends",
@@ -374,7 +384,7 @@ def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
         "microphone",
         "pause",
     ):
-        path = root / "assets" / f"icon_{name}.png"
+        path = assets_dir / f"icon_{name}.png"
         if path.is_file():
             image = Image.open(path).convert("RGBA")
             intrinsic_sizes = {
@@ -404,11 +414,11 @@ def _load_icon_photos() -> dict[str, Any]:
     """Load exact-size icon photos for Tk Canvas headers."""
     if Image is None or ImageTk is None:
         return {}
-    root = Path(__file__).resolve().parent
+    assets_dir = _find_assets_dir()
     sizes = {"friends": (25, 25), "community": (30, 15), "chat": (25, 25)}
     photos: dict[str, Any] = {}
     for name, size in sizes.items():
-        path = root / "assets" / f"icon_{name}.png"
+        path = assets_dir / f"icon_{name}.png"
         if path.is_file():
             image = Image.open(path).convert("RGBA").resize(size)
             photos[name] = ImageTk.PhotoImage(image)
