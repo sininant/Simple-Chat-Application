@@ -1,0 +1,2734 @@
+"""Responsive CustomTkinter desktop UI for the Simple Chat Application.
+
+The GUI intentionally keeps network state in :class:`client.ClientSession`.  Socket.IO
+callbacks enqueue events there; only the Tk thread polls that queue through ``after``.
+This keeps the interface safe to import and test without a display server.
+"""
+
+from __future__ import annotations
+
+import argparse
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from queue import Empty, Queue
+from typing import Any, Protocol
+
+try:  # Keep headless CI able to import the controller without GUI dependencies installed.
+    import tkinter as tk
+
+    import customtkinter as ctk
+    from dotenv import load_dotenv
+    from PIL import Image, ImageTk
+except ImportError:  # pragma: no cover - exercised only on machines without GUI extras
+    ctk = None  # type: ignore[assignment]
+    tk = None  # type: ignore[assignment]
+    Image = None  # type: ignore[assignment,misc]
+    ImageTk = None  # type: ignore[assignment,misc]
+
+    def load_dotenv(dotenv_path: Any = None) -> None:
+        del dotenv_path
+
+
+from chat.client import ClientSession
+from chat.protocol import (
+    EVENT_ANNOUNCEMENT,
+    EVENT_CONNECT,
+    EVENT_GROUP_ERROR,
+    EVENT_GROUP_LIST,
+    EVENT_GROUP_MSG,
+    EVENT_PRIVATE_MSG,
+    EVENT_PRIVATE_MSG_ERROR,
+    EVENT_READ_ACK,
+    EVENT_RECEIVE_GROUP,
+    EVENT_REGISTER_ACK,
+    EVENT_STICKER_MSG,
+    EVENT_USER_LIST,
+    AnnouncementPayload,
+    GroupErrorPayload,
+    GroupListPayload,
+    GroupMessageServerPayload,
+    PrivateMessageServerPayload,
+    ReadAckServerPayload,
+    RegisterAckPayload,
+    StickerMessageServerPayload,
+    UserListPayload,
+    get_server_host_and_port,
+)
+from chat.speech import GoogleSpeechTranscriber, SpeechInputController, SpeechTranscriber
+
+BACKGROUND = "#FFFCF8"
+PINK = "#FF9FBF"
+PINK_LIGHT = "#F8E8EE"
+YELLOW = "#FFE79F"
+BLUE = "#BAE7EF"
+INK = "#5C4B41"
+WHITE = "#FFFFFF"
+FONT = "Josefin Sans"
+
+
+class SessionPort(Protocol):
+    """The public ClientSession operations consumed by the GUI controller."""
+
+    def connect(self, server_url: str) -> bool: ...
+
+    def register(self, username: str, avatar: str = "rabbit") -> bool: ...
+
+    def get_next_event(self, *, block: bool = False) -> tuple[str, Any] | None: ...
+
+    def send_private_message(
+        self,
+        target: str,
+        message: str,
+        message_id: str | None = None,
+        timestamp: str | None = None,
+    ) -> str | None: ...
+
+    def send_read_ack(self, message_id: str, target: str) -> bool: ...
+
+    def send_sticker(
+        self,
+        sticker_id: str,
+        target: str | None = None,
+        group_name: str | None = None,
+        message_id: str | None = None,
+        timestamp: str | None = None,
+    ) -> str | None: ...
+
+    def create_group(self, group_name: str) -> bool: ...
+
+    def join_group(self, group_name: str) -> bool: ...
+
+    def send_group_message(
+        self,
+        group_name: str,
+        message: str,
+        message_id: str | None = None,
+        timestamp: str | None = None,
+    ) -> str | None: ...
+
+    def send_announcement(
+        self,
+        message: str,
+        timestamp: str | None = None,
+        target: str | None = None,
+        group_name: str | None = None,
+    ) -> bool: ...
+
+
+class GuiController:
+    """Headless adapter that owns GUI-facing login, presence, and chat message state."""
+
+    def __init__(self, session: SessionPort, on_change: Callable[[], None] | None = None) -> None:
+        self.session = session
+        self.on_change = on_change
+        self.username: str | None = None
+        self.avatar = "rabbit"
+        self.online_users: list[str] = []
+        self.online_avatars: dict[str, str] = {}
+        self.groups: list[dict[str, Any]] = []
+        self.group_error: str | None = None
+        self.login_error: str | None = None
+        self.group_messages: dict[str, list[GroupMessageServerPayload]] = {}
+        self.on_group_message: Callable[[str, GroupMessageServerPayload], None] | None = None
+        self.on_group_message_error: Callable[[str, str], None] | None = None
+        self.announcements: list[AnnouncementPayload] = []
+        self.latest_announcement: AnnouncementPayload | None = None
+        self.private_messages: dict[str, list[PrivateMessageServerPayload]] = {}
+        self.on_private_message: Callable[[str, PrivateMessageServerPayload], None] | None = None
+        self.on_private_message_error: Callable[[str, str], None] | None = None
+        self.on_read_ack: Callable[[str, str], None] | None = None
+        self.on_announcement: Callable[[AnnouncementPayload], None] | None = None
+        self.on_reconnect: Callable[[], None] | None = None
+        self.stickers: dict[str, list[StickerMessageServerPayload]] = {}
+        self.on_sticker_message: Callable[[str, StickerMessageServerPayload], None] | None = None
+
+    def send_private_message(self, target: str, message: str) -> str | None:
+        """Send a 1-to-1 private message through the underlying session adapter (R7)."""
+        send_fn = getattr(self.session, "send_private_message", None)
+        if send_fn is None:
+            return None
+        return send_fn(target, message)
+
+    def send_read_ack(self, message_id: str, target: str) -> bool:
+        """Send a read receipt acknowledgment through the session adapter (SP4)."""
+        send_fn = getattr(self.session, "send_read_ack", None)
+        if send_fn is None:
+            return False
+        return send_fn(message_id, target)
+
+    def send_sticker(
+        self,
+        sticker_id: str,
+        target: str | None = None,
+        group_name: str | None = None,
+    ) -> str | None:
+        """Send a sticker through the underlying session adapter (SP2)."""
+        send_fn = getattr(self.session, "send_sticker", None)
+        if send_fn is None:
+            return None
+        return send_fn(sticker_id=sticker_id, target=target, group_name=group_name)
+
+    def create_group(self, group_name: str) -> bool:
+        """Request a group whose initial member is the local user (R8)."""
+        create_fn = getattr(self.session, "create_group", None)
+        return bool(create_fn and create_fn(group_name))
+
+    def join_group(self, group_name: str) -> bool:
+        """Request that the local user voluntarily joins a group (R10)."""
+        join_fn = getattr(self.session, "join_group", None)
+        return bool(join_fn and join_fn(group_name))
+
+    def send_group_message(self, group_name: str, message: str) -> str | None:
+        """Send a group message through the underlying session adapter (R11)."""
+        send_fn = getattr(self.session, "send_group_message", None)
+        if send_fn is None:
+            return None
+        return send_fn(group_name, message)
+
+    def send_announcement(
+        self,
+        message: str,
+        target: str | None = None,
+        group_name: str | None = None,
+    ) -> bool:
+        """Send an announcement request through the session adapter (SP3 / LINE-style)."""
+        send_fn = getattr(self.session, "send_announcement", None)
+        if send_fn is None:
+            return False
+        try:
+            return bool(send_fn(message, target=target, group_name=group_name))
+        except TypeError:
+            try:
+                return bool(send_fn(message, None, target, group_name))
+            except TypeError:
+                return bool(send_fn(message))
+
+    def connect_and_register(
+        self, host: str, port: str, username: str, avatar: str = "rabbit"
+    ) -> bool:
+        """Connect and request registration, reporting synchronous errors inline."""
+        host, port = host.strip(), port.strip()
+        if not host or not port or not username.strip():
+            self.login_error = "Server host, port, and username are required."
+            self._changed()
+            return False
+        try:
+            port_number = int(port)
+            if not 1 <= port_number <= 65535:
+                raise ValueError
+        except ValueError:
+            self.login_error = "Port must be a number from 1 to 65535."
+            self._changed()
+            return False
+        if not self.session.connect(f"http://{host}:{port_number}"):
+            self.login_error = "Could not connect to the server."
+            self._changed()
+            return False
+        self.login_error = None
+        result = self.session.register(username, avatar)
+        self._changed()
+        return result
+
+    def poll_events(self) -> None:
+        """Drain ClientSession's queue from the GUI thread without blocking."""
+        changed = False
+        while event := self.session.get_next_event(block=False):
+            event_name, payload = event
+            if event_name == EVENT_REGISTER_ACK and isinstance(payload, RegisterAckPayload):
+                if payload.success:
+                    self.username = payload.username
+                    if payload.username not in self.online_users:
+                        self.online_users.append(payload.username)
+                    self.login_error = None
+                    if self.on_reconnect:
+                        self.on_reconnect()
+                else:
+                    self.login_error = payload.error or "Login was rejected."
+                changed = True
+            elif event_name == EVENT_USER_LIST and isinstance(payload, UserListPayload):
+                self.online_users = list(payload.users)
+                self.online_avatars = dict(payload.avatars)
+                changed = True
+            elif event_name == EVENT_GROUP_LIST and isinstance(payload, GroupListPayload):
+                self.groups = [group.to_dict() for group in payload.groups]
+                self.group_error = None
+                changed = True
+            elif event_name == EVENT_GROUP_ERROR and isinstance(payload, GroupErrorPayload):
+                self.group_error = payload.error
+                if self.on_group_message_error:
+                    self.on_group_message_error("", payload.error)
+                changed = True
+            elif event_name in (EVENT_RECEIVE_GROUP, EVENT_GROUP_MSG) and isinstance(
+                payload, GroupMessageServerPayload
+            ):
+                self.group_messages.setdefault(payload.group_name, []).append(payload)
+                if self.on_group_message:
+                    self.on_group_message(payload.group_name, payload)
+                changed = True
+            elif event_name == EVENT_PRIVATE_MSG and isinstance(
+                payload, PrivateMessageServerPayload
+            ):
+                peer = payload.target if payload.sender == self.username else payload.sender
+                self.private_messages.setdefault(peer, []).append(payload)
+                if self.on_private_message:
+                    self.on_private_message(peer, payload)
+                changed = True
+            elif event_name == EVENT_PRIVATE_MSG_ERROR and isinstance(payload, dict):
+                error_msg = str(payload.get("error", "Failed to deliver message"))
+                target_peer = str(payload.get("target", ""))
+                if self.on_private_message_error:
+                    self.on_private_message_error(target_peer, error_msg)
+                changed = True
+            elif event_name == EVENT_READ_ACK and isinstance(payload, ReadAckServerPayload):
+                if self.on_read_ack:
+                    self.on_read_ack(payload.message_id, payload.reader)
+                changed = True
+            elif event_name == EVENT_STICKER_MSG and isinstance(
+                payload, StickerMessageServerPayload
+            ):
+                dest = (
+                    payload.group_name
+                    if payload.group_name
+                    else (payload.target if payload.sender == self.username else payload.sender)
+                )
+                self.stickers.setdefault(dest, []).append(payload)
+                if self.on_sticker_message:
+                    self.on_sticker_message(dest, payload)
+            elif event_name == EVENT_ANNOUNCEMENT and isinstance(payload, AnnouncementPayload):
+                self.announcements.append(payload)
+                self.latest_announcement = payload
+                if self.on_announcement:
+                    self.on_announcement(payload)
+                changed = True
+            elif event_name in (EVENT_CONNECT, "connect"):
+                changed = True
+        if changed:
+            self._changed()
+
+    def _changed(self) -> None:
+        if self.on_change:
+            self.on_change()
+
+
+def _require_ctk() -> Any:
+    if ctk is None:
+        raise RuntimeError("Install GUI extras with: pip install customtkinter pillow")
+    return ctk
+
+
+def configure_fixed_pixel_scaling(ui: Any) -> None:
+    """Keep the fixed 1080×700 layout independent of monitor DPI settings."""
+    ui.deactivate_automatic_dpi_awareness()
+    ui.set_widget_scaling(1.0)
+    ui.set_window_scaling(1.0)
+
+
+def _find_assets_dir() -> Path:
+    """Locate the project assets directory reliably across package layouts."""
+    here = Path(__file__).resolve().parent
+    if (here / "assets").is_dir():
+        return here / "assets"
+    for parent in here.parents:
+        candidate = parent / "assets"
+        if candidate.is_dir():
+            return candidate
+    return here / "assets"
+
+
+def _load_avatars(size: tuple[int, int] = (120, 120)) -> dict[str, Any]:
+    """Load the supplied character PNGs, returning an empty map when unavailable."""
+    if ctk is None or Image is None:
+        return {}
+    assets_dir = _find_assets_dir()
+    avatars: dict[str, Any] = {}
+    for name in ("cat", "dog", "rabbit"):
+        path = assets_dir / f"avatar_{name}.png"
+        if path.is_file():
+            image = Image.open(path)
+            avatars[name] = ctk.CTkImage(light_image=image, dark_image=image, size=size)
+    return avatars
+
+
+def _load_avatar_photos(size: tuple[int, int] = (112, 112)) -> dict[str, Any]:
+    """Load avatar photos for Canvas rendering without widget-level image clipping."""
+    if Image is None or ImageTk is None:
+        return {}
+    assets_dir = _find_assets_dir()
+    photos: dict[str, Any] = {}
+    for name in ("cat", "dog", "rabbit"):
+        path = assets_dir / f"avatar_{name}.png"
+        if path.is_file():
+            image = Image.open(path).convert("RGBA").resize(size)
+            photos[name] = ImageTk.PhotoImage(image)
+    return photos
+
+
+def _load_stickers(size: tuple[int, int] = (96, 96)) -> dict[str, Any]:
+    """Load sticker PNGs from assets/stickers, mapping sticker_id -> CTkImage."""
+    if ctk is None or Image is None:
+        return {}
+    stickers_dir = _find_assets_dir() / "stickers"
+    stickers: dict[str, Any] = {}
+    if stickers_dir.is_dir():
+        for path in sorted(stickers_dir.glob("*.png")):
+            sticker_id = path.stem.upper()
+            try:
+                img = Image.open(path)
+                stickers[sticker_id] = ctk.CTkImage(light_image=img, dark_image=img, size=size)
+            except Exception:
+                pass
+    return stickers
+
+
+def get_available_stickers() -> list[str]:
+    """Return list of available sticker IDs found in assets/stickers."""
+    stickers_dir = _find_assets_dir() / "stickers"
+    if stickers_dir.is_dir():
+        found = [path.stem.upper() for path in sorted(stickers_dir.glob("*.png"))]
+        if found:
+            return found
+    return ["STK_001", "STK_002", "STK_003", "STK_004", "STK_005"]
+
+
+def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
+    """Load the supplied UI icons as CustomTkinter images."""
+    if ctk is None or Image is None:
+        return {}
+    assets_dir = _find_assets_dir()
+    icons: dict[str, Any] = {}
+    for name in (
+        "friends",
+        "community",
+        "chat",
+        "notification",
+        "logout",
+        "sticker",
+        "send",
+        "microphone",
+        "pause",
+    ):
+        path = assets_dir / f"icon_{name}.png"
+        if path.is_file():
+            image = Image.open(path).convert("RGBA")
+            intrinsic_sizes = {
+                "friends": (25, 25),
+                "community": (30, 15),
+                "chat": (25, 25),
+                "notification": (17, 20),
+                "logout": (23, 23),
+                "sticker": (24, 24),
+                "send": (20, 20),
+                "microphone": (20, 20),
+                "pause": (20, 20),
+            }
+            icon_size = intrinsic_sizes.get(name, size)
+            if name in {"send", "microphone", "pause"}:
+                # Fit the complete glyph in a common canvas without cropping or distortion.
+                image.thumbnail(icon_size, Image.Resampling.LANCZOS)
+                centered = Image.new("RGBA", icon_size, (0, 0, 0, 0))
+                offset = ((icon_size[0] - image.width) // 2, (icon_size[1] - image.height) // 2)
+                centered.alpha_composite(image, offset)
+                image = centered
+            icons[name] = ctk.CTkImage(light_image=image, dark_image=image, size=icon_size)
+    if "notification" in icons and "announcement" not in icons:
+        icons["announcement"] = icons["notification"]
+    return icons
+
+
+def _load_icon_photos() -> dict[str, Any]:
+    """Load exact-size icon photos for Tk Canvas headers."""
+    if Image is None or ImageTk is None:
+        return {}
+    assets_dir = _find_assets_dir()
+    sizes = {"friends": (25, 25), "community": (30, 15), "chat": (25, 25)}
+    photos: dict[str, Any] = {}
+    for name, size in sizes.items():
+        path = assets_dir / f"icon_{name}.png"
+        if path.is_file():
+            image = Image.open(path).convert("RGBA").resize(size)
+            photos[name] = ImageTk.PhotoImage(image)
+    return photos
+
+
+class LoginView:
+    """Reusable Create User card for R3, styled after the supplied design."""
+
+    def __init__(
+        self,
+        parent: Any,
+        on_connect: Callable[[str, str, str, str], None],
+        host: str = "127.0.0.1",
+        port: str = "5000",
+    ) -> None:
+        ui = _require_ctk()
+        if tk is None:
+            raise RuntimeError("This Python installation does not include Tk support")
+        self.frame = ui.CTkFrame(
+            parent,
+            fg_color=WHITE,
+            border_color=INK,
+            border_width=3,
+            corner_radius=16,
+            width=600,
+            height=560,
+        )
+        self.frame.grid_columnconfigure(0, weight=1)
+        self.frame.grid_propagate(False)
+        self.host = host
+        self.port = port
+        self.avatar_photos = _load_avatar_photos()
+        self.avatar_photos_hover = _load_avatar_photos((122, 122))
+        self.header = tk.Canvas(
+            self.frame,
+            height=68,
+            bg=BACKGROUND,
+            highlightthickness=0,
+            bd=0,
+        )
+        self.header.grid(row=0, column=0, columnspan=2, padx=0, pady=0, sticky="ew")
+        self.header.bind("<Configure>", self._draw_header)
+        ui.CTkLabel(
+            self.frame, text="Name", font=(FONT, 24, "bold"), text_color=INK, anchor="w"
+        ).grid(row=1, column=0, padx=60, pady=(24, 8), sticky="w")
+        self.username = ui.CTkEntry(
+            self.frame,
+            placeholder_text="Username",
+            border_color=PINK,
+            border_width=2,
+            fg_color="white",
+            height=42,
+            font=(FONT, 24),
+        )
+        self.username.grid(row=2, column=0, padx=54, pady=(0, 22), sticky="ew")
+        ui.CTkLabel(
+            self.frame,
+            text="Choose your character",
+            font=(FONT, 24, "bold"),
+            text_color=INK,
+            anchor="w",
+        ).grid(row=3, column=0, padx=54, pady=(0, 14), sticky="w")
+        self.character = "rabbit"
+        self.selected_character: str | None = None
+        self.hovered_character: str | None = None
+        self.character_buttons: dict[str, Any] = {}
+        character_row = ui.CTkFrame(self.frame, fg_color="transparent")
+        character_row.grid(row=4, column=0, padx=54, pady=(10, 10), sticky="ew")
+        character_row.grid_columnconfigure((0, 1, 2), weight=1)
+        for index, name in enumerate(("cat", "dog", "rabbit")):
+            canvas = tk.Canvas(
+                character_row,
+                width=128,
+                height=128,
+                bg=WHITE,
+                highlightthickness=0,
+                bd=0,
+            )
+            canvas.grid(row=0, column=index, padx=3, sticky="ew")
+            self._draw_avatar(canvas, name)
+            canvas.bind(
+                "<Button-1>", lambda _event, selected=name: self._choose_character(selected)
+            )
+            canvas.bind("<Enter>", lambda _event, selected=name: self._hover_character(selected))
+            canvas.bind("<Leave>", lambda _event: self._hover_character(None))
+            self.character_buttons[name] = canvas
+        self.error = ui.CTkLabel(
+            self.frame, text="", text_color="#C64B68", wraplength=300, font=(FONT, 16)
+        )
+        self.error.grid(row=5, column=0, padx=54, pady=(1, 1))
+        ui.CTkButton(
+            self.frame,
+            text="Create",
+            fg_color=PINK,
+            hover_color="#DF6D98",
+            text_color="white",
+            height=44,
+            font=(FONT, 24, "bold"),
+            command=lambda: on_connect(self.host, self.port, self.username.get(), self.character),
+        ).grid(row=6, column=0, padx=54, pady=(20, 16), sticky="ew")
+
+    def _choose_character(self, character: str) -> None:
+        self.character = character
+        self.selected_character = character
+        for name, canvas in self.character_buttons.items():
+            self._draw_avatar(canvas, name)
+
+    def _hover_character(self, character: str | None) -> None:
+        self.hovered_character = character
+        for name, canvas in self.character_buttons.items():
+            self._draw_avatar(canvas, name)
+
+    def _draw_avatar(self, canvas: Any, name: str) -> None:
+        canvas.delete("all")
+        selected = name == self.selected_character
+        hovered = name == self.hovered_character
+        canvas.create_oval(
+            2,
+            2,
+            126,
+            126,
+            fill=PINK_LIGHT if selected or hovered else BACKGROUND,
+            outline=INK if selected else "",
+            width=3,
+        )
+        photo = (self.avatar_photos_hover if hovered else self.avatar_photos).get(name)
+        if photo:
+            canvas.create_image(64, 64, image=photo)
+
+    def _entry(self, label: str, value: str, row: int) -> Any:
+        ui = _require_ctk()
+        ui.CTkLabel(self.frame, text=label, text_color=INK, font=(FONT, 16)).grid(
+            row=row, column=0, padx=(28, 10), pady=8, sticky="w"
+        )
+        entry = ui.CTkEntry(
+            self.frame,
+            placeholder_text=value,
+            border_color=PINK,
+            fg_color="white",
+            font=(FONT, 16),
+        )
+        if value:
+            entry.insert(0, value)
+        entry.grid(row=row, column=1, padx=(0, 28), pady=8, sticky="ew")
+        return entry
+
+    def _draw_header(self, _event: Any = None) -> None:
+        """Draw a pink header with rounded top corners and a straight bottom edge."""
+        width = max(self.header.winfo_width(), 10)
+        height = max(self.header.winfo_height(), 10)
+        self.header.delete("all")
+
+        def draw_top(fill: str, x: int, y: int, right: int, bottom: int, radius: int) -> None:
+            self.header.create_rectangle(x, y + radius, right, bottom, fill=fill, outline=fill)
+            self.header.create_rectangle(
+                x + radius, y, right - radius, bottom, fill=fill, outline=fill
+            )
+            self.header.create_arc(
+                x, y, x + radius * 2, y + radius * 2, start=90, extent=90, fill=fill, outline=fill
+            )
+            self.header.create_arc(
+                right - radius * 2,
+                y,
+                right,
+                y + radius * 2,
+                start=0,
+                extent=90,
+                fill=fill,
+                outline=fill,
+            )
+
+        radius = min(18, width // 8, height // 2)
+        draw_top(INK, 0, 0, width, height, radius)
+        inset = 2
+        draw_top(PINK, inset, inset, width - inset, height - inset, max(radius - inset, 1))
+        self.header.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
+        self.header.create_text(
+            width // 2,
+            height // 2 - 2,
+            text="Create User",
+            fill=INK,
+            font=(FONT, 32, "bold"),
+        )
+
+    def show_error(self, message: str | None) -> None:
+        self.error.configure(text=message or "")
+
+
+class AnnouncementBanner:
+    """Reusable, dismissible announcement banner styled after LINE (SP3)."""
+
+    def __init__(self, parent: Any, on_close: Callable[[], None] | None = None) -> None:
+        ui = _require_ctk()
+        self.on_close = on_close
+        self.frame = ui.CTkFrame(
+            parent,
+            fg_color=PINK_LIGHT,
+            border_color=INK,
+            border_width=2,
+            corner_radius=12,
+        )
+        self.label = ui.CTkLabel(
+            self.frame,
+            text="",
+            image=_load_icons().get("announcement"),
+            compound="left",
+            text_color=INK,
+            anchor="w",
+            font=(FONT, 15, "bold"),
+        )
+        self.label.pack(side="left", fill="x", expand=True, padx=14, pady=7)
+        self.close_btn = ui.CTkButton(
+            self.frame,
+            text="✕",
+            width=28,
+            height=28,
+            fg_color="transparent",
+            hover_color=PINK,
+            text_color=INK,
+            border_color=INK,
+            border_width=1,
+            corner_radius=8,
+            font=(FONT, 13, "bold"),
+            command=self.close,
+        )
+        self.close_btn.pack(side="right", padx=10, pady=5)
+        # Compatibility alias if any test or caller inspects toggle_btn
+        self.toggle_btn = self.close_btn
+        self._current_message = ""
+        self._current_timestamp: str | None = None
+
+    def close(self) -> None:
+        """Dismiss/cancel this announcement."""
+        self.hide()
+        if self.on_close is not None:
+            self.on_close()
+
+    def toggle(self) -> None:
+        """Compatibility toggle action that dismisses/cancels the announcement."""
+        self.close()
+
+    def show(
+        self,
+        message: str,
+        timestamp: str | None = None,
+        before_widget: Any | None = None,
+    ) -> None:
+        """Display the announcement text and timestamp in the banner."""
+        self._current_message = message
+        self._current_timestamp = timestamp
+        self.label.configure(text=f"  {message}")
+        if before_widget is not None:
+            target = getattr(before_widget, "_parent_frame", before_widget)
+            try:
+                self.frame.pack(fill="x", padx=10, pady=(6, 2), before=target)
+            except Exception:
+                try:
+                    self.frame.pack(fill="x", padx=10, pady=(6, 2), before=before_widget)
+                except Exception:
+                    pass
+        try:
+            self.frame.bell()
+        except Exception:
+            pass
+
+    def hide(self) -> None:
+        """Dismiss the announcement banner until the next broadcast arrives."""
+        try:
+            self.frame.grid_remove()
+        except Exception:
+            pass
+        try:
+            self.frame.pack_forget()
+        except Exception:
+            pass
+
+
+class SidebarPanel:
+    """Reusable responsive presence and server-backed group discovery panel."""
+
+    def __init__(
+        self,
+        parent: Any,
+        on_chat: Callable[[str], None],
+        on_create_group: Callable[[str], bool],
+        on_join_group: Callable[[str], bool],
+        on_open_group: Callable[[str], None],
+    ) -> None:
+        ui = _require_ctk()
+        self.frame = ui.CTkFrame(parent, width=380, fg_color="transparent")
+        self.on_chat = on_chat
+        self.on_create_group = on_create_group
+        self.on_join_group = on_join_group
+        self.on_open_group = on_open_group
+        self.avatars = _load_avatars((42, 42))
+        self.avatar = self.avatars.get("rabbit")
+        self.icons = _load_icons((30, 30))
+        self.icon_photos = _load_icon_photos()
+        self.friends_card = ui.CTkFrame(
+            self.frame,
+            height=270,
+            fg_color=WHITE,
+            border_color=INK,
+            border_width=2,
+            corner_radius=14,
+        )
+        self.friends_card.pack(fill="x")
+        self.friends_card.pack_propagate(False)
+        self.friends_header = tk.Canvas(
+            self.friends_card, height=48, bg=BACKGROUND, highlightthickness=0, bd=0
+        )
+        self.friends_header.pack(fill="x")
+        self.friends_header.bind(
+            "<Configure>",
+            lambda _event: self._draw_card_header(
+                self.friends_header, YELLOW, "Friends", "friends"
+            ),
+        )
+        self.users = ui.CTkScrollableFrame(self.friends_card, fg_color=BACKGROUND, corner_radius=0)
+        self.users.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        self.community_card = ui.CTkFrame(
+            self.frame,
+            height=270,
+            fg_color=WHITE,
+            border_color=INK,
+            border_width=2,
+            corner_radius=14,
+        )
+        self.community_card.pack(fill="x", pady=(14, 0))
+        self.community_card.pack_propagate(False)
+        self.community_header = tk.Canvas(
+            self.community_card, height=48, bg=BACKGROUND, highlightthickness=0, bd=0
+        )
+        self.community_header.pack(fill="x")
+        self.community_header.bind(
+            "<Configure>",
+            lambda _event: self._draw_card_header(
+                self.community_header, BLUE, "Community", "community"
+            ),
+        )
+        self.new_group_button = ui.CTkButton(
+            self.community_card,
+            text="＋ New Group",
+            font=(FONT, 13),
+            width=114,
+            height=30,
+            corner_radius=15,
+            bg_color=BLUE,
+            fg_color=WHITE,
+            hover_color=BLUE,
+            border_color=INK,
+            border_width=1,
+            text_color=INK,
+            command=self._open_group_dialog,
+        )
+        self.new_group_button.place(relx=1.0, x=-10, y=9, anchor="ne")
+        self.groups = ui.CTkScrollableFrame(
+            self.community_card, fg_color=BACKGROUND, corner_radius=10
+        )
+        self.groups.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        self.group_placeholder = ui.CTkLabel(
+            self.groups,
+            text="Group rooms will appear here.",
+            text_color=INK,
+            font=(FONT, 16),
+        )
+        self.group_placeholder.pack(pady=(12, 0))
+        self.group_rows: dict[str, Any] = {}
+
+    def _open_group_dialog(self) -> None:
+        """Open the dialog for a server-backed group creation request."""
+        ui = _require_ctk()
+        if (
+            hasattr(self, "_active_dialog")
+            and self._active_dialog
+            and self._active_dialog.winfo_exists()
+        ):
+            self._active_dialog.lift()
+            self._active_dialog.focus_force()
+            return
+
+        dialog = ui.CTkToplevel(self.frame.winfo_toplevel())
+        self._active_dialog = dialog
+        dialog.title("Create New Group")
+        dialog.withdraw()
+        width, height = 630, 320
+        dialog.geometry(f"{width}x{height}")
+        dialog.resizable(False, False)
+        dialog.transient(self.frame.winfo_toplevel())
+
+        def _close_dialog() -> None:
+            try:
+                dialog.grab_release()
+            except Exception:
+                pass
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", _close_dialog)
+        dialog.bind("<Escape>", lambda _event: _close_dialog())
+
+        card = ui.CTkFrame(dialog, fg_color=WHITE, border_width=0, corner_radius=0)
+        card.pack(fill="both", expand=True)
+        header = tk.Canvas(card, height=84, bg=WHITE, highlightthickness=0, bd=0)
+        header.pack(fill="x")
+        header.bind("<Configure>", lambda _event: self._draw_group_dialog_header(header))
+
+        name_entry = ui.CTkEntry(
+            card,
+            placeholder_text="Enter Group Name",
+            height=60,
+            font=(FONT, 19),
+            fg_color=PINK_LIGHT,
+            border_color=INK,
+            border_width=2,
+            corner_radius=30,
+        )
+        name_entry.pack(fill="x", padx=46, pady=(46, 20))
+
+        btn_row = ui.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(pady=(8, 12))
+
+        ui.CTkButton(
+            btn_row,
+            text="Cancel",
+            width=92,
+            height=54,
+            fg_color="#E0E0E0",
+            hover_color="#D0D0D0",
+            text_color=INK,
+            border_color=INK,
+            border_width=2,
+            corner_radius=16,
+            font=(FONT, 14, "bold"),
+            command=_close_dialog,
+        ).pack(side="left", padx=(0, 14))
+
+        ui.CTkButton(
+            btn_row,
+            text="Create",
+            width=228,
+            height=62,
+            fg_color=BLUE,
+            hover_color="#91D5DF",
+            text_color=INK,
+            border_color=INK,
+            border_width=2,
+            corner_radius=18,
+            font=(FONT, 18, "bold"),
+            command=lambda: self._create_group(name_entry, dialog),
+        ).pack(side="left")
+
+        name_entry.bind("<Return>", lambda _event: self._create_group(name_entry, dialog))
+        dialog.after(50, lambda: self._center_group_dialog(dialog, width, height, name_entry))
+
+    def _center_group_dialog(self, dialog: Any, width: int, height: int, entry: Any = None) -> None:
+        parent = self.frame.winfo_toplevel()
+        parent.update_idletasks()
+        x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - height) // 2
+        dialog.geometry(f"{width}x{height}+{max(x, 0)}+{max(y, 0)}")
+        dialog.deiconify()
+        if entry is not None:
+            entry.focus_force()
+
+    def _start_dialog_drag(self, dialog: Any, event: Any) -> None:
+        dialog._drag_offset = (event.x_root - dialog.winfo_x(), event.y_root - dialog.winfo_y())
+
+    def _drag_dialog(self, dialog: Any, event: Any) -> None:
+        offset_x, offset_y = getattr(dialog, "_drag_offset", (0, 0))
+        dialog.geometry(f"+{event.x_root - offset_x}+{event.y_root - offset_y}")
+
+    def _draw_group_dialog_header(self, canvas: Any) -> None:
+        width = max(canvas.winfo_width(), 10)
+        height = max(canvas.winfo_height(), 10)
+        canvas.delete("all")
+        canvas.create_rectangle(0, 0, width, height, fill=BLUE, outline=BLUE)
+        canvas.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
+        canvas.create_text(
+            24,
+            height // 2,
+            text="Create New Group",
+            fill=INK,
+            font=(FONT, 24, "bold"),
+            anchor="w",
+        )
+
+    def _create_group(self, entry: Any, dialog: Any) -> None:
+        name = entry.get().strip()
+        if not name or not self.on_create_group(name):
+            return
+        try:
+            dialog.grab_release()
+        except Exception:
+            pass
+        dialog.destroy()
+
+    def set_groups(
+        self, groups: list[dict[str, Any]], current_user: str | None, error: str | None = None
+    ) -> None:
+        """Render current member lists with an explicit Join or Open action (R9/R10)."""
+        for child in self.groups.winfo_children():
+            child.destroy()
+        self.group_rows.clear()
+        if not groups:
+            self.group_placeholder = _require_ctk().CTkLabel(
+                self.groups,
+                text=error or "No groups yet. Create one to get started!",
+                text_color="#B22222" if error else INK,
+                wraplength=300,
+            )
+            self.group_placeholder.pack(pady=(12, 0))
+            return
+
+        for group in groups:
+            name = str(group["group_name"])
+            members = list(group["members"])
+            joined = current_user in members
+            row = _require_ctk().CTkFrame(self.groups, fg_color=PINK_LIGHT, corner_radius=8)
+            row.pack(fill="x", padx=4, pady=3)
+            _require_ctk().CTkLabel(
+                row, text=name, font=(FONT, 15, "bold"), text_color=INK, anchor="w"
+            ).pack(fill="x", padx=10, pady=(7, 0))
+            _require_ctk().CTkLabel(
+                row,
+                text="Members: " + ", ".join(members),
+                font=(FONT, 11),
+                text_color=INK,
+                anchor="w",
+                wraplength=220,
+            ).pack(fill="x", padx=10, pady=(1, 7))
+            action = "Open" if joined else "Join"
+            command = (
+                (lambda group_name=name: self.on_open_group(group_name))
+                if joined
+                else (lambda group_name=name: self.on_join_group(group_name))
+            )
+            _require_ctk().CTkButton(
+                row,
+                text=action,
+                width=66,
+                height=27,
+                corner_radius=13,
+                fg_color=BLUE,
+                hover_color="#91D5DF",
+                text_color=INK,
+                command=command,
+            ).place(relx=1.0, x=-9, y=9, anchor="ne")
+            self.group_rows[name] = row
+        if error:
+            _require_ctk().CTkLabel(
+                self.groups, text=error, text_color="#B22222", wraplength=300
+            ).pack(fill="x", padx=8, pady=(6, 2))
+
+    def _draw_card_header(self, canvas: Any, fill: str, title: str, icon_name: str) -> None:
+        """Draw a rounded top header without changing the card body."""
+        width = max(canvas.winfo_width(), 10)
+        height = max(canvas.winfo_height(), 10)
+        canvas.delete("all")
+
+        def draw_top(color: str, inset: int, radius: int) -> None:
+            right = width - inset
+            bottom = height - inset
+            canvas.create_rectangle(inset, inset + radius, right, bottom, fill=color, outline=color)
+            canvas.create_rectangle(
+                inset + radius, inset, right - radius, bottom, fill=color, outline=color
+            )
+            canvas.create_arc(
+                inset,
+                inset,
+                inset + radius * 2,
+                inset + radius * 2,
+                start=90,
+                extent=90,
+                fill=color,
+                outline=color,
+            )
+            canvas.create_arc(
+                right - radius * 2,
+                inset,
+                right,
+                inset + radius * 2,
+                start=0,
+                extent=90,
+                fill=color,
+                outline=color,
+            )
+
+        radius = min(14, height // 2)
+        draw_top(INK, 0, radius)
+        draw_top(fill, 2, max(radius - 2, 1))
+        canvas.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
+        icon = self.icon_photos.get(icon_name)
+        if icon:
+            canvas.create_image(24, height // 2, image=icon)
+        canvas.create_text(
+            44,
+            height // 2,
+            text=title,
+            fill=INK,
+            font=(FONT, 18, "bold"),
+            anchor="w",
+        )
+
+    def set_users(
+        self,
+        users: list[str],
+        current_user: str | None,
+        avatars: dict[str, str],
+        active_chat: str | None,
+    ) -> None:
+        for child in self.users.winfo_children():
+            child.destroy()
+        for user in users:
+            label = f"{user} (You)" if user == current_user else user
+            avatar_name = avatars.get(user, "rabbit")
+            avatar = self.avatars.get(avatar_name, self.avatar)
+            button = _require_ctk().CTkButton(
+                self.users,
+                text=label,
+                image=avatar,
+                compound="left",
+                anchor="w",
+                border_spacing=14,
+                height=52,
+                corner_radius=0,
+                font=(FONT, 16),
+                fg_color=PINK_LIGHT if user == active_chat else "transparent",
+                hover_color=PINK_LIGHT,
+                text_color=INK,
+                command=lambda name=user: self.on_chat(name),
+            )
+            button.pack(fill="x", padx=0, pady=(0, 1))
+            _require_ctk().CTkFrame(self.users, height=2, fg_color=INK, corner_radius=0).pack(
+                fill="x", padx=0, pady=0
+            )
+
+
+_BUBBLE_AVATARS: dict[str, Any] = {}
+
+
+def _get_bubble_avatar(avatar_or_name: Any, size: tuple[int, int] = (36, 36)) -> Any:
+    """Resolve an avatar string identifier or CTkImage for MessageBubble rendering."""
+    if avatar_or_name is None:
+        return None
+    if isinstance(avatar_or_name, str):
+        global _BUBBLE_AVATARS
+        if not _BUBBLE_AVATARS:
+            _BUBBLE_AVATARS = _load_avatars(size)
+        return _BUBBLE_AVATARS.get(avatar_or_name)
+    return avatar_or_name
+
+
+class MessageBubble:
+    """Reusable message row for a ChatWindow."""
+
+    def __init__(
+        self,
+        parent: Any,
+        sender: str,
+        message: str,
+        own: bool = False,
+        timestamp: str | None = None,
+        avatar: Any | None = None,
+        sticker_image: Any | None = None,
+        on_announce: Callable[[str], None] | None = None,
+    ) -> None:
+        ui = _require_ctk()
+        self.sender = sender
+        self.message = message
+        self.own = own
+        self.timestamp = timestamp
+        self.on_announce = on_announce
+        self.status_label: Any | None = None
+        self.avatar_label: Any | None = None
+        self.avatar = avatar
+        self.announce_btn: Any | None = None
+        self._hovering = False
+        avatar_img = _get_bubble_avatar(avatar) if avatar is not None else None
+        self.frame = ui.CTkFrame(parent, fg_color="transparent")
+
+        # Restrict hover targets to the bubble shell / label so empty row space
+        # does not trigger the announcement bell
+        hover_targets: list[Any] = []
+
+        if own:
+            row = ui.CTkFrame(self.frame, fg_color="transparent")
+            row.pack(anchor="e", padx=8, pady=4)
+
+            content_col = ui.CTkFrame(row, fg_color="transparent")
+            content_col.pack(side="left", anchor="e")
+            self._content_col = content_col
+            self._row = row
+
+            bubble_row = ui.CTkFrame(content_col, fg_color="transparent")
+            bubble_row.pack(anchor="e")
+            self._bubble_row = bubble_row
+
+            if sticker_image is not None:
+                bubble = ui.CTkLabel(
+                    bubble_row,
+                    text="",
+                    image=sticker_image,
+                    fg_color="transparent",
+                )
+                bubble.pack(side="left")
+                self._bubble_shell = bubble
+            else:
+                bubble_shell = ui.CTkFrame(
+                    bubble_row,
+                    fg_color=PINK,
+                    border_color=INK,
+                    border_width=2,
+                    corner_radius=16,
+                )
+                bubble_shell.pack(side="left")
+                hover_targets.append(bubble_shell)
+                self._bubble_shell = bubble_shell
+
+                bubble = ui.CTkLabel(
+                    bubble_shell,
+                    text=message,
+                    justify="left",
+                    wraplength=310,
+                    text_color=WHITE,
+                    fg_color="transparent",
+                    font=(FONT, 16),
+                )
+                bubble.pack(padx=12, pady=7)
+                hover_targets.append(bubble)
+
+            status_text = f"{timestamp} • Sent" if timestamp else "Sent"
+            self.status_label = ui.CTkLabel(
+                content_col,
+                text=status_text,
+                text_color="#888888",
+                font=(FONT, 10),
+                anchor="e",
+            )
+            self.status_label.pack(anchor="e", padx=4, pady=(2, 0))
+
+        else:
+            row = ui.CTkFrame(self.frame, fg_color="transparent")
+            row.pack(anchor="w", padx=8, pady=4)
+
+            if avatar_img is not None:
+                self.avatar_label = ui.CTkLabel(
+                    row,
+                    text="",
+                    image=avatar_img,
+                    width=36,
+                    height=36,
+                    fg_color="transparent",
+                )
+                self.avatar_label.pack(side="left", anchor="n", padx=(0, 8), pady=2)
+
+            content_col = ui.CTkFrame(row, fg_color="transparent")
+            content_col.pack(side="left", anchor="w")
+            self._content_col = content_col
+            self._row = row
+
+            sender_label = f"{sender} • {timestamp}" if timestamp else sender
+            ui.CTkLabel(
+                content_col,
+                text=sender_label,
+                text_color=INK,
+                font=(FONT, 12, "bold"),
+                anchor="w",
+            ).pack(anchor="w", padx=4, pady=(0, 2))
+
+            bubble_row = ui.CTkFrame(content_col, fg_color="transparent")
+            bubble_row.pack(anchor="w")
+            self._bubble_row = bubble_row
+
+            if sticker_image is not None:
+                bubble = ui.CTkLabel(
+                    bubble_row,
+                    text="",
+                    image=sticker_image,
+                    fg_color="transparent",
+                )
+                bubble.pack(side="left")
+                self._bubble_shell = bubble
+            else:
+                bubble_shell = ui.CTkFrame(
+                    bubble_row,
+                    fg_color=PINK_LIGHT,
+                    border_color=INK,
+                    border_width=2,
+                    corner_radius=16,
+                )
+                bubble_shell.pack(side="left")
+                hover_targets.append(bubble_shell)
+                self._bubble_shell = bubble_shell
+
+                bubble = ui.CTkLabel(
+                    bubble_shell,
+                    text=message,
+                    justify="left",
+                    wraplength=310,
+                    text_color=INK,
+                    fg_color="transparent",
+                    font=(FONT, 16),
+                )
+                bubble.pack(padx=12, pady=7)
+                hover_targets.append(bubble)
+
+        self._hover_targets = hover_targets
+
+        # Create announce action button if callback provided and not a sticker
+        if self.on_announce is not None and sticker_image is None and message.strip():
+            bell_icon = _load_icons((18, 18)).get("announcement")
+            self.announce_btn = ui.CTkButton(
+                self._bubble_row,
+                text="",
+                image=bell_icon,
+                width=30,
+                height=30,
+                corner_radius=6,
+                fg_color=WHITE,
+                border_color=INK,
+                border_width=1,
+                hover_color=PINK_LIGHT,
+                command=self.announce,
+            )
+            hover_targets.append(self.announce_btn)
+            for target in hover_targets:
+                if hasattr(target, "bind"):
+                    try:
+                        target.bind("<Enter>", self._on_enter, add="+")
+                        target.bind("<Leave>", self._on_leave, add="+")
+                    except Exception:
+                        pass
+
+    def _on_enter(self, _event: Any = None) -> None:
+        self._hovering = True
+        if self.announce_btn is not None:
+            try:
+                if self.own and hasattr(self, "_bubble_shell"):
+                    self.announce_btn.pack(side="left", padx=(0, 6), before=self._bubble_shell)
+                else:
+                    self.announce_btn.pack(side="left", padx=(6, 0))
+            except Exception:
+                try:
+                    self.announce_btn.pack(expand=True)
+                except Exception:
+                    pass
+
+    def _on_leave(self, _event: Any = None) -> None:
+        self._hovering = False
+
+        def _check() -> None:
+            if not getattr(self, "_hovering", False) and self.announce_btn is not None:
+                try:
+                    self.announce_btn.pack_forget()
+                except Exception:
+                    pass
+
+        try:
+            self.frame.after(120, _check)
+        except Exception:
+            pass
+
+    def announce(self) -> None:
+        """Trigger the announcement callback for this bubble message (SP3 / LINE-style)."""
+        if self.on_announce is not None and self.message:
+            self.on_announce(self.message)
+
+    def mark_read(self, text: str = "Read ✓✓") -> None:
+        """Update the sender status indicator to Read (SP4)."""
+        if self.status_label is not None:
+            prefix = f"{self.timestamp} • " if self.timestamp else ""
+            self.status_label.configure(text=f"{prefix}{text}", text_color="#107C41")
+
+
+class ChatBoxBar:
+    """Reusable message composer with requested special-feature hooks."""
+
+    def __init__(
+        self,
+        parent: Any,
+        on_send: Callable[[str], None],
+        on_sticker: Callable[[], None] | None = None,
+        transcriber: SpeechTranscriber | None = None,
+    ) -> None:
+        ui = _require_ctk()
+        on_sticker = on_sticker or _noop
+        self.on_send = on_send
+        self.speech_input = SpeechInputController(transcriber or GoogleSpeechTranscriber())
+        self._speech_results: Queue[tuple[str, str]] = Queue()
+        self._is_listening = False
+        self.sticker_icon = _load_icons().get("sticker")
+        self.microphone_icon = _load_icons().get("microphone")
+        self.pause_icon = _load_icons().get("pause")
+        self.send_icon = _load_icons().get("send")
+        self.frame = ui.CTkFrame(parent, fg_color=PINK_LIGHT, corner_radius=0)
+        self.frame.grid_columnconfigure(0, weight=1)
+        self.entry = ui.CTkTextbox(
+            self.frame,
+            # CustomTkinter applies the macOS 2× display scale; 199 logical pixels
+            # renders as the requested 398 screen-pixel-wide composer.
+            width=350,
+            height=37,
+            fg_color=PINK,
+            border_width=0,
+            corner_radius=12,
+            text_color=WHITE,
+            wrap="word",
+            font=(FONT, 16),
+        )
+        self.entry.bind("<Return>", lambda _event: self._submit_and_consume())
+        self.entry.bind("<Button-1>", lambda _event: self._on_entry_clicked(), add="+")
+        if hasattr(self.entry, "_textbox"):
+            try:
+                self.entry._textbox.bind(
+                    "<Button-1>", lambda _event: self._on_entry_clicked(), add="+"
+                )
+            except Exception:
+                pass
+        self.sticker_button = ui.CTkButton(
+            self.frame,
+            text="",
+            image=self.sticker_icon,
+            width=30,
+            height=30,
+            fg_color="transparent",
+            hover=False,
+            text_color=INK,
+            command=on_sticker,
+        )
+        self.action_button = ui.CTkButton(
+            self.frame,
+            text="",
+            image=self.microphone_icon,
+            width=30,
+            height=30,
+            fg_color="transparent",
+            hover=False,
+            text_color=INK,
+            font=(FONT, 14),
+            anchor="center",
+            command=self._handle_action,
+        )
+        self.listening_label = ui.CTkLabel(
+            self.frame,
+            text="Listening…",
+            text_color=INK,
+            fg_color="transparent",
+            font=(FONT, 12),
+        )
+        self.entry.grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=5)
+        self.sticker_button.grid(row=0, column=1, padx=2, pady=5)
+        self.action_button.grid(row=0, column=2, padx=(2, 8), pady=5)
+        self.listening_label.grid(row=1, column=0, columnspan=3, pady=(0, 3))
+        self.listening_label.grid_remove()
+        self.entry.bind("<KeyRelease>", lambda _event: self._update_action_icon())
+        self.frame.after(75, self._poll_speech_results)
+
+    def _submit(self) -> None:
+        message = self._entry_text().strip()
+        if message:
+            self.on_send(message)
+        elif getattr(self, "on_send_chosen", None):
+            self.on_send_chosen()
+
+    def _on_entry_clicked(self) -> None:
+        """Handle user clicking composer: clear sticker mode and ensure normal editable state."""
+        if getattr(self, "on_entry_activate", None):
+            self.on_entry_activate()
+        self.set_sticker_mode(False)
+        try:
+            self.entry.focus_set()
+        except Exception:
+            pass
+
+    def set_sticker_mode(self, enabled: bool) -> None:
+        """Toggle composer state when sticker is chosen (disable typing and blinking cursor)."""
+        if enabled:
+            try:
+                self.entry.configure(state="disabled")
+            except Exception:
+                pass
+            try:
+                self.frame.focus_set()
+            except Exception:
+                pass
+        else:
+            try:
+                self.entry.configure(state="normal")
+            except Exception:
+                pass
+
+    def _submit_and_consume(self) -> str:
+        """Send an Entry draft and prevent Tk from processing Return a second time."""
+        self._submit()
+        return "break"
+
+    def _entry_text(self) -> str:
+        """Read either the multiline production composer or a simple test double."""
+        try:
+            return self.entry.get("1.0", "end-1c")
+        except TypeError:
+            return self.entry.get()
+
+    def clear_entry(self) -> None:
+        """Clear the composer after the existing send flow accepts its draft."""
+        was_disabled = False
+        try:
+            if hasattr(self.entry, "_textbox") and self.entry._textbox.cget("state") == "disabled":
+                was_disabled = True
+                self.entry.configure(state="normal")
+            elif hasattr(self.entry, "cget") and self.entry.cget("state") == "disabled":
+                was_disabled = True
+                self.entry.configure(state="normal")
+        except Exception:
+            pass
+        try:
+            self.entry.delete("1.0", "end")
+        except TypeError:
+            self.entry.delete(0, "end")
+        if was_disabled:
+            try:
+                self.entry.configure(state="disabled")
+            except Exception:
+                pass
+
+    def _handle_action(self) -> None:
+        if self._entry_text().strip():
+            self._submit()
+        elif getattr(self, "on_send_chosen", None) and self.on_send_chosen():
+            return
+        elif self._is_listening:
+            if self.speech_input.pause():
+                self._hide_sticker_button()
+                self.action_button.configure(
+                    state="disabled",
+                    text="TRANSCRIBING…",
+                    image=None,
+                    width=118,
+                    anchor="center",
+                    fg_color="transparent",
+                    text_color=INK,
+                    text_color_disabled=INK,
+                    font=(FONT, 12),
+                )
+        else:
+            self.speech_input.transcribe_async(
+                on_listening=self._set_listening,
+                on_transcript=lambda text: self._speech_results.put(("transcript", text)),
+                on_error=lambda message: self._speech_results.put(("error", message)),
+                on_paused=lambda: self._speech_results.put(("paused", "")),
+            )
+
+    def _poll_speech_results(self) -> None:
+        """Apply worker results on the Tk thread without calling Tk from the worker."""
+        try:
+            while result := self._speech_results.get_nowait():
+                kind, value = result
+                if kind == "transcript":
+                    self.insert_transcript(value)
+                elif kind == "paused":
+                    self._set_paused()
+                else:
+                    self._show_speech_error(value)
+        except Empty:
+            pass
+        self.frame.after(75, self._poll_speech_results)
+
+    def _set_listening(self) -> None:
+        """Make the microphone control a centered pause icon while capture is active."""
+        self._is_listening = True
+        label = getattr(self, "listening_label", None)
+        if label is not None:
+            label.grid()
+        self.action_button.configure(
+            state="normal",
+            text="",
+            image=self.pause_icon,
+            width=30,
+            anchor="center",
+            # fg_color=PINK,
+            font=(FONT, 14),
+        )
+
+    def _hide_sticker_button(self) -> None:
+        sticker_button = getattr(self, "sticker_button", None)
+        if sticker_button is not None:
+            sticker_button.grid_remove()
+            self.action_button.grid(row=0, column=1, columnspan=2, padx=(2, 8), pady=5)
+
+    def _restore_sticker_button(self) -> None:
+        sticker_button = getattr(self, "sticker_button", None)
+        if sticker_button is not None and not sticker_button.winfo_manager():
+            sticker_button.grid(row=0, column=1, padx=2, pady=5)
+            self.action_button.grid(row=0, column=2, columnspan=1, padx=(2, 8), pady=5)
+
+    def _set_paused(self) -> None:
+        """Return to the microphone control when capture stopped before any speech."""
+        self._is_listening = False
+        self._reset_speech_control()
+
+    def insert_transcript(self, text: str) -> None:
+        """Place recognized text in the composer; the user still chooses when to send."""
+        self.clear_entry()
+        try:
+            self.entry.insert("1.0", text)
+        except TypeError:
+            self.entry.insert(0, text)
+        self.entry.focus_set()
+        self._is_listening = False
+        self._reset_speech_control()
+
+    def _show_speech_error(self, message: str) -> None:
+        """Present a recoverable transcription failure without crowding the chat bar."""
+        ui = _require_ctk()
+        parent = self.frame.winfo_toplevel()
+        parent.update_idletasks()
+        width, height = 380, 220
+        x = parent.winfo_rootx() + max((parent.winfo_width() - width) // 2, 0)
+        y = parent.winfo_rooty() + max((parent.winfo_height() - height) // 2, 0)
+        dialog = PopupDialog(parent, "Speech-to-Text")
+        dialog.window.overrideredirect(True)
+        dialog.window.resizable(False, False)
+        dialog.window.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.window.grab_set()
+        dialog.frame.grid_columnconfigure(0, weight=1)
+        dialog.frame.grid_rowconfigure(1, weight=1)
+        ui.CTkLabel(
+            dialog.frame,
+            text="Speech-to-Text",
+            text_color=INK,
+            font=(FONT, 16, "bold"),
+        ).grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 4))
+        ui.CTkLabel(
+            dialog.frame,
+            text=f"⚠ {message}",
+            text_color=INK,
+            justify="center",
+            wraplength=320,
+            font=(FONT, 16),
+        ).grid(row=1, column=0, sticky="nsew", padx=16, pady=(4, 8))
+        ui.CTkButton(
+            dialog.frame,
+            text="Close",
+            command=dialog.window.destroy,
+            fg_color=PINK,
+            hover_color="#F58AAE",
+            text_color=INK,
+            font=(FONT, 14),
+        ).grid(row=2, column=0, pady=(0, 14))
+        self._is_listening = False
+        self._reset_speech_control()
+
+    def _reset_speech_control(self) -> None:
+        """Restore the standard sticker and microphone/send controls."""
+        self._hide_listening_label()
+        self._restore_sticker_button()
+        self.action_button.configure(
+            state="normal", text="", width=30, fg_color="transparent", font=(FONT, 14)
+        )
+        self._update_action_icon()
+
+    def _hide_listening_label(self) -> None:
+        label = getattr(self, "listening_label", None)
+        if label is not None:
+            label.grid_remove()
+
+    def _update_action_icon(self) -> None:
+        has_text = bool(self._entry_text().strip())
+        has_chosen = bool(getattr(self, "is_sticker_chosen", lambda: False)())
+        self.action_button.configure(
+            image=self.send_icon if (has_text or has_chosen) else self.microphone_icon
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RoomActions:
+    """Action object encapsulating room event callbacks to prevent data clumps."""
+
+    on_send: Callable[[str], None] | None = None
+    on_sticker: Callable[[], None] | None = None
+    on_send_sticker: Callable[[str], None] | None = None
+    on_announce: Callable[[str], None] | None = None
+    on_close_announcement: Callable[[], None] | None = None
+
+
+class ChatRoomTab:
+    """Reusable R5/R6 tab with ChatWindow, ChatBoxBar, and StickerPanel."""
+
+    def __init__(
+        self,
+        parent: Any,
+        room_name: str,
+        on_send: Callable[[str], None] | None = None,
+        on_sticker: Callable[[], None] | None = None,
+        transcriber: SpeechTranscriber | None = None,
+        on_send_sticker: Callable[[str], None] | None = None,
+        on_announce: Callable[[str], None] | None = None,
+        on_close_announcement: Callable[[], None] | None = None,
+        *,
+        actions: RoomActions | None = None,
+    ) -> None:
+        if actions is not None:
+            on_send = on_send or actions.on_send
+            on_sticker = on_sticker or actions.on_sticker
+            on_send_sticker = on_send_sticker or actions.on_send_sticker
+            on_announce = on_announce or actions.on_announce
+            on_close_announcement = on_close_announcement or actions.on_close_announcement
+        ui = _require_ctk()
+        self.frame = ui.CTkFrame(
+            parent,
+            fg_color=BACKGROUND,
+            border_color=INK,
+            border_width=2,
+            corner_radius=14,
+        )
+        self.icon_photos = _load_icon_photos()
+        self.header = tk.Canvas(self.frame, height=52, bg=BACKGROUND, highlightthickness=0, bd=0)
+        self.header.pack(fill="x")
+        self.header.bind("<Configure>", lambda _event: self._draw_header(room_name))
+        self.on_close_announcement = on_close_announcement
+        self.announcement_bar = AnnouncementBanner(
+            self.frame, on_close=self._on_announcement_closed
+        )
+        self.announcement_bar.hide()
+        self.window = ui.CTkScrollableFrame(self.frame, fg_color=BACKGROUND, corner_radius=10)
+        self.window.pack(fill="both", expand=True, padx=4, pady=(4, 0))
+        self.on_send = on_send or self._send_local
+        self.on_send_sticker = on_send_sticker
+        self.on_announce = on_announce
+        self.box = ChatBoxBar(
+            self.frame,
+            self._send,
+            on_sticker=on_sticker or self.toggle_sticker_panel,
+            transcriber=transcriber,
+        )
+        self.box.is_sticker_chosen = lambda: self._chosen_sticker is not None
+        self.box.on_send_chosen = self._send_chosen_sticker
+        self.box.on_entry_activate = self._on_entry_activated
+        self.frame.bind("<Return>", lambda _e: self._send_chosen_sticker(), add="+")
+        self.box.frame.pack(fill="x", padx=4, pady=(0, 4))
+        self._sticker_panel_open = False
+        self._chosen_sticker: str | None = None
+        self.sticker_buttons: dict[str, Any] = {}
+        self._last_sticker_click_time: float = 0.0
+        self._last_clicked_sticker_id: str | None = None
+        self._last_double_click_time: float = 0.0
+        self.sticker_panel = ui.CTkScrollableFrame(
+            self.frame,
+            height=190,
+            fg_color=BACKGROUND,
+            corner_radius=10,
+            scrollbar_button_color="#BAAFA8",
+            scrollbar_button_hover_color=INK,
+        )
+        self._populate_stickers()
+        self.room_name = room_name
+        self.bubbles: dict[str, MessageBubble] = {}
+
+    def _populate_stickers(self) -> None:
+        ui = _require_ctk()
+        stickers = get_available_stickers()
+        sticker_images = _load_stickers(size=(96, 96))
+        self.sticker_images = sticker_images
+        self.sticker_buttons = {}
+
+        for col in range(3):
+            self.sticker_panel.grid_columnconfigure(col, weight=1)
+
+        def _bind_double(widget: Any, s: str) -> None:
+            def handler(_e: Any, stk: str = s) -> None:
+                self._on_sticker_double_clicked(stk)
+
+            widget.bind("<Double-Button-1>", handler)
+            if hasattr(widget, "_canvas"):
+                widget._canvas.bind("<Double-Button-1>", handler)
+            if getattr(widget, "_image_label", None):
+                widget._image_label.bind("<Double-Button-1>", handler)
+            if getattr(widget, "_text_label", None):
+                widget._text_label.bind("<Double-Button-1>", handler)
+
+        for i, stk_id in enumerate(stickers):
+            img = sticker_images.get(stk_id)
+            btn = ui.CTkButton(
+                self.sticker_panel,
+                text=stk_id if img is None else "",
+                image=img,
+                width=100,
+                height=100,
+                fg_color="transparent",
+                hover_color="#F8E8EE",
+                border_width=0,
+                corner_radius=12,
+                cursor="hand2",
+                command=lambda s=stk_id: self._handle_sticker_click(s),
+            )
+            _bind_double(btn, stk_id)
+            btn.bind("<Configure>", lambda _e, b=btn, s=stk_id: _bind_double(b, s))
+            btn.grid(row=i // 3, column=i % 3, padx=10, pady=8)
+            self.sticker_buttons[stk_id] = btn
+
+    def toggle_sticker_panel(self) -> None:
+        if self._sticker_panel_open:
+            self.close_sticker_panel()
+        else:
+            self.open_sticker_panel()
+
+    def open_sticker_panel(self) -> None:
+        if not self._sticker_panel_open:
+            self.sticker_panel.pack(fill="x", padx=4, pady=(0, 4))
+            self._sticker_panel_open = True
+            self._scroll_to_latest()
+
+    def close_sticker_panel(self) -> None:
+        if self._sticker_panel_open:
+            self.sticker_panel.pack_forget()
+            self._sticker_panel_open = False
+
+    def _handle_sticker_click(self, sticker_id: str) -> None:
+        now = time.time()
+        if (
+            sticker_id == getattr(self, "_last_clicked_sticker_id", None)
+            and (now - getattr(self, "_last_sticker_click_time", 0.0)) < 0.50
+        ):
+            self._last_sticker_click_time = 0.0
+            self._last_clicked_sticker_id = None
+            self._on_sticker_double_clicked(sticker_id)
+        else:
+            self._last_sticker_click_time = now
+            self._last_clicked_sticker_id = sticker_id
+            self._on_sticker_single_clicked(sticker_id)
+
+    def _on_entry_activated(self) -> None:
+        """Clear chosen sticker when user clicks composer to write text."""
+        if self._chosen_sticker is not None:
+            self._clear_chosen_sticker()
+            self.box._update_action_icon()
+
+    def _on_sticker_single_clicked(self, sticker_id: str) -> None:
+        """Single click chooses sticker: highlights it, disables entry, and changes action icon."""
+        self._chosen_sticker = sticker_id
+        self._highlight_chosen_sticker(sticker_id)
+        getattr(self.box, "set_sticker_mode", lambda _: None)(True)
+        self.box._update_action_icon()
+
+    def _send_chosen_sticker(self) -> bool:
+        """Send the chosen sticker as a sticker picture when the send action is triggered."""
+        if self._chosen_sticker is not None:
+            sticker_id = self._chosen_sticker
+            self._clear_chosen_sticker()
+            self.box._update_action_icon()
+            if self.on_send_sticker is not None:
+                self.on_send_sticker(sticker_id)
+            else:
+                self._send_sticker_local(sticker_id)
+            return True
+        return False
+
+    def _on_sticker_double_clicked(self, sticker_id: str) -> None:
+        """Double click immediately transmits the sticker as a rich sticker image."""
+        now = time.time()
+        if (now - getattr(self, "_last_double_click_time", 0.0)) < 0.3:
+            return
+        self._last_double_click_time = now
+        self._clear_chosen_sticker()
+        self.box._update_action_icon()
+        if self.on_send_sticker is not None:
+            self.on_send_sticker(sticker_id)
+        else:
+            self._send_sticker_local(sticker_id)
+
+    def _highlight_chosen_sticker(self, sticker_id: str | None) -> None:
+        for stk, btn in getattr(self, "sticker_buttons", {}).items():
+            if stk == sticker_id:
+                btn.configure(fg_color=PINK_LIGHT)
+            else:
+                btn.configure(fg_color="transparent", border_width=0)
+
+    def _clear_chosen_sticker(self) -> None:
+        self._chosen_sticker = None
+        self._highlight_chosen_sticker(None)
+        getattr(self.box, "set_sticker_mode", lambda _: None)(False)
+
+    def _send_sticker_local(self, sticker_id: str) -> None:
+        current_time = datetime.now().strftime("%H:%M")
+        self.add_sticker("You", sticker_id, own=True, timestamp=current_time)
+
+    def _scroll_to_latest(self) -> None:
+        canvas = getattr(self.window, "_parent_canvas", None)
+        if canvas is not None:
+            self.window.after_idle(lambda: canvas.yview_moveto(1.0))
+
+    def _draw_header(self, title: str) -> None:
+        """Draw the rounded chat header without replacing the main frame."""
+        width = max(self.header.winfo_width(), 10)
+        height = max(self.header.winfo_height(), 10)
+        self.header.delete("all")
+
+        def draw_top(color: str, inset: int, radius: int) -> None:
+            right = width - inset
+            bottom = height - inset
+            self.header.create_rectangle(
+                inset, inset + radius, right, bottom, fill=color, outline=color
+            )
+            self.header.create_rectangle(
+                inset + radius, inset, right - radius, bottom, fill=color, outline=color
+            )
+            self.header.create_arc(
+                inset,
+                inset,
+                inset + radius * 2,
+                inset + radius * 2,
+                start=90,
+                extent=90,
+                fill=color,
+                outline=color,
+            )
+            self.header.create_arc(
+                right - radius * 2,
+                inset,
+                right,
+                inset + radius * 2,
+                start=0,
+                extent=90,
+                fill=color,
+                outline=color,
+            )
+
+        radius = min(14, height // 2)
+        draw_top(INK, 0, radius)
+        draw_top(PINK, 2, max(radius - 2, 1))
+        self.header.create_line(0, height - 1, width, height - 1, fill=INK, width=2)
+        icon = self.icon_photos.get("chat")
+        if icon:
+            self.header.create_image(25, height // 2, image=icon)
+        self.header.create_text(
+            46,
+            height // 2,
+            text=title,
+            fill=INK,
+            font=(FONT, 20, "bold"),
+            anchor="w",
+        )
+
+    def _send(self, message: str) -> None:
+        if message.strip():
+            self.on_send(message)
+            self._clear_chosen_sticker()
+            self.box.clear_entry()
+            self.box._update_action_icon()
+
+    def _send_local(self, message: str) -> None:
+        """Render a local demonstration message until private transport (R7) is wired."""
+        self.add_message("You", message, own=True)
+
+    def show_announcement(self, message: str, timestamp: str | None = None) -> None:
+        """Display or update the pinned announcement banner in this chat room (SP3 / LINE-style)."""
+        target = getattr(self.window, "_parent_frame", self.window)
+        self.announcement_bar.show(message, timestamp=timestamp, before_widget=target)
+
+    def _on_announcement_closed(self) -> None:
+        self.hide_announcement()
+        if self.on_close_announcement is not None:
+            self.on_close_announcement()
+
+    def hide_announcement(self) -> None:
+        """Dismiss/hide the pinned announcement banner in this chat room."""
+        self.announcement_bar.hide()
+
+    def add_message(
+        self,
+        sender: str,
+        message: str,
+        own: bool = False,
+        timestamp: str | None = None,
+        message_id: str | None = None,
+        avatar: Any | None = None,
+        on_announce: Callable[[str], None] | None = None,
+    ) -> MessageBubble:
+        announce_cb = on_announce if on_announce is not None else self.on_announce
+        bubble = MessageBubble(
+            self.window,
+            sender,
+            message,
+            own,
+            timestamp=timestamp,
+            avatar=avatar,
+            on_announce=announce_cb,
+        )
+        bubble.frame.pack(fill="x")
+        if message_id:
+            self.bubbles[message_id] = bubble
+        self._scroll_to_latest()
+        return bubble
+
+    def add_sticker(
+        self,
+        sender: str,
+        sticker_id: str,
+        own: bool = False,
+        timestamp: str | None = None,
+        message_id: str | None = None,
+        avatar: Any | None = None,
+    ) -> MessageBubble:
+        sticker_images = getattr(self, "sticker_images", None)
+        if sticker_images is None:
+            self.sticker_images = _load_stickers(size=(96, 96))
+            sticker_images = self.sticker_images
+        normalized_stk = sticker_id.upper() if sticker_id else ""
+        img = sticker_images.get(normalized_stk)
+        if img is None:
+            self.sticker_images.update(_load_stickers(size=(96, 96)))
+            img = self.sticker_images.get(normalized_stk)
+        fallback_msg = f"[Sticker: {sticker_id}]" if img is None else ""
+        bubble = MessageBubble(
+            self.window,
+            sender=sender,
+            message=fallback_msg,
+            own=own,
+            timestamp=timestamp,
+            sticker_image=img,
+            avatar=avatar,
+        )
+        bubble.frame.pack(fill="x")
+        if message_id:
+            self.bubbles[message_id] = bubble
+        self._scroll_to_latest()
+        return bubble
+
+    def mark_message_read(self, message_id: str) -> bool:
+        """Mark the message bubble identified by message_id as Read (SP4)."""
+        bubble = self.bubbles.get(message_id)
+        if bubble is not None:
+            bubble.mark_read()
+            return True
+        return False
+
+
+def _noop() -> None:
+    """Default UI hook until a later feature supplies a concrete callback."""
+
+
+class PopupDialog:
+    """Reusable modal shell for future sticker and group dialogs."""
+
+    def __init__(self, parent: Any, title: str) -> None:
+        ui = _require_ctk()
+        self.window = ui.CTkToplevel(parent)
+        self.window.title(title)
+        self.window.transient(parent)
+        self.frame = ui.CTkFrame(self.window, fg_color=BACKGROUND)
+        self.frame.pack(fill="both", expand=True, padx=12, pady=12)
+
+
+class RoomRegistry(dict):
+    """Namespace-isolated room registry for internal keys ('group:<name>', 'private:<name>')."""
+
+    def __getitem__(self, key: str) -> Any:
+        if super().__contains__(key):
+            return super().__getitem__(key)
+        for prefix in ("group:", "private:"):
+            prefixed = f"{prefix}{key}"
+            if super().__contains__(prefixed):
+                return super().__getitem__(prefixed)
+        return super().__getitem__(key)
+
+    def __contains__(self, key: object) -> bool:
+        return super().__contains__(key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+
+def _create_room_tab(
+    tab: Any,
+    title: str,
+    actions_or_on_send: RoomActions | Any,
+    on_sticker: Any = None,
+    on_send_sticker: Any = None,
+    on_announce: Any = None,
+    on_close_announcement: Any = None,
+) -> ChatRoomTab:
+    """Instantiate ChatRoomTab using RoomActions (or backward-compatible loose callbacks)."""
+    if isinstance(actions_or_on_send, RoomActions):
+        actions = actions_or_on_send
+    else:
+        actions = RoomActions(
+            on_send=actions_or_on_send,
+            on_sticker=on_sticker,
+            on_send_sticker=on_send_sticker,
+            on_announce=on_announce,
+            on_close_announcement=on_close_announcement,
+        )
+
+    try:
+        return ChatRoomTab(tab, title, actions=actions)
+    except TypeError:
+        try:
+            return ChatRoomTab(
+                tab,
+                title,
+                on_send=actions.on_send,
+                on_sticker=actions.on_sticker,
+                on_send_sticker=actions.on_send_sticker,
+                on_announce=actions.on_announce,
+                on_close_announcement=actions.on_close_announcement,
+            )
+        except TypeError:
+            try:
+                return ChatRoomTab(
+                    tab,
+                    title,
+                    on_send=actions.on_send,
+                    on_sticker=actions.on_sticker,
+                    on_send_sticker=actions.on_send_sticker,
+                    on_announce=actions.on_announce,
+                )
+            except TypeError:
+                try:
+                    return ChatRoomTab(
+                        tab,
+                        title,
+                        on_send=actions.on_send,
+                        on_sticker=actions.on_sticker,
+                        on_send_sticker=actions.on_send_sticker,
+                    )
+                except TypeError:
+                    return ChatRoomTab(
+                        tab,
+                        title,
+                        on_send=actions.on_send,
+                    )
+
+
+class MainChatWindow:
+    """Reusable responsive main view for authenticated sessions."""
+
+    def __init__(
+        self,
+        parent: Any,
+        controller: GuiController,
+        on_logout: Callable[[], None] | None = None,
+    ) -> None:
+        ui = _require_ctk()
+        self.frame = ui.CTkFrame(parent, fg_color=BACKGROUND)
+        self.controller = controller
+        self.content = ui.CTkFrame(self.frame, width=900, height=554, fg_color="transparent")
+        self.content.place(relx=0.5, rely=0.5, anchor="center")
+        self.content.grid_propagate(False)
+        self.content.grid_rowconfigure(0, weight=0)
+        self.content.grid_rowconfigure(1, weight=1)
+        self.content.grid_columnconfigure(0, weight=0, minsize=330)
+        self.content.grid_columnconfigure(1, weight=1)
+        self.content.grid_columnconfigure(2, weight=0, minsize=80)
+        self.logout_area = ui.CTkFrame(self.content, fg_color="transparent")
+        self.logout_area.grid(row=1, column=2, sticky="ne", padx=(18, 0), pady=3)
+        self.logout = ui.CTkButton(
+            self.logout_area,
+            text="",
+            image=_load_icons().get("logout"),
+            width=54,
+            height=54,
+            bg_color=BACKGROUND,
+            fg_color="#FFC8B7",
+            hover_color="#FFC8B7EF",
+            text_color=INK,
+            corner_radius=8,
+            command=on_logout or parent.destroy,
+        )
+        self.logout.pack()
+        ui.CTkLabel(
+            self.logout_area,
+            text="Logout",
+            font=(FONT, 20),
+            text_color=INK,
+        ).pack(pady=(4, 0))
+        self.banner = AnnouncementBanner(self.content, on_close=self._clear_announcements)
+        self.banner.frame.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+        self.banner.frame.grid_remove()
+        self.sidebar = SidebarPanel(
+            self.content,
+            self.open_private_room,
+            self.controller.create_group,
+            self.controller.join_group,
+            self.open_group_room,
+        )
+        self.sidebar.frame.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
+        self.tabs = ui.CTkTabview(
+            self.content, fg_color=BACKGROUND, corner_radius=0, border_width=0
+        )
+        self.tabs.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
+        segmented_button = getattr(self.tabs, "_segmented_button", None)
+        if segmented_button is not None:
+            segmented_button.configure(font=(FONT, 16))
+            segmented_button.grid_remove()
+        for row in range(3):
+            self.tabs.grid_rowconfigure(row, minsize=0)
+        self.rooms: RoomRegistry = RoomRegistry()
+        self._active_room: str | None = None
+        self._rendered_messages: set[str] = set()
+        self._unread_messages: dict[str, set[str]] = {}
+        self._acknowledged_messages: set[str] = set()
+        self._latest_announcement: tuple[str, str | None] | None = None
+        self._room_announcements: dict[str, tuple[str, str | None]] = {}
+        self.controller.on_private_message = self._handle_incoming_private_message
+        self.controller.on_private_message_error = self._handle_private_message_error
+        self.controller.on_read_ack = self._handle_read_ack
+        self.controller.on_announcement = self._handle_announcement
+        self.controller.on_reconnect = self._retry_pending_acks
+        self.controller.on_group_message = self._handle_incoming_group_message
+        self.controller.on_group_message_error = self._handle_group_message_error
+        self.avatar_images = _load_avatars((36, 36))
+        self.controller.on_sticker_message = self._handle_incoming_sticker_message
+        self.frame.bind("<Configure>", self._resize_content)
+        if self.controller.latest_announcement is not None:
+            self._handle_announcement(self.controller.latest_announcement)
+        # Process any messages received prior to MainChatWindow construction
+        for peer, msgs in list(self.controller.private_messages.items()):
+            for msg in msgs:
+                self._handle_incoming_private_message(peer, msg)
+        for gname, msgs in list(self.controller.group_messages.items()):
+            for msg in msgs:
+                self._handle_incoming_group_message(gname, msg)
+
+        for dest, st_list in list(self.controller.stickers.items()):
+            for st in st_list:
+                self._handle_incoming_sticker_message(dest, st)
+
+    def _resize_content(self, event: Any) -> None:
+        """Keep the Figma proportions while still adapting to smaller windows."""
+        width = min(920, max(720, int(event.width * 0.82)))
+        height = min(574, max(554, int(event.height * 0.78)))
+        self.content.configure(width=width, height=height)
+
+    def refresh(self) -> None:
+        self.sidebar.set_users(
+            self.controller.online_users,
+            self.controller.username,
+            self.controller.online_avatars,
+            self._active_room,
+        )
+        self.sidebar.set_groups(
+            self.controller.groups, self.controller.username, self.controller.group_error
+        )
+        peers = [user for user in self.controller.online_users if user != self.controller.username]
+        if peers and not self.rooms:
+            self.open_private_room(peers[0])
+        self._retry_pending_acks()
+
+    def _retry_pending_acks(self) -> None:
+        """Retry sending pending read receipts for the active room upon reconnect (SP4)."""
+        if not getattr(self.controller.session, "is_registered", True):
+            return
+        if self._active_room and self._unread_messages.get(self._active_room):
+            self._ack_unread_in_room(self._active_room)
+
+    def _get_room(self, name: str, kind: str | None = None) -> Any:
+        if kind == "group":
+            return self.rooms.get(f"group:{name}") or self.rooms.get(name)
+        if kind == "private":
+            return self.rooms.get(f"private:{name}") or self.rooms.get(name)
+        return (
+            self.rooms.get(name)
+            or self.rooms.get(f"group:{name}")
+            or self.rooms.get(f"private:{name}")
+        )
+
+    def _clear_room_announcement(self, room_id: str) -> None:
+        """Cancel/dismiss the pinned announcement in a specific chat room."""
+        short_name = room_id.split(":", 1)[-1]
+        if hasattr(self, "_room_announcements"):
+            self._room_announcements.pop(room_id, None)
+            self._room_announcements.pop(short_name, None)
+        room = self.rooms.get(room_id) or self.rooms.get(short_name)
+        if room is not None:
+            if hasattr(room, "hide_announcement"):
+                room.hide_announcement()
+            elif hasattr(room, "announcement_bar") and hasattr(room.announcement_bar, "hide"):
+                room.announcement_bar.hide()
+
+    def _clear_announcements(self) -> None:
+        """Cancel/dismiss the current active announcement across all rooms."""
+        self._latest_announcement = None
+        if hasattr(self, "_room_announcements"):
+            self._room_announcements.clear()
+        for room in set(self.rooms.values()):
+            if hasattr(room, "hide_announcement"):
+                room.hide_announcement()
+            elif hasattr(room, "announcement_bar") and hasattr(room.announcement_bar, "hide"):
+                room.announcement_bar.hide()
+
+    def _attach_room_tab(self, room_id: str, title: str, room: Any) -> None:
+        """Register, display, and synchronize current announcements into a room tab."""
+        room.frame.pack(fill="both", expand=True)
+        self.rooms[room_id] = room
+        if title not in self.rooms:
+            self.rooms[title] = room
+        room_ann = getattr(self, "_room_announcements", {}).get(room_id) or getattr(
+            self, "_room_announcements", {}
+        ).get(title)
+        if room_ann is not None and hasattr(room, "show_announcement"):
+            room.show_announcement(*room_ann)
+
+    def open_private_room(self, user: str, select: bool = True) -> None:
+        if user == self.controller.username:
+            return
+        room_id = f"private:{user}"
+        if room_id not in self.rooms:
+            existing_tabs = getattr(self.tabs, "_tab_dict", {})
+            tab_exists = room_id in existing_tabs or user in existing_tabs
+            tab_key = (
+                room_id
+                if room_id in existing_tabs
+                else (user if user in existing_tabs else room_id)
+            )
+            tab = self.tabs.tab(tab_key) if tab_exists else self.tabs.add(room_id)
+            actions = RoomActions(
+                on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
+                on_sticker=lambda peer=user: self._open_sticker_picker(peer),
+                on_send_sticker=lambda s, peer=user: self._send_sticker(peer, s),
+                on_announce=lambda msg, peer=user: self.controller.send_announcement(
+                    msg, target=peer
+                ),
+                on_close_announcement=lambda peer=user: self._clear_room_announcement(
+                    f"private:{peer}"
+                ),
+            )
+            try:
+                room = _create_room_tab(tab, user, actions)
+                self._attach_room_tab(room_id, user, room)
+            except Exception:
+                if not tab_exists:
+                    getattr(self.tabs, "delete", lambda _: None)(room_id)
+                raise
+        if select:
+            active_tab = (
+                room_id if getattr(self.tabs, "_tab_dict", {}).get(room_id) is not None else user
+            )
+            self.tabs.set(active_tab)
+            self._active_room = room_id
+            self._ack_unread_in_room(user)
+            self.sidebar.set_users(
+                self.controller.online_users,
+                self.controller.username,
+                self.controller.online_avatars,
+                user,
+            )
+        segmented_button = getattr(self.tabs, "_segmented_button", None)
+        if segmented_button is not None:
+            segmented_button.grid_forget()
+
+    def open_group_room(self, group_name: str, select: bool = True) -> None:
+        """Open a joined Group Room tab with isolated ChatBox and ChatWindow (R5, R6, R11)."""
+        room_id = f"group:{group_name}"
+        if room_id not in self.rooms:
+            existing_tabs = getattr(self.tabs, "_tab_dict", {})
+            tab_exists = room_id in existing_tabs
+            tab = self.tabs.tab(room_id) if tab_exists else self.tabs.add(room_id)
+            actions = RoomActions(
+                on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
+                on_sticker=lambda g=group_name: self._open_sticker_picker(g),
+                on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
+                on_announce=lambda msg, g=group_name: self.controller.send_announcement(
+                    msg, group_name=g
+                ),
+                on_close_announcement=lambda g=group_name: self._clear_room_announcement(
+                    f"group:{g}"
+                ),
+            )
+            try:
+                room = _create_room_tab(tab, group_name, actions)
+                self._attach_room_tab(room_id, group_name, room)
+            except Exception:
+                if not tab_exists:
+                    getattr(self.tabs, "delete", lambda _: None)(room_id)
+                raise
+        if select:
+            self.tabs.set(room_id)
+            self._active_room = room_id
+        segmented_button = getattr(self.tabs, "_segmented_button", None)
+        if segmented_button is not None:
+            segmented_button.grid_forget()
+
+    def _get_user_avatar(self, username: str | None) -> Any:
+        if not username:
+            return None
+        if username == self.controller.username:
+            avatar_name = getattr(self.controller, "avatar", "rabbit")
+        else:
+            online_avatars = getattr(self.controller, "online_avatars", {})
+            avatar_name = online_avatars.get(username, "rabbit")
+        avatar_images = getattr(self, "avatar_images", None)
+        if avatar_images is None:
+            return avatar_name
+        return avatar_images.get(avatar_name, avatar_images.get("rabbit"))
+
+    def _add_room_message(
+        self, room_name: str, *args: Any, kind: str | None = None, **kwargs: Any
+    ) -> Any:
+        room = self._get_room(room_name, kind=kind)
+        if room is None:
+            return None
+        try:
+            return room.add_message(*args, **kwargs)
+        except TypeError:
+            kwargs.pop("avatar", None)
+            return room.add_message(*args, **kwargs)
+
+    def _send_group_message(self, group_name: str, message: str) -> None:
+        msg_id = self.controller.send_group_message(group_name, message)
+        if msg_id is None:
+            # Fallback for offline or mock sessions without live server echo
+            current_time = datetime.now().strftime("%H:%M")
+            avatar = None
+            self._add_room_message(
+                group_name,
+                "You",
+                message,
+                own=True,
+                timestamp=current_time,
+                avatar=avatar,
+                kind="group",
+            )
+
+    def _handle_incoming_group_message(
+        self, group_name: str, payload: GroupMessageServerPayload
+    ) -> None:
+        if payload.meta.message_id in self._rendered_messages:
+            return
+        self._rendered_messages.add(payload.meta.message_id)
+        room_id = f"group:{group_name}"
+        if room_id not in self.rooms and group_name not in self.rooms:
+            self.open_group_room(group_name, select=False)
+        own = payload.sender == self.controller.username
+        display_sender = "You" if own else payload.sender
+        avatar = None if own else self._get_user_avatar(payload.sender)
+        self._add_room_message(
+            group_name,
+            sender=display_sender,
+            message=payload.message,
+            own=own,
+            timestamp=payload.meta.timestamp,
+            message_id=payload.meta.message_id,
+            avatar=avatar,
+            kind="group",
+        )
+
+    def _handle_group_message_error(self, group_name: str, error: str) -> None:
+        target_room = group_name
+        if not target_room and self._active_room and self._active_room.startswith("group:"):
+            target_room = self._active_room.removeprefix("group:")
+        if target_room:
+            current_time = datetime.now().strftime("%H:%M")
+            self._add_room_message(
+                target_room,
+                sender="System",
+                message=f"⚠️ {error}",
+                own=False,
+                timestamp=current_time,
+                kind="group",
+            )
+
+    def _send_private_message(self, peer: str, message: str) -> None:
+        msg_id = self.controller.send_private_message(peer, message)
+        if msg_id is None:
+            # Fallback for offline or mock sessions without live server echo
+            current_time = datetime.now().strftime("%H:%M")
+            avatar = None
+            self._add_room_message(
+                peer,
+                "You",
+                message,
+                own=True,
+                timestamp=current_time,
+                avatar=avatar,
+                kind="private",
+            )
+
+    def _handle_incoming_private_message(
+        self, peer: str, payload: PrivateMessageServerPayload
+    ) -> None:
+        if payload.meta.message_id in self._rendered_messages:
+            return
+        self._rendered_messages.add(payload.meta.message_id)
+        room_id = f"private:{peer}"
+        if room_id not in self.rooms and peer not in self.rooms:
+            self.open_private_room(peer, select=False)
+        own = payload.sender == self.controller.username
+        display_sender = "You" if own else payload.sender
+        avatar = None if own else self._get_user_avatar(payload.sender)
+        self._add_room_message(
+            peer,
+            sender=display_sender,
+            message=payload.message,
+            own=own,
+            timestamp=payload.meta.timestamp,
+            message_id=payload.meta.message_id,
+            avatar=avatar,
+            kind="private",
+        )
+        if not own:
+            # Check user's actively selected room rather than relying on tabs.get()
+            if self._active_room in (room_id, peer):
+                self._send_read_ack(payload.meta.message_id, peer)
+            else:
+                self._unread_messages.setdefault(peer, set()).add(payload.meta.message_id)
+
+    def _send_read_ack(self, message_id: str, target: str) -> None:
+        if message_id in self._acknowledged_messages:
+            if target in self._unread_messages:
+                self._unread_messages[target].discard(message_id)
+            return
+        sent = self.controller.send_read_ack(message_id, target)
+        if sent:
+            self._acknowledged_messages.add(message_id)
+            if target in self._unread_messages:
+                self._unread_messages[target].discard(message_id)
+        else:
+            self._unread_messages.setdefault(target, set()).add(message_id)
+
+    def _ack_unread_in_room(self, room_name: str) -> None:
+        unreads = list(self._unread_messages.get(room_name, set()))
+        for mid in unreads:
+            self._send_read_ack(mid, room_name)
+
+    def _handle_read_ack(self, message_id: str, reader: str) -> None:
+        if reader in self.rooms:
+            self.rooms[reader].mark_message_read(message_id)
+
+    def _handle_announcement(self, payload: AnnouncementPayload) -> None:
+        """Reveal and update AnnouncementBanner in the target room only (SP3 / LINE-style)."""
+        controller = getattr(self, "controller", None)
+        current_user = getattr(controller, "username", None)
+        target_room_id: str | None = None
+        target_room_name: str | None = None
+
+        if payload.group_name:
+            target_room_id = f"group:{payload.group_name}"
+            target_room_name = payload.group_name
+        elif payload.target or payload.sender:
+            peer = (
+                payload.target
+                if current_user == payload.sender
+                else (payload.sender or payload.target)
+            )
+            if peer:
+                target_room_id = f"private:{peer}"
+                target_room_name = peer
+        else:
+            # Fallback deduction: search message history in controller / rooms
+            matched_room: str | None = None
+            matched_kind: str | None = None
+            if controller is not None:
+                for p_peer, p_msgs in getattr(controller, "private_messages", {}).items():
+                    if any(getattr(m, "message", None) == payload.message for m in p_msgs):
+                        matched_room = p_peer
+                        matched_kind = "private"
+                        break
+                if matched_room is None:
+                    for g_name, g_msgs in getattr(controller, "group_messages", {}).items():
+                        if any(getattr(m, "message", None) == payload.message for m in g_msgs):
+                            matched_room = g_name
+                            matched_kind = "group"
+                            break
+
+            if matched_room is None:
+                rooms = getattr(self, "rooms", {})
+                for r_key, r_obj in rooms.items():
+                    bubbles = getattr(r_obj, "bubbles", {})
+                    if any(
+                        getattr(b, "message", None) == payload.message for b in bubbles.values()
+                    ):
+                        is_group = r_key.startswith("group:") or (
+                            controller is not None
+                            and any(
+                                g.get("group_name") == r_key
+                                for g in getattr(controller, "groups", [])
+                            )
+                        )
+                        matched_room = r_key.split(":", 1)[-1]
+                        matched_kind = "group" if is_group else "private"
+                        break
+
+            if matched_room is not None:
+                target_room_id = f"{matched_kind}:{matched_room}"
+                target_room_name = matched_room
+
+        if target_room_id and target_room_name:
+            if not hasattr(self, "_room_announcements"):
+                self._room_announcements = {}
+            self._room_announcements[target_room_id] = (payload.message, payload.timestamp)
+            self._room_announcements[target_room_name] = (payload.message, payload.timestamp)
+
+            room = self._get_room(
+                target_room_name,
+                kind="group" if target_room_id.startswith("group:") else "private",
+            )
+            if room is not None and hasattr(room, "show_announcement"):
+                room.show_announcement(payload.message, timestamp=payload.timestamp)
+        else:
+            self._latest_announcement = (payload.message, payload.timestamp)
+            if hasattr(self, "banner"):
+                self.banner.show(payload.message, timestamp=payload.timestamp)
+            active = getattr(self, "_active_room", None)
+            if active and active in self.rooms and hasattr(self.rooms[active], "show_announcement"):
+                self.rooms[active].show_announcement(payload.message, timestamp=payload.timestamp)
+            elif not active:
+                rooms = getattr(self, "rooms", {})
+                for room in set(rooms.values()):
+                    if hasattr(room, "show_announcement"):
+                        room.show_announcement(payload.message, timestamp=payload.timestamp)
+
+    def _handle_private_message_error(self, target: str, error: str) -> None:
+        if target and target in self.rooms:
+            current_time = datetime.now().strftime("%H:%M")
+            self.rooms[target].add_message(
+                sender="System",
+                message=f"⚠️ {error}",
+                own=False,
+                timestamp=current_time,
+            )
+
+    def _send_sticker(self, destination: str, sticker_id: str) -> None:
+        is_group = any(g.get("group_name") == destination for g in self.controller.groups)
+        target = None if is_group else destination
+        group_name = destination if is_group else None
+        msg_id = self.controller.send_sticker(
+            sticker_id=sticker_id, target=target, group_name=group_name
+        )
+        room = self._get_room(destination, kind="group" if is_group else "private")
+        if msg_id is None and room is not None:
+            current_time = datetime.now().strftime("%H:%M")
+            room.add_sticker("You", sticker_id, own=True, timestamp=current_time)
+
+    def _open_sticker_picker(self, destination: str) -> None:
+        """Toggle the sticker drawer for destination."""
+        is_group = any(g.get("group_name") == destination for g in self.controller.groups)
+        room = self._get_room(destination, kind="group" if is_group else "private")
+        if room is None:
+            if is_group:
+                self.open_group_room(destination)
+            else:
+                self.open_private_room(destination)
+            room = self._get_room(destination, kind="group" if is_group else "private")
+        if room is not None:
+            room.toggle_sticker_panel()
+
+    def _handle_incoming_sticker_message(
+        self, destination: str, payload: StickerMessageServerPayload
+    ) -> None:
+        if payload.meta.message_id in self._rendered_messages:
+            return
+        self._rendered_messages.add(payload.meta.message_id)
+        is_group = bool(payload.group_name)
+        room = self._get_room(destination, kind="group" if is_group else "private")
+        if room is None:
+            if is_group:
+                self.open_group_room(destination)
+            else:
+                self.open_private_room(destination, select=False)
+            room = self._get_room(destination, kind="group" if is_group else "private")
+        own = payload.sender == self.controller.username
+        display_sender = "You" if own else payload.sender
+        avatar = None if own else self._get_user_avatar(payload.sender)
+        if room is not None:
+            try:
+                room.add_sticker(
+                    sender=display_sender,
+                    sticker_id=payload.sticker_id,
+                    own=own,
+                    timestamp=payload.meta.timestamp,
+                    message_id=payload.meta.message_id,
+                    avatar=avatar,
+                )
+            except TypeError:
+                room.add_sticker(
+                    sender=display_sender,
+                    sticker_id=payload.sticker_id,
+                    own=own,
+                    timestamp=payload.meta.timestamp,
+                    message_id=payload.meta.message_id,
+                )
+        if not own and payload.target:
+            room_id = f"private:{destination}"
+            if self._active_room in (room_id, destination):
+                self._send_read_ack(payload.meta.message_id, destination)
+            else:
+                self._unread_messages.setdefault(destination, set()).add(payload.meta.message_id)
+
+
+class ChatApplication:
+    """Application composition root and Tk ``after`` event poller."""
+
+    def __init__(
+        self,
+        session: ClientSession | None = None,
+        host: str | None = None,
+        port: str | None = None,
+    ) -> None:
+        load_dotenv()
+        default_host, default_port = get_server_host_and_port(
+            default_host="127.0.0.1", default_port=5000
+        )
+        host = host or default_host
+        port = port or str(default_port)
+        ui = _require_ctk()
+        configure_fixed_pixel_scaling(ui)
+        ui.set_appearance_mode("light")
+        self.root = ui.CTk()
+        self.root.title("Simple Chat Application")
+        self.root.minsize(760, 520)
+        self.root.geometry("1080x700")
+        self.root.resizable(False, False)
+        self.root.configure(fg_color=BACKGROUND)
+        self.controller = GuiController(session or ClientSession(), self._refresh)
+        self.login = LoginView(self.root, self._connect, host=host, port=port)
+        self.login.frame.place(relx=0.5, rely=0.5, anchor="center")
+        self.main: MainChatWindow | None = None
+        self.root.protocol("WM_DELETE_WINDOW", self._close)
+
+        def _on_global_click(event: Any) -> None:
+            widget = getattr(event, "widget", None)
+            if widget is None:
+                return
+            widget_class = getattr(widget, "winfo_class", lambda: "")()
+            if widget_class in ("Entry", "Text", "CustomTkinterTextbox"):
+                return
+            try:
+                widget.focus_set()
+            except Exception:
+                try:
+                    self.root.focus_set()
+                except Exception:
+                    pass
+
+        self.root.bind_all("<Button-1>", _on_global_click, add="+")
+        self._poll()
+
+    def _connect(self, host: str, port: str, username: str, avatar: str) -> None:
+        self.controller.avatar = avatar
+        self.controller.connect_and_register(host, port, username, avatar)
+        self.login.show_error(self.controller.login_error)
+
+    def _poll(self) -> None:
+        self.controller.poll_events()
+        self.root.after(75, self._poll)
+
+    def _refresh(self) -> None:
+        if self.controller.username and self.main is None:
+            self.login.frame.place_forget()
+            self.main = MainChatWindow(self.root, self.controller, on_logout=self._close)
+            self.main.frame.pack(fill="both", expand=True)
+        if self.main:
+            self.main.refresh()
+        else:
+            self.login.show_error(self.controller.login_error)
+
+    def _close(self) -> None:
+        session = self.controller.session
+        disconnect = getattr(session, "disconnect", None)
+        if disconnect:
+            disconnect()
+        self.root.destroy()
+
+    def run(self) -> None:
+        self.root.mainloop()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Simple Chat Application GUI")
+    parser.add_argument(
+        "--host", default=None, help="Override SERVER_HOST / CHAT_SERVER_HOST from .env"
+    )
+    parser.add_argument(
+        "--port", default=None, help="Override SERVER_PORT / CHAT_SERVER_PORT from .env"
+    )
+    args = parser.parse_args()
+    ChatApplication(host=args.host, port=args.port).run()
+
+
+if __name__ == "__main__":
+    main()

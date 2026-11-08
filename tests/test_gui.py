@@ -52,6 +52,7 @@ class SessionSpy:
         self.created_groups: list[str] = []
         self.joined_groups: list[str] = []
         self.sent_group: list[tuple[str, str, str | None, str | None]] = []
+        self.announcements: list[str] = []
         self.connect_result = connect_result
         self.send_read_ack_result = send_read_ack_result
 
@@ -96,6 +97,10 @@ class SessionSpy:
     ) -> str | None:
         self.sent_group.append((group_name, message, message_id, timestamp))
         return message_id or "MSG_G_TEST"
+
+    def send_announcement(self, message: str, timestamp: str | None = None) -> bool:
+        self.announcements.append(message)
+        return True
 
     def get_next_event(self, *, block: bool = False) -> tuple[str, Any] | None:
         del block
@@ -1441,3 +1446,581 @@ def test_main_chat_window_incoming_sticker_from_other_passes_avatar():
     assert room.stickers[0]["sender"] == "Bob"
     assert room.stickers[0]["sticker_id"] == "STK_001"
     assert room.stickers[0]["avatar"] == "cat"
+
+
+def test_find_assets_dir_locates_existing_assets_directory():
+    """Verify _find_assets_dir reliably discovers project assets."""
+    from chat.gui import _find_assets_dir
+
+    assets_dir = _find_assets_dir()
+    assert assets_dir.is_dir()
+    assert (assets_dir / "stickers").is_dir()
+    assert (assets_dir / "avatar_cat.png").is_file()
+
+
+def test_controller_poll_events_handles_unknown_or_corrupt_events_gracefully():
+    """Verify GuiController drains unknown or malformed events without crashing."""
+    session = SessionSpy([("UNKNOWN_EVENT", {"data": 123}), ("corrupted", None)])
+    controller = GuiController(session)
+
+    # Should not throw any exception
+    controller.poll_events()
+
+
+def test_gui_controller_send_announcement_delegates_to_session():
+    """Verify GuiController delegates send_announcement request to session."""
+    session = SessionSpy()
+    controller = GuiController(session)
+    assert controller.send_announcement("Important update!") is True
+    assert session.announcements == ["Important update!"]
+
+
+def test_message_bubble_creates_hover_announce_button(monkeypatch):
+    """SP3: MessageBubble creates announce button on text messages and triggers callback."""
+    from gui import MessageBubble
+
+    announced: list[str] = []
+
+    class MockWidget:
+        def __init__(self, parent: Any = None, **kwargs: Any) -> None:
+            self.parent = parent
+            self.kwargs = kwargs
+            self.command = kwargs.get("command")
+            self.packed = False
+
+        def pack(self, **kwargs: Any) -> None:
+            self.packed = True
+
+        def pack_forget(self) -> None:
+            self.packed = False
+
+        def pack_propagate(self, _flag: bool) -> None:
+            pass
+
+        def bind(self, _event: str, _handler: Any, add: str | None = None) -> None:
+            pass
+
+        def after(self, ms: int, fn: Any) -> None:
+            pass
+
+    class MockUI:
+        CTkFrame = MockWidget
+        CTkLabel = MockWidget
+        CTkButton = MockWidget
+
+    monkeypatch.setattr("gui._require_ctk", lambda: MockUI)
+    monkeypatch.setattr("gui._get_bubble_avatar", lambda _: None)
+    monkeypatch.setattr("gui._load_icons", lambda *a, **k: {})
+
+    # 1. Text message with on_announce callback
+    bubble = MessageBubble(
+        parent=object(),
+        sender="Alice",
+        message="Notice: deploy at 4PM",
+        own=False,
+        on_announce=lambda msg: announced.append(msg),
+    )
+    assert bubble.announce_btn is not None
+
+    # Hover enter shows the button
+    bubble._on_enter()
+    assert bubble.announce_btn.packed is True
+
+    # Clicking / invoking announce calls the callback
+    bubble.announce()
+    assert announced == ["Notice: deploy at 4PM"]
+
+    # 2. Sticker message does not create announce button
+    bubble_stk = MessageBubble(
+        parent=object(),
+        sender="Alice",
+        message="stk",
+        sticker_image=object(),
+        on_announce=lambda msg: announced.append(msg),
+    )
+    assert bubble_stk.announce_btn is None
+
+    # 3. Message without on_announce does not create announce button
+    bubble_no_cb = MessageBubble(
+        parent=object(),
+        sender="Bob",
+        message="Hello",
+        on_announce=None,
+    )
+    assert bubble_no_cb.announce_btn is None
+
+
+def test_main_chat_window_broadcasts_announcement_to_room_banners():
+    """SP3: Incoming announcement reveals both global banner and pinned room banner."""
+    window = object.__new__(MainChatWindow)
+
+    class BannerSpy:
+        def __init__(self) -> None:
+            self.shown: list[tuple[str, str | None]] = []
+
+        def show(self, message: str, timestamp: str | None = None) -> None:
+            self.shown.append((message, timestamp))
+
+    class RoomSpy:
+        def __init__(self) -> None:
+            self.announcements: list[tuple[str, str | None]] = []
+
+        def show_announcement(self, message: str, timestamp: str | None = None) -> None:
+            self.announcements.append((message, timestamp))
+
+    window.banner = BannerSpy()
+    room = RoomSpy()
+    window.rooms = {"Bob": room}
+
+    payload = AnnouncementPayload(message="Pinned room announcement", timestamp="16:00")
+    window._handle_announcement(payload)
+
+    assert window.banner.shown == [("Pinned room announcement", "16:00")]
+    assert room.announcements == [("Pinned room announcement", "16:00")]
+    assert window._latest_announcement == ("Pinned room announcement", "16:00")
+
+
+def test_chat_box_bar_sticker_mode_disables_and_enables_entry():
+    """Verify composer entry is disabled and blurred when sticker mode is active."""
+    from gui import ChatBoxBar
+
+    entry_state: dict[str, Any] = {"state": "normal"}
+
+    class MockEntry:
+        def configure(self, **kwargs: Any) -> None:
+            entry_state.update(kwargs)
+
+        def focus_set(self) -> None:
+            pass
+
+    class MockFrame:
+        def focus_set(self) -> None:
+            pass
+
+    box = object.__new__(ChatBoxBar)
+    box.entry = MockEntry()
+    box.frame = MockFrame()
+
+    # 1. Enable sticker mode -> disabled
+    box.set_sticker_mode(True)
+    assert entry_state["state"] == "disabled"
+
+    # 2. Disable sticker mode -> normal
+    box.set_sticker_mode(False)
+    assert entry_state["state"] == "normal"
+
+
+def test_chat_room_tab_clicking_sticker_disables_entry_and_clicking_entry_restores():
+    """Verify selecting sticker puts composer in sticker mode and clicking entry clears it."""
+    from gui import ChatBoxBar, ChatRoomTab
+
+    room = object.__new__(ChatRoomTab)
+    box = object.__new__(ChatBoxBar)
+    states: list[bool] = []
+    box.set_sticker_mode = lambda enabled: states.append(enabled)
+    box._update_action_icon = lambda: None
+
+    room.box = box
+    room._chosen_sticker = None
+    room.sticker_buttons = {}
+
+    # 1. Select sticker
+    room._on_sticker_single_clicked("STK_001")
+    assert room._chosen_sticker == "STK_001"
+    assert states[-1] is True
+
+    # 2. User clicks entry to resume writing
+    room._on_entry_activated()
+    assert room._chosen_sticker is None
+    assert states[-1] is False
+
+
+def test_message_bubble_hover_targets_restricted_to_bubble(monkeypatch):
+    """Verify hover targets strictly include bubble shell / button and exclude parent frame/row."""
+    from gui import MessageBubble
+
+    class MockWidget:
+        def __init__(self, parent: Any = None, **kwargs: Any) -> None:
+            self.parent = parent
+            self.kwargs = kwargs
+            self.packed = False
+            self.bound_events: list[str] = []
+
+        def pack(self, **kwargs: Any) -> None:
+            self.packed = True
+
+        def pack_forget(self) -> None:
+            self.packed = False
+
+        def pack_propagate(self, _flag: bool) -> None:
+            pass
+
+        def bind(self, event: str, _handler: Any, add: str | None = None) -> None:
+            self.bound_events.append(event)
+
+        def after(self, ms: int, fn: Any) -> None:
+            pass
+
+    class MockUI:
+        CTkFrame = MockWidget
+        CTkLabel = MockWidget
+        CTkButton = MockWidget
+
+    monkeypatch.setattr("gui._require_ctk", lambda: MockUI)
+    monkeypatch.setattr("gui._get_bubble_avatar", lambda _: None)
+    monkeypatch.setattr("gui._load_icons", lambda *a, **k: {})
+
+    bubble_own = MessageBubble(
+        parent=object(),
+        sender="Bob",
+        message="Hello own",
+        own=True,
+        on_announce=lambda _msg: None,
+    )
+    # self.frame must NOT be a hover target
+    assert bubble_own.frame not in bubble_own._hover_targets
+    assert bubble_own._row not in bubble_own._hover_targets
+    assert bubble_own._content_col not in bubble_own._hover_targets
+    assert bubble_own._bubble_shell in bubble_own._hover_targets
+    assert bubble_own.announce_btn in bubble_own._hover_targets
+
+    bubble_peer = MessageBubble(
+        parent=object(),
+        sender="Alice",
+        message="Hello peer",
+        own=False,
+        on_announce=lambda _msg: None,
+    )
+    assert bubble_peer.frame not in bubble_peer._hover_targets
+    assert bubble_peer._row not in bubble_peer._hover_targets
+    assert bubble_peer._content_col not in bubble_peer._hover_targets
+    assert bubble_peer._bubble_shell in bubble_peer._hover_targets
+    assert bubble_peer.announce_btn in bubble_peer._hover_targets
+
+
+def test_chat_box_bar_clear_entry_when_disabled():
+    """Verify clear_entry successfully clears text even if entry is in disabled state."""
+    from gui import ChatBoxBar
+
+    class MockInternalTextbox:
+        def __init__(self) -> None:
+            self.state = "disabled"
+            self.text = "draft message"
+
+        def cget(self, prop: str) -> str:
+            if prop == "state":
+                return self.state
+            return ""
+
+        def configure(self, **kwargs: Any) -> None:
+            if "state" in kwargs:
+                self.state = kwargs["state"]
+
+        def delete(self, start: str, end: str) -> None:
+            if self.state == "disabled":
+                raise RuntimeError("Cannot delete when disabled")
+            self.text = ""
+
+    mock_tb = MockInternalTextbox()
+
+    class MockEntry:
+        def __init__(self) -> None:
+            self._textbox = mock_tb
+
+        def configure(self, **kwargs: Any) -> None:
+            mock_tb.configure(**kwargs)
+
+        def delete(self, start: str, end: str) -> None:
+            mock_tb.delete(start, end)
+
+    box = object.__new__(ChatBoxBar)
+    box.entry = MockEntry()
+
+    # Clear entry should temporarily enable, delete, and restore disabled state without crashing
+    box.clear_entry()
+    assert mock_tb.text == ""
+    assert mock_tb.state == "disabled"
+
+
+def test_chat_room_tab_send_with_sticker_chosen_clears_entry_and_selection():
+    """Verify sending message clears entry and resets sticker mode when draft existed."""
+    from gui import ChatBoxBar, ChatRoomTab
+
+    room = object.__new__(ChatRoomTab)
+    box = object.__new__(ChatBoxBar)
+    entry_text = ["typed text"]
+
+    class MockEntry:
+        def delete(self, start: Any, end: Any) -> None:
+            entry_text.clear()
+
+    box.entry = MockEntry()
+    box.clear_entry = lambda: MockEntry().delete(0, 0)
+    updated_icons: list[bool] = []
+    box._update_action_icon = lambda: updated_icons.append(True)
+    box.set_sticker_mode = lambda _enabled: None
+
+    room.box = box
+    room._chosen_sticker = "STK_001"
+    room.sticker_buttons = {}
+    sent: list[str] = []
+    room.on_send = lambda msg: sent.append(msg)
+
+    # Calling _send clears sticker, clears entry, updates icon
+    room._send("typed text")
+    assert sent == ["typed text"]
+    assert room._chosen_sticker is None
+    assert entry_text == []
+    assert len(updated_icons) > 0
+
+
+def test_pink_light_matches_design_spec():
+    """Verify PINK_LIGHT matches the exact pastel pink spec #F8E8EE."""
+    import gui
+
+    assert gui.PINK_LIGHT == "#F8E8EE"
+
+
+def test_announcement_banner_has_close_button_and_dismisses():
+    """Verify AnnouncementBanner has '✕' button and dismisses/cancels on close."""
+    from gui import AnnouncementBanner
+
+    closed: list[bool] = []
+    banner = object.__new__(AnnouncementBanner)
+    banner.on_close = lambda: closed.append(True)
+    hidden: list[bool] = []
+    banner.hide = lambda: hidden.append(True)
+
+    banner.close()
+    assert hidden == [True]
+    assert closed == [True]
+
+
+def test_main_chat_window_clear_announcements_clears_state_and_hides_rooms():
+    """Verify _clear_announcements clears _latest_announcement and calls hide_announcement."""
+    from gui import MainChatWindow
+
+    window = object.__new__(MainChatWindow)
+    window._latest_announcement = ("Active announcement", "12:00")
+
+    class MockRoom:
+        def __init__(self) -> None:
+            self.hidden = False
+
+        def hide_announcement(self) -> None:
+            self.hidden = True
+
+    room1 = MockRoom()
+    room2 = MockRoom()
+    window.rooms = {"Alice": room1, "Bob": room2}
+
+    window._clear_announcements()
+    assert window._latest_announcement is None
+    assert room1.hidden is True
+    assert room2.hidden is True
+
+
+def test_announcement_banner_show_safely_updates_when_before_widget_is_none():
+    """Verify AnnouncementBanner.show() updates text safely when before_widget is None."""
+    from gui import AnnouncementBanner
+
+    banner = object.__new__(AnnouncementBanner)
+    configured: list[dict[str, Any]] = []
+
+    class MockFrame:
+        def bell(self) -> None:
+            pass
+
+    class MockLabel:
+        def configure(self, **kwargs: Any) -> None:
+            configured.append(kwargs)
+
+    banner.frame = MockFrame()
+    banner.label = MockLabel()
+
+    banner.show("System-wide announcement", timestamp="12:00")
+    assert banner._current_message == "System-wide announcement"
+    assert banner._current_timestamp == "12:00"
+    assert configured == [{"text": "  System-wide announcement"}]
+
+
+def test_room_actions_encapsulates_callbacks():
+    """Verify RoomActions encapsulates callbacks cleanly."""
+    from gui import RoomActions
+
+    actions = RoomActions(
+        on_send=lambda msg: None,
+        on_sticker=lambda: None,
+        on_send_sticker=lambda s: None,
+        on_announce=lambda msg: None,
+        on_close_announcement=lambda: None,
+    )
+    assert actions.on_send is not None
+    assert actions.on_announce is not None
+
+
+def test_protocol_get_server_host_port_and_url(monkeypatch):
+    """Verify centralized host, port, and URL resolvers in protocol.py."""
+    from chat.protocol import get_server_host_and_port, get_server_url
+
+    monkeypatch.setenv("SERVER_HOST", "192.168.1.100")
+    monkeypatch.setenv("SERVER_PORT", "9000")
+
+    host, port = get_server_host_and_port()
+    assert host == "192.168.1.100"
+    assert port == 9000
+    assert get_server_url() == "http://192.168.1.100:9000"
+
+
+def test_announcement_scoped_to_private_room_only():
+    """Verify private announcement only pins in the conversation room and not others."""
+    from chat.gui import MainChatWindow
+    from chat.protocol import AnnouncementPayload
+
+    class RoomSpy:
+        def __init__(self) -> None:
+            self.announcements: list[tuple[str, str | None]] = []
+
+        def show_announcement(self, message: str, timestamp: str | None = None) -> None:
+            self.announcements.append((message, timestamp))
+
+    class ControllerSpy:
+        username = "alice"
+
+    window = object.__new__(MainChatWindow)
+    window.controller = ControllerSpy()
+    bob_room = RoomSpy()
+    charlie_room = RoomSpy()
+    window.rooms = {"private:bob": bob_room, "bob": bob_room, "private:charlie": charlie_room}
+
+    payload = AnnouncementPayload(
+        message="Important between Alice and Bob",
+        timestamp="14:00",
+        sender="alice",
+        target="bob",
+    )
+    window._handle_announcement(payload)
+
+    assert bob_room.announcements == [("Important between Alice and Bob", "14:00")]
+    assert charlie_room.announcements == []
+    assert window._room_announcements["private:bob"] == ("Important between Alice and Bob", "14:00")
+    assert "private:charlie" not in window._room_announcements
+
+
+def test_announcement_scoped_to_group_room_only():
+    """Verify group announcement only pins in that specific group room and not private rooms."""
+    from chat.gui import MainChatWindow
+    from chat.protocol import AnnouncementPayload
+
+    class RoomSpy:
+        def __init__(self) -> None:
+            self.announcements: list[tuple[str, str | None]] = []
+
+        def show_announcement(self, message: str, timestamp: str | None = None) -> None:
+            self.announcements.append((message, timestamp))
+
+    class ControllerSpy:
+        username = "alice"
+
+    window = object.__new__(MainChatWindow)
+    window.controller = ControllerSpy()
+    dev_room = RoomSpy()
+    bob_room = RoomSpy()
+    window.rooms = {"group:DevTeam": dev_room, "DevTeam": dev_room, "private:bob": bob_room}
+
+    payload = AnnouncementPayload(
+        message="Dev sprint starts now!",
+        timestamp="14:30",
+        sender="alice",
+        group_name="DevTeam",
+    )
+    window._handle_announcement(payload)
+
+    assert dev_room.announcements == [("Dev sprint starts now!", "14:30")]
+    assert bob_room.announcements == []
+    assert window._room_announcements["group:DevTeam"] == ("Dev sprint starts now!", "14:30")
+    assert "private:bob" not in window._room_announcements
+
+
+def test_clear_room_announcement_isolates_closure():
+    """Verify dismissing an announcement in one room does not clear other rooms' announcements."""
+    from chat.gui import MainChatWindow
+
+    class RoomSpy:
+        def __init__(self) -> None:
+            self.hidden = False
+
+        def hide_announcement(self) -> None:
+            self.hidden = True
+
+    window = object.__new__(MainChatWindow)
+    room_a = RoomSpy()
+    room_b = RoomSpy()
+    window.rooms = {"private:bob": room_a, "bob": room_a, "private:charlie": room_b}
+    window._room_announcements = {
+        "private:bob": ("Note 1", "10:00"),
+        "bob": ("Note 1", "10:00"),
+        "private:charlie": ("Note 2", "11:00"),
+    }
+
+    window._clear_room_announcement("private:bob")
+    assert room_a.hidden is True
+    assert room_b.hidden is False
+    assert "private:bob" not in window._room_announcements
+    assert "bob" not in window._room_announcements
+    assert window._room_announcements["private:charlie"] == ("Note 2", "11:00")
+
+
+def test_private_announcement_never_shows_in_group_chat_even_if_opened_later():
+    """Verify that an announcement in private chat does not appear in a group room opened later."""
+    from chat.gui import MainChatWindow
+    from chat.protocol import AnnouncementPayload, MessageMeta, PrivateMessageServerPayload
+
+    class RoomSpy:
+        def __init__(self) -> None:
+            self.announcements: list[tuple[str, str | None]] = []
+
+        def show_announcement(self, message: str, timestamp: str | None = None) -> None:
+            self.announcements.append((message, timestamp))
+
+    class ControllerSpy:
+        username = "minnoo"
+        private_messages = {
+            "ngor": [
+                PrivateMessageServerPayload(
+                    sender="ngor",
+                    target="minnoo",
+                    message="yh",
+                    meta=MessageMeta(message_id="M1", timestamp="16:38"),
+                )
+            ]
+        }
+        group_messages = {}
+
+    window = object.__new__(MainChatWindow)
+    window.controller = ControllerSpy()
+    window.rooms = {}
+    window._room_announcements = {}
+    window._active_room = "private:ngor"
+
+    # Private room ngor is open
+    ngor_room = RoomSpy()
+    window.rooms["private:ngor"] = ngor_room
+    window.rooms["ngor"] = ngor_room
+
+    # Announcement arrives (even if untargeted or legacy broadcast)
+    payload = AnnouncementPayload(message="yh", timestamp="16:38")
+    window._handle_announcement(payload)
+
+    # ngor room has the announcement
+    assert ngor_room.announcements == [("yh", "16:38")]
+    assert window._room_announcements.get("private:ngor") == ("yh", "16:38")
+
+    # Now minnoo opens group chat tk gang later
+    tk_gang_room = RoomSpy()
+    tk_gang_room.frame = type("MockFrame", (), {"pack": lambda self, **kw: None})()
+    window._attach_room_tab("group:tk gang", "tk gang", tk_gang_room)
+
+    # tk gang must NOT show yh!
+    assert tk_gang_room.announcements == []
+    assert "group:tk gang" not in window._room_announcements

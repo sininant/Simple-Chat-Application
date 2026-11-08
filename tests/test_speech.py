@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from queue import Queue
 from threading import Event
+from typing import Any
 
 from gui import FONT, ChatBoxBar
 from speech import FakeSpeechTranscriber, GoogleSpeechTranscriber, SpeechInputController
@@ -258,3 +259,151 @@ def test_listening_state_turns_the_microphone_button_into_pause():
         "font": (FONT, 14),
     }
     assert box._is_listening is True
+
+
+def test_speech_input_controller_is_listening_property():
+    """Verify is_listening accurately reflects controller's active capture state."""
+    started = Event()
+    release = Event()
+    completed = Event()
+
+    class BlockingTranscriber:
+        def transcribe(self, paused: Event) -> str:
+            started.set()
+            release.wait(timeout=1)
+            return "Done"
+
+    controller = SpeechInputController(BlockingTranscriber())
+    assert controller.is_listening is False
+
+    controller.transcribe_async(
+        on_listening=lambda: None,
+        on_transcript=lambda _: completed.set(),
+        on_error=lambda _: completed.set(),
+        on_paused=lambda: completed.set(),
+    )
+
+    assert started.wait(timeout=1)
+    assert controller.is_listening is True
+
+    release.set()
+    assert completed.wait(timeout=1)
+    import time
+
+    time.sleep(0.05)
+    assert controller.is_listening is False
+
+
+def _ensure_mock_speech_recognition(monkeypatch: Any) -> Any:
+    """Ensure speech_recognition module is available in sys.modules for headless CI."""
+    import sys
+    import types
+
+    try:
+        import speech_recognition as sr
+
+        return sr
+    except ImportError:
+        mock_sr = types.ModuleType("speech_recognition")
+        mock_sr.WaitTimeoutError = type("WaitTimeoutError", (Exception,), {})
+        mock_sr.UnknownValueError = type("UnknownValueError", (Exception,), {})
+        mock_sr.RequestError = type("RequestError", (Exception,), {})
+
+        class MockRecognizer:
+            dynamic_energy_threshold = False
+
+            def adjust_for_ambient_noise(self, source: Any, duration: float = 0.1) -> None:
+                pass
+
+            def listen(self, source: Any, timeout: float = 5, phrase_time_limit: float = 60) -> Any:
+                return "audio"
+
+            def recognize_google(self, audio: Any, language: str = "th-TH") -> str:
+                return "hello"
+
+        class MockMicrophone:
+            def __enter__(self) -> Any:
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                pass
+
+        mock_sr.Recognizer = MockRecognizer
+        mock_sr.Microphone = MockMicrophone
+        monkeypatch.setitem(sys.modules, "speech_recognition", mock_sr)
+        return mock_sr
+
+
+def test_google_transcriber_handles_permission_error_with_guidance(monkeypatch):
+    """PermissionError during mic initialization yields actionable user message."""
+    import pytest
+
+    from chat.speech import SpeechTranscriptionError
+
+    sr = _ensure_mock_speech_recognition(monkeypatch)
+
+    class MockMic:
+        def __enter__(self):
+            raise PermissionError("Access to audio device denied")
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(sr, "Microphone", MockMic)
+    transcriber = GoogleSpeechTranscriber()
+
+    with pytest.raises(SpeechTranscriptionError) as exc_info:
+        transcriber.transcribe(Event())
+
+    assert "Microphone is unavailable or permission was denied." in str(exc_info.value)
+    assert "Please enable microphone access and try again." in str(exc_info.value)
+
+
+def test_google_transcriber_handles_driver_and_portaudio_errors(monkeypatch):
+    """Driver-specific exceptions mentioning audio/portaudio/device are mapped cleanly."""
+    import pytest
+
+    from chat.speech import SpeechTranscriptionError
+
+    sr = _ensure_mock_speech_recognition(monkeypatch)
+
+    class PortAudioError(Exception):
+        pass
+
+    class MockMic:
+        def __enter__(self):
+            raise PortAudioError("Error opening PortAudio input device: no default input device")
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(sr, "Microphone", MockMic)
+    transcriber = GoogleSpeechTranscriber()
+
+    with pytest.raises(SpeechTranscriptionError) as exc_info:
+        transcriber.transcribe(Event())
+
+    assert "Microphone is unavailable or permission was denied." in str(exc_info.value)
+
+
+def test_google_transcriber_reraises_unrelated_exception(monkeypatch):
+    """Exceptions unrelated to microphone hardware or permissions are re-raised."""
+    import pytest
+
+    sr = _ensure_mock_speech_recognition(monkeypatch)
+
+    class CustomSystemFailure(Exception):
+        pass
+
+    class MockMic:
+        def __enter__(self):
+            raise CustomSystemFailure("Kernel memory exhausted")
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(sr, "Microphone", MockMic)
+    transcriber = GoogleSpeechTranscriber()
+
+    with pytest.raises(CustomSystemFailure):
+        transcriber.transcribe(Event())

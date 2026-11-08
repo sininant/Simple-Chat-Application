@@ -66,7 +66,10 @@ the rabbit character for every listed user.
 | *(Client-side Speech-to-Text)* | Client local -> `private_message` / `group_message` | *(Normal message payload)* | Microphone audio transcribed to text locally before emitting as text (**Special Point 1 — Mandatory AI**). |
 | `send_sticker` | Client -> Server | `{"sticker_id": "STK_001", "target": "Bob", "group_name": null, "message_id": "MSG_003", "timestamp": "14:33"}` | Client sends a predefined sticker to a peer or group (**Special Point 2**). |
 | `sticker_message` | Server -> Recipients | `{"sender": "Alice", "sticker_id": "STK_001", "target": "Bob", "group_name": null, "message_id": "MSG_003", "timestamp": "14:33"}` | Server forwards sticker event; client renders image from `assets/stickers/<sticker_id>.png`. |
-| `announcement` | Server -> All Clients | `{"message": "Server will restart in 5 minutes!", "timestamp": "14:30"}` | Server broadcasts alert across all client instances, displayed in top banner (**Special Point 3**). |
+| `announcement` (Private Pin) | Client -> Server | `{"message": "Pinned announcement", "timestamp": "14:30", "target": "Bob"}` | Registered client pins announcement in private chat with peer user (**Special Point 3**). |
+| `announcement` (Private Pin Delivery) | Server -> Recipient & Sender | `{"message": "Pinned announcement", "timestamp": "14:30", "sender": "Alice", "target": "Bob"}` | Server verifies sender from `sessions[sid]` and delivers announcement banner exclusively to target peer (`room=target_sid`) and sender (`room=sid`). |
+| `announcement` (Group Pin) | Client -> Server | `{"message": "Team update", "timestamp": "14:30", "group_name": "StudyGroup"}` | Registered client pins announcement in group chat; server verifies membership before routing (**Special Point 3**). |
+| `announcement` (Group Pin Delivery) | Server -> Group Room | `{"message": "Team update", "timestamp": "14:30", "sender": "Alice", "group_name": "StudyGroup"}` | Server delivers room-scoped announcement exclusively to joined group members (`room=group_name`). |
 | `read_ack` | Client -> Server | `{"message_id": "MSG_001", "target": "Alice"}` | Client notifies server that they viewed Alice's private message (**Special Point 4**). |
 | `read_ack` | Server -> Original Sender | `{"message_id": "MSG_001", "reader": "Bob"}` | Server derives `reader` from `sessions[sid]`, validates target, and emits acknowledgment exclusively to Alice, updating message status to `"Read ✓✓"`. |
 
@@ -94,3 +97,12 @@ the rabbit character for every listed user.
 3. **Thread Safety in Client GUI**:
    - `socketio.Client()` event callbacks run on background network threads.
    - Incoming events must be pushed into a thread-safe `queue.Queue` so the CustomTkinter GUI thread polls and renders updates via `.after()` without race conditions.
+4. **In-Chat Pinned Announcement & Destination Invariant (SP3)**:
+   - Announcements in the Simple Chat Application are strictly in-chat pins (LINE-style message bubble pinning) scoped to an active room.
+   - The server enforces `XOR(target, group_name)`: every client announcement event must specify exactly one room destination (`target` for a 1-to-1 private chat, or `group_name` for a group chat). Events with zero or multiple destinations are rejected at the Server Trust Boundary.
+   - The server strictly derives the sender identity from authenticated session mapping (`sessions[sid]`), ignoring any client-supplied `sender` property to prevent identity spoofing.
+   - When receiving a group announcement request, the server verifies group existence and requester membership before routing; unauthorized or malformed room announcement requests are denied immediately and never leak across rooms.
+5. **Server Memory Boundary (SP4 Read Receipt Invariant)**:
+   - The server maintains private message history using a bounded FIFO queue (`max_message_history = 10000`) so long-running deployments never experience memory exhaustion while maintaining `READ_ACK` validation.
+6. **Client-Side Composer State Invariant (SP2 Sticker Exclusivity)**:
+   - Selecting a sticker disables the text composer to prevent simultaneous text and sticker dispatch; clicking outside unfocuses the composer to prevent cursor blinking.

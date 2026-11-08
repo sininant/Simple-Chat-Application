@@ -1,7 +1,7 @@
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = ["src", "."]
 addopts = "-ra"
 
 [project]
@@ -18,6 +18,10 @@ dependencies = [
     "requests>=2.31.0,<3.0.0",
     "python-dotenv>=1.0.0,<2.0.0",
 ]
+
+[project.scripts]
+chat-server = "chat.server:main"
+chat-client = "chat.gui:main"
 
 [tool.ruff]
 target-version = "py311"

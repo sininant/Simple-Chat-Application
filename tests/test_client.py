@@ -778,3 +778,100 @@ def test_client_session_drops_invalid_announcement_event():
     spy.trigger(EVENT_ANNOUNCEMENT, {"message": "", "timestamp": "14:30"})
     assert session.get_next_event(block=False) is None
     assert session.announcements == []
+
+
+def test_client_session_concurrent_read_write_thread_safety():
+    """Verify ClientSession maintains thread-safe state access under concurrent usage."""
+    import threading
+
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+    errors: list[Exception] = []
+
+    def writer():
+        for i in range(100):
+            try:
+                spy.trigger("connect")
+                session.register("Alice")
+                spy.trigger("register_ack", {"success": True, "username": "Alice"})
+                spy.trigger("user_list", {"users": ["Alice", f"User_{i}"]})
+                spy.trigger("disconnect")
+            except Exception as e:
+                errors.append(e)
+
+    def reader():
+        for _ in range(100):
+            try:
+                _ = session.is_connected
+                _ = session.is_registered
+                _ = session.username
+                _ = session.online_users
+                _ = session.groups
+                _ = session.get_next_event(block=False)
+            except Exception as e:
+                errors.append(e)
+
+    threads = [
+        threading.Thread(target=writer),
+        threading.Thread(target=reader),
+        threading.Thread(target=reader),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+
+
+def test_client_session_send_announcement_emits_payload():
+    """Verify ClientSession emits EVENT_ANNOUNCEMENT when authenticated with destination (SP3)."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger("connect")
+    session.register("Alice")
+    spy.trigger("register_ack", {"success": True, "username": "Alice"})
+    spy.emitted.clear()
+
+    res = session.send_announcement("Meeting in room A", timestamp="15:30", target="Bob")
+    assert res is True
+    assert len(spy.emitted) == 1
+    event, data = spy.emitted[0]
+    assert event == EVENT_ANNOUNCEMENT
+    assert data["message"] == "Meeting in room A"
+    assert data["timestamp"] == "15:30"
+    assert data["target"] == "Bob"
+
+
+def test_client_session_send_announcement_rejects_missing_or_duplicate_destinations():
+    """Verify send_announcement enforces XOR(target, group_name)."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger("connect")
+    session.register("Alice")
+    spy.trigger("register_ack", {"success": True, "username": "Alice"})
+    spy.emitted.clear()
+
+    # Missing destination
+    assert session.send_announcement("No destination") is False
+    # Conflicting destinations
+    assert (
+        session.send_announcement("Conflicting destinations", target="Bob", group_name="DevTeam")
+        is False
+    )
+    assert len(spy.emitted) == 0
+
+
+def test_client_session_send_announcement_rejected_when_disconnected():
+    """Verify send_announcement is guarded when disconnected or unregistered."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    assert session.send_announcement("Hello", target="Bob") is False
+    assert len(spy.emitted) == 0
+
+    spy.trigger("connect")
+    assert session.send_announcement("Hello", target="Bob") is False
+    assert len(spy.emitted) == 0

@@ -21,8 +21,8 @@ Single-context layout (`GLOSSARY.md` at repo root and `docs/adr/`). See `docs/ag
 ## Project context and architecture
 
 - **Core design & protocol docs**: Read `docs/protocol.md` (client-server message contract and framing rules), `docs/project-ideas.md` (Part 1, Part 2, and Part 3 working design), and `CONTRIBUTING.md` (workflow and trust rules) before implementing features.
-- **Headless testability & seams (`codebase-design` / `tdd`)**: Keep protocol framing (`protocol.py`), server state/routing (`server.py`), and client session state (`client.py`) decoupled from the desktop GUI (`gui.py`) and microphone hardware (`speech.py`) so automated tests in `tests/` can run headlessly in GitHub Actions without an active display (`$DISPLAY`) or audio device.
-- **Server trust boundary**: Never trust the `sender` identity supplied inside a client payload; always derive or verify the sender from the authenticated server-side socket mapping.
+- **Headless testability & seams (`codebase-design` / `tdd`)**: Keep protocol framing (`src/chat/protocol.py`), server state/routing (`src/chat/server.py`), and client session state (`src/chat/client.py`) decoupled from the desktop GUI (`src/chat/gui.py`) and microphone hardware (`src/chat/speech.py`) so automated tests in `tests/` can run headlessly in GitHub Actions without an active display (`$DISPLAY`) or audio device. Root scripts (`server.py`, `gui.py`, `client.py`) provide CLI entrypoints alias-mapped to `chat.*`.
+- **Server trust boundary**: Never trust the `sender` identity supplied inside a client payload; always derive or verify the sender from the authenticated server-side socket mapping (`sessions[sid]`). For client-initiated announcements, the server strictly validates that the requesting socket is currently registered before broadcasting to connected clients.
 - **Quality gate commands**: Run the repository checks before completing code changes:
   ```bash
   ruff check .
