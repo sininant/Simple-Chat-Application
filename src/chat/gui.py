@@ -2216,7 +2216,7 @@ class ChatApplication:
         host: str | None = None,
         port: str | None = None,
     ) -> None:
-        load_dotenv(dotenv_path=Path(__file__).resolve().with_name(".env"))
+        load_dotenv()
         host = host or os.getenv("CHAT_SERVER_HOST", "127.0.0.1")
         port = port or os.getenv("CHAT_SERVER_PORT", "5000")
         ui = _require_ctk()

@@ -822,17 +822,29 @@ class ChatServer:
 
 def main() -> None:
     """CLI entrypoint for running the Socket.IO server."""
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+
+    import os
+
+    default_host = os.getenv("CHAT_SERVER_HOST", "0.0.0.0")
+    default_port = int(os.getenv("CHAT_SERVER_PORT", "5000"))
+
     parser = argparse.ArgumentParser(description="Simple Chat Application Socket.IO Server")
     parser.add_argument(
         "--host",
-        default="0.0.0.0",
-        help="Host interface to bind (default: 0.0.0.0)",
+        default=default_host,
+        help=f"Host interface to bind (default: {default_host})",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=5000,
-        help="Port to listen on (default: 5000)",
+        default=default_port,
+        help=f"Port to listen on (default: {default_port})",
     )
     parser.add_argument(
         "-v",
