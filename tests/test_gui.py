@@ -1578,3 +1578,58 @@ def test_main_chat_window_broadcasts_announcement_to_room_banners():
     assert window.banner.shown == [("Pinned room announcement", "16:00")]
     assert room.announcements == [("Pinned room announcement", "16:00")]
     assert window._latest_announcement == ("Pinned room announcement", "16:00")
+
+
+def test_chat_box_bar_sticker_mode_disables_and_enables_entry():
+    """Verify composer entry is disabled and blurred when sticker mode is active."""
+    from gui import ChatBoxBar
+
+    entry_state: dict[str, Any] = {"state": "normal"}
+
+    class MockEntry:
+        def configure(self, **kwargs: Any) -> None:
+            entry_state.update(kwargs)
+
+        def focus_set(self) -> None:
+            pass
+
+    class MockFrame:
+        def focus_set(self) -> None:
+            pass
+
+    box = object.__new__(ChatBoxBar)
+    box.entry = MockEntry()
+    box.frame = MockFrame()
+
+    # 1. Enable sticker mode -> disabled
+    box.set_sticker_mode(True)
+    assert entry_state["state"] == "disabled"
+
+    # 2. Disable sticker mode -> normal
+    box.set_sticker_mode(False)
+    assert entry_state["state"] == "normal"
+
+
+def test_chat_room_tab_clicking_sticker_disables_entry_and_clicking_entry_restores():
+    """Verify selecting sticker puts composer in sticker mode and clicking entry clears it."""
+    from gui import ChatBoxBar, ChatRoomTab
+
+    room = object.__new__(ChatRoomTab)
+    box = object.__new__(ChatBoxBar)
+    states: list[bool] = []
+    box.set_sticker_mode = lambda enabled: states.append(enabled)
+    box._update_action_icon = lambda: None
+
+    room.box = box
+    room._chosen_sticker = None
+    room.sticker_buttons = {}
+
+    # 1. Select sticker
+    room._on_sticker_single_clicked("STK_001")
+    assert room._chosen_sticker == "STK_001"
+    assert states[-1] is True
+
+    # 2. User clicks entry to resume writing
+    room._on_entry_activated()
+    assert room._chosen_sticker is None
+    assert states[-1] is False

@@ -1340,6 +1340,14 @@ class ChatBoxBar:
             font=(FONT, 16),
         )
         self.entry.bind("<Return>", lambda _event: self._submit_and_consume())
+        self.entry.bind("<Button-1>", lambda _event: self._on_entry_clicked(), add="+")
+        if hasattr(self.entry, "_textbox"):
+            try:
+                self.entry._textbox.bind(
+                    "<Button-1>", lambda _event: self._on_entry_clicked(), add="+"
+                )
+            except Exception:
+                pass
         self.sticker_button = ui.CTkButton(
             self.frame,
             text="",
@@ -1385,6 +1393,33 @@ class ChatBoxBar:
             self.on_send(message)
         elif getattr(self, "on_send_chosen", None):
             self.on_send_chosen()
+
+    def _on_entry_clicked(self) -> None:
+        """Handle user clicking composer: clear sticker mode and ensure normal editable state."""
+        if getattr(self, "on_entry_activate", None):
+            self.on_entry_activate()
+        self.set_sticker_mode(False)
+        try:
+            self.entry.focus_set()
+        except Exception:
+            pass
+
+    def set_sticker_mode(self, enabled: bool) -> None:
+        """Toggle composer state when sticker is chosen (disable typing and blinking cursor)."""
+        if enabled:
+            try:
+                self.entry.configure(state="disabled")
+            except Exception:
+                pass
+            try:
+                self.frame.focus_set()
+            except Exception:
+                pass
+        else:
+            try:
+                self.entry.configure(state="normal")
+            except Exception:
+                pass
 
     def _submit_and_consume(self) -> str:
         """Send an Entry draft and prevent Tk from processing Return a second time."""
@@ -1594,6 +1629,8 @@ class ChatRoomTab:
         )
         self.box.is_sticker_chosen = lambda: self._chosen_sticker is not None
         self.box.on_send_chosen = self._send_chosen_sticker
+        self.box.on_entry_activate = self._on_entry_activated
+        self.frame.bind("<Return>", lambda _e: self._send_chosen_sticker(), add="+")
         self.box.frame.pack(fill="x", padx=4, pady=(0, 4))
         self._sticker_panel_open = False
         self._chosen_sticker: str | None = None
@@ -1686,10 +1723,17 @@ class ChatRoomTab:
             self._last_clicked_sticker_id = sticker_id
             self._on_sticker_single_clicked(sticker_id)
 
+    def _on_entry_activated(self) -> None:
+        """Clear chosen sticker when user clicks composer to write text."""
+        if self._chosen_sticker is not None:
+            self._clear_chosen_sticker()
+            self.box._update_action_icon()
+
     def _on_sticker_single_clicked(self, sticker_id: str) -> None:
-        """Single click chooses sticker: highlights it and changes mic icon to send icon."""
+        """Single click chooses sticker: highlights it, disables entry, and changes action icon."""
         self._chosen_sticker = sticker_id
         self._highlight_chosen_sticker(sticker_id)
+        getattr(self.box, "set_sticker_mode", lambda _: None)(True)
         self.box._update_action_icon()
 
     def _send_chosen_sticker(self) -> bool:
@@ -1726,6 +1770,9 @@ class ChatRoomTab:
                 btn.configure(fg_color="transparent", border_width=0)
 
     def _clear_chosen_sticker(self) -> None:
+        self._chosen_sticker = None
+        self._highlight_chosen_sticker(None)
+        getattr(self.box, "set_sticker_mode", lambda _: None)(False)
         self._chosen_sticker = None
         self._highlight_chosen_sticker(None)
 
@@ -2425,6 +2472,23 @@ class ChatApplication:
         self.login.frame.place(relx=0.5, rely=0.5, anchor="center")
         self.main: MainChatWindow | None = None
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+
+        def _on_global_click(event: Any) -> None:
+            w = getattr(event, "widget", None)
+            if w is None:
+                return
+            w_class = getattr(w, "winfo_class", lambda: "")()
+            if w_class in ("Entry", "Text", "CustomTkinterTextbox"):
+                return
+            try:
+                w.focus_set()
+            except Exception:
+                try:
+                    self.root.focus_set()
+                except Exception:
+                    pass
+
+        self.root.bind_all("<Button-1>", _on_global_click, add="+")
         self._poll()
 
     def _connect(self, host: str, port: str, username: str, avatar: str) -> None:
