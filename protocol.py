@@ -1,7 +1,13 @@
 """Protocol contracts and validators and backward-compatible alias for chat.protocol."""
 
 import sys
+from pathlib import Path
 
-import chat.protocol as _cp
+# Ensure 'src' is in sys.path so 'chat' package is always resolvable
+_src = str(Path(__file__).resolve().parent / "src")
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+
+import chat.protocol as _cp  # noqa: E402
 
 sys.modules[__name__] = _cp

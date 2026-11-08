@@ -114,8 +114,10 @@ Speech recognition defaults to Thai (`th-TH`). Set `CHAT_SPEECH_LANGUAGE` in `.e
 4. On Computer A, start the Socket.IO server in one terminal:
 
    ```bash
-   python server.py
+   python server.py --port 5000
    ```
+
+   *(Or without flags for default port 5000: `python server.py`)*
 
 5. On Computer A, start Alice's client session in a second terminal:
 
