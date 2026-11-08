@@ -680,19 +680,12 @@ class AnnouncementBanner:
         self._current_timestamp = timestamp
         self.label.configure(text=f"  {message}")
         if before_widget is not None:
+            target = getattr(before_widget, "_parent_frame", before_widget)
             try:
-                self.frame.pack(fill="x", padx=10, pady=(6, 2), before=before_widget)
-            except Exception:
-                pass
-        else:
-            try:
-                if getattr(self.frame, "grid_info", lambda: None)():
-                    self.frame.grid()
-                else:
-                    self.frame.pack(fill="x", padx=10, pady=(6, 2))
+                self.frame.pack(fill="x", padx=10, pady=(6, 2), before=target)
             except Exception:
                 try:
-                    self.frame.grid()
+                    self.frame.pack(fill="x", padx=10, pady=(6, 2), before=before_widget)
                 except Exception:
                     pass
         try:

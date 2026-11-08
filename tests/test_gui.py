@@ -1820,32 +1820,28 @@ def test_main_chat_window_clear_announcements_clears_state_and_hides_rooms():
     assert room2.hidden is True
 
 
-def test_announcement_banner_show_restores_grid_when_before_widget_is_none():
-    """Verify AnnouncementBanner.show() restores grid() for main window top banner."""
+def test_announcement_banner_show_safely_updates_when_before_widget_is_none():
+    """Verify AnnouncementBanner.show() updates text safely when before_widget is None."""
     from gui import AnnouncementBanner
 
     banner = object.__new__(AnnouncementBanner)
-    gridded: list[bool] = []
+    configured: list[dict[str, Any]] = []
 
     class MockFrame:
-        def grid_info(self) -> dict[str, Any]:
-            return {"row": 0, "column": 0}
-
-        def grid(self) -> None:
-            gridded.append(True)
-
         def bell(self) -> None:
             pass
 
     class MockLabel:
         def configure(self, **kwargs: Any) -> None:
-            pass
+            configured.append(kwargs)
 
     banner.frame = MockFrame()
     banner.label = MockLabel()
 
-    banner.show("System-wide announcement")
-    assert gridded == [True]
+    banner.show("System-wide announcement", timestamp="12:00")
+    assert banner._current_message == "System-wide announcement"
+    assert banner._current_timestamp == "12:00"
+    assert configured == [{"text": "  System-wide announcement"}]
 
 
 def test_room_actions_encapsulates_callbacks():
