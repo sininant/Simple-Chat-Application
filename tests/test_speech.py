@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from queue import Queue
 from threading import Event
+from typing import Any
 
 from gui import FONT, ChatBoxBar
 from speech import FakeSpeechTranscriber, GoogleSpeechTranscriber, SpeechInputController
@@ -293,12 +294,53 @@ def test_speech_input_controller_is_listening_property():
     assert controller.is_listening is False
 
 
+def _ensure_mock_speech_recognition(monkeypatch: Any) -> Any:
+    """Ensure speech_recognition module is available in sys.modules for headless CI."""
+    import sys
+    import types
+
+    try:
+        import speech_recognition as sr
+
+        return sr
+    except ImportError:
+        mock_sr = types.ModuleType("speech_recognition")
+        mock_sr.WaitTimeoutError = type("WaitTimeoutError", (Exception,), {})
+        mock_sr.UnknownValueError = type("UnknownValueError", (Exception,), {})
+        mock_sr.RequestError = type("RequestError", (Exception,), {})
+
+        class MockRecognizer:
+            dynamic_energy_threshold = False
+
+            def adjust_for_ambient_noise(self, source: Any, duration: float = 0.1) -> None:
+                pass
+
+            def listen(self, source: Any, timeout: float = 5, phrase_time_limit: float = 60) -> Any:
+                return "audio"
+
+            def recognize_google(self, audio: Any, language: str = "th-TH") -> str:
+                return "hello"
+
+        class MockMicrophone:
+            def __enter__(self) -> Any:
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                pass
+
+        mock_sr.Recognizer = MockRecognizer
+        mock_sr.Microphone = MockMicrophone
+        monkeypatch.setitem(sys.modules, "speech_recognition", mock_sr)
+        return mock_sr
+
+
 def test_google_transcriber_handles_permission_error_with_guidance(monkeypatch):
     """PermissionError during mic initialization yields actionable user message."""
     import pytest
-    import speech_recognition as sr
 
     from chat.speech import SpeechTranscriptionError
+
+    sr = _ensure_mock_speech_recognition(monkeypatch)
 
     class MockMic:
         def __enter__(self):
@@ -320,9 +362,10 @@ def test_google_transcriber_handles_permission_error_with_guidance(monkeypatch):
 def test_google_transcriber_handles_driver_and_portaudio_errors(monkeypatch):
     """Driver-specific exceptions mentioning audio/portaudio/device are mapped cleanly."""
     import pytest
-    import speech_recognition as sr
 
     from chat.speech import SpeechTranscriptionError
+
+    sr = _ensure_mock_speech_recognition(monkeypatch)
 
     class PortAudioError(Exception):
         pass
@@ -346,7 +389,8 @@ def test_google_transcriber_handles_driver_and_portaudio_errors(monkeypatch):
 def test_google_transcriber_reraises_unrelated_exception(monkeypatch):
     """Exceptions unrelated to microphone hardware or permissions are re-raised."""
     import pytest
-    import speech_recognition as sr
+
+    sr = _ensure_mock_speech_recognition(monkeypatch)
 
     class CustomSystemFailure(Exception):
         pass
