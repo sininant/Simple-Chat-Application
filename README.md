@@ -182,7 +182,7 @@ python -m compileall -q .
 pytest -q
 ```
 
-`pytest` becomes mandatory once test files are added. CI currently skips the test command when the repository contains no `test_*.py` files.
+The automated test suite in `tests/` contains over 200 comprehensive unit, integration, and contract tests verifying requirements `R1`–`R11` and special points `SP1`–`SP4` without requiring physical audio hardware or a display server.
 
 ## Team workflow
 
