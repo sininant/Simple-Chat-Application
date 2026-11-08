@@ -1967,6 +1967,41 @@ class RoomRegistry(dict):
             return default
 
 
+def _create_room_tab(
+    tab: Any,
+    title: str,
+    on_send: Any,
+    on_sticker: Any,
+    on_send_sticker: Any,
+    on_announce: Any,
+) -> ChatRoomTab:
+    """Instantiate ChatRoomTab with backward-compatible fallback for varied test doubles."""
+    try:
+        return ChatRoomTab(
+            tab,
+            title,
+            on_send=on_send,
+            on_sticker=on_sticker,
+            on_send_sticker=on_send_sticker,
+            on_announce=on_announce,
+        )
+    except TypeError:
+        try:
+            return ChatRoomTab(
+                tab,
+                title,
+                on_send=on_send,
+                on_sticker=on_sticker,
+                on_send_sticker=on_send_sticker,
+            )
+        except TypeError:
+            return ChatRoomTab(
+                tab,
+                title,
+                on_send=on_send,
+            )
+
+
 class MainChatWindow:
     """Reusable responsive main view for authenticated sessions."""
 
@@ -2113,30 +2148,14 @@ class MainChatWindow:
             )
             tab = self.tabs.tab(tab_key) if tab_exists else self.tabs.add(room_id)
             try:
-                try:
-                    room = ChatRoomTab(
-                        tab,
-                        user,
-                        on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
-                        on_sticker=lambda peer=user: self._open_sticker_picker(peer),
-                        on_send_sticker=lambda s, peer=user: self._send_sticker(peer, s),
-                        on_announce=lambda msg: self.controller.send_announcement(msg),
-                    )
-                except TypeError:
-                    try:
-                        room = ChatRoomTab(
-                            tab,
-                            user,
-                            on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
-                            on_sticker=lambda peer=user: self._open_sticker_picker(peer),
-                            on_send_sticker=lambda s, peer=user: self._send_sticker(peer, s),
-                        )
-                    except TypeError:
-                        room = ChatRoomTab(
-                            tab,
-                            user,
-                            on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
-                        )
+                room = _create_room_tab(
+                    tab,
+                    user,
+                    on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
+                    on_sticker=lambda peer=user: self._open_sticker_picker(peer),
+                    on_send_sticker=lambda s, peer=user: self._send_sticker(peer, s),
+                    on_announce=lambda msg: self.controller.send_announcement(msg),
+                )
                 room.frame.pack(fill="both", expand=True)
                 self.rooms[room_id] = room
                 if user not in self.rooms:
@@ -2173,34 +2192,14 @@ class MainChatWindow:
             tab_exists = room_id in existing_tabs
             tab = self.tabs.tab(room_id) if tab_exists else self.tabs.add(room_id)
             try:
-                try:
-                    room = ChatRoomTab(
-                        tab,
-                        group_name,
-                        on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
-                        on_sticker=lambda g=group_name: self._open_sticker_picker(g),
-                        on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
-                        on_announce=lambda msg: self.controller.send_announcement(msg),
-                    )
-                except TypeError:
-                    try:
-                        room = ChatRoomTab(
-                            tab,
-                            group_name,
-                            on_send=lambda msg, gname=group_name: self._send_group_message(
-                                gname, msg
-                            ),
-                            on_sticker=lambda g=group_name: self._open_sticker_picker(g),
-                            on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
-                        )
-                    except TypeError:
-                        room = ChatRoomTab(
-                            tab,
-                            group_name,
-                            on_send=lambda msg, gname=group_name: self._send_group_message(
-                                gname, msg
-                            ),
-                        )
+                room = _create_room_tab(
+                    tab,
+                    group_name,
+                    on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
+                    on_sticker=lambda g=group_name: self._open_sticker_picker(g),
+                    on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
+                    on_announce=lambda msg: self.controller.send_announcement(msg),
+                )
                 room.frame.pack(fill="both", expand=True)
                 self.rooms[room_id] = room
                 if group_name not in self.rooms:
