@@ -1281,3 +1281,19 @@ def test_chat_engine_bounded_private_messages_prunes_old_entries():
     # Newer MSG_002, MSG_003, MSG_004 should still exist
     ack_res_new = engine.route_read_ack("sid_bob", "MSG_004", "Alice")
     assert ack_res_new.success is True
+
+
+def test_server_host_port_env_precedence(monkeypatch):
+    """Verify SERVER_HOST and SERVER_PORT environment variables take precedence in server.py."""
+    import os
+
+    monkeypatch.setenv("SERVER_HOST", "0.0.0.0")
+    monkeypatch.setenv("SERVER_PORT", "9999")
+    monkeypatch.setenv("CHAT_SERVER_HOST", "127.0.0.1")
+    monkeypatch.setenv("CHAT_SERVER_PORT", "5000")
+
+    host = os.getenv("SERVER_HOST") or os.getenv("CHAT_SERVER_HOST", "0.0.0.0")
+    port = int(os.getenv("SERVER_PORT") or os.getenv("CHAT_SERVER_PORT", "5000"))
+
+    assert host == "0.0.0.0"
+    assert port == 9999

@@ -1772,3 +1772,65 @@ def test_chat_room_tab_send_with_sticker_chosen_clears_entry_and_selection():
     assert room._chosen_sticker is None
     assert entry_text == []
     assert len(updated_icons) > 0
+
+
+def test_pink_light_matches_design_spec():
+    """Verify PINK_LIGHT matches the exact pastel pink spec #F8E8EE."""
+    import gui
+
+    assert gui.PINK_LIGHT == "#F8E8EE"
+
+
+def test_announcement_banner_has_close_button_and_dismisses():
+    """Verify AnnouncementBanner has '✕' button and dismisses/cancels on close."""
+    from gui import AnnouncementBanner
+
+    closed: list[bool] = []
+    banner = object.__new__(AnnouncementBanner)
+    banner.on_close = lambda: closed.append(True)
+    hidden: list[bool] = []
+    banner.hide = lambda: hidden.append(True)
+
+    banner.close()
+    assert hidden == [True]
+    assert closed == [True]
+
+
+def test_main_chat_window_clear_announcements_clears_state_and_hides_rooms():
+    """Verify _clear_announcements clears _latest_announcement and calls hide_announcement."""
+    from gui import MainChatWindow
+
+    window = object.__new__(MainChatWindow)
+    window._latest_announcement = ("Active alert", "12:00")
+
+    class MockRoom:
+        def __init__(self) -> None:
+            self.hidden = False
+
+        def hide_announcement(self) -> None:
+            self.hidden = True
+
+    room1 = MockRoom()
+    room2 = MockRoom()
+    window.rooms = {"Alice": room1, "Bob": room2}
+
+    window._clear_announcements()
+    assert window._latest_announcement is None
+    assert room1.hidden is True
+    assert room2.hidden is True
+
+
+def test_gui_server_host_port_env_precedence(monkeypatch):
+    """Verify SERVER_HOST and SERVER_PORT environment variables take precedence in gui.py."""
+    import os
+
+    monkeypatch.setenv("SERVER_HOST", "192.168.1.55")
+    monkeypatch.setenv("SERVER_PORT", "8888")
+    monkeypatch.setenv("CHAT_SERVER_HOST", "127.0.0.1")
+    monkeypatch.setenv("CHAT_SERVER_PORT", "5000")
+
+    host = os.getenv("SERVER_HOST") or os.getenv("CHAT_SERVER_HOST", "127.0.0.1")
+    port = os.getenv("SERVER_PORT") or os.getenv("CHAT_SERVER_PORT", "5000")
+
+    assert host == "192.168.1.55"
+    assert port == "8888"

@@ -60,7 +60,7 @@ from chat.speech import GoogleSpeechTranscriber, SpeechInputController, SpeechTr
 
 BACKGROUND = "#FFFCF8"
 PINK = "#FF9FBF"
-PINK_LIGHT = "#F9EEF4"
+PINK_LIGHT = "#F8E8EE"
 YELLOW = "#FFE79F"
 BLUE = "#BAE7EF"
 INK = "#5C4B41"
@@ -618,8 +618,9 @@ class LoginView:
 class AnnouncementBanner:
     """Reusable, dismissible announcement banner styled after LINE (SP3)."""
 
-    def __init__(self, parent: Any) -> None:
+    def __init__(self, parent: Any, on_close: Callable[[], None] | None = None) -> None:
         ui = _require_ctk()
+        self.on_close = on_close
         self.frame = ui.CTkFrame(
             parent,
             fg_color=PINK_LIGHT,
@@ -637,10 +638,10 @@ class AnnouncementBanner:
             font=(FONT, 15, "bold"),
         )
         self.label.pack(side="left", fill="x", expand=True, padx=14, pady=7)
-        self.toggle_btn = ui.CTkButton(
+        self.close_btn = ui.CTkButton(
             self.frame,
-            text="v",
-            width=36,
+            text="✕",
+            width=28,
             height=28,
             fg_color="transparent",
             hover_color=PINK,
@@ -649,22 +650,23 @@ class AnnouncementBanner:
             border_width=1,
             corner_radius=8,
             font=(FONT, 13, "bold"),
-            command=self.toggle,
+            command=self.close,
         )
-        self.toggle_btn.pack(side="right", padx=10, pady=5)
+        self.close_btn.pack(side="right", padx=10, pady=5)
+        # Compatibility alias if any test or caller inspects toggle_btn
+        self.toggle_btn = self.close_btn
         self._current_message = ""
         self._current_timestamp: str | None = None
-        self._is_collapsed = False
+
+    def close(self) -> None:
+        """Dismiss/cancel this announcement."""
+        self.hide()
+        if self.on_close is not None:
+            self.on_close()
 
     def toggle(self) -> None:
-        """Toggle banner between full message text and collapsed state."""
-        self._is_collapsed = not self._is_collapsed
-        if self._is_collapsed:
-            self.label.configure(text="  (Announcement)")
-            self.toggle_btn.configure(text="^")
-        else:
-            self.label.configure(text=f"  {self._current_message}")
-            self.toggle_btn.configure(text="v")
+        """Compatibility toggle action that dismisses/cancels the announcement."""
+        self.close()
 
     def show(
         self,
@@ -675,9 +677,7 @@ class AnnouncementBanner:
         """Display the announcement text and timestamp in the banner."""
         self._current_message = message
         self._current_timestamp = timestamp
-        self._is_collapsed = False
         self.label.configure(text=f"  {message}")
-        self.toggle_btn.configure(text="v")
         if before_widget is not None:
             try:
                 self.frame.pack(fill="x", padx=10, pady=(6, 2), before=before_widget)
@@ -1609,6 +1609,7 @@ class ChatRoomTab:
         transcriber: SpeechTranscriber | None = None,
         on_send_sticker: Callable[[str], None] | None = None,
         on_announce: Callable[[str], None] | None = None,
+        on_close_announcement: Callable[[], None] | None = None,
     ) -> None:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(
@@ -1622,7 +1623,10 @@ class ChatRoomTab:
         self.header = tk.Canvas(self.frame, height=52, bg=BACKGROUND, highlightthickness=0, bd=0)
         self.header.pack(fill="x")
         self.header.bind("<Configure>", lambda _event: self._draw_header(room_name))
-        self.announcement_bar = AnnouncementBanner(self.frame)
+        self.on_close_announcement = on_close_announcement
+        self.announcement_bar = AnnouncementBanner(
+            self.frame, on_close=self._on_announcement_closed
+        )
         self.announcement_bar.hide()
         self.window = ui.CTkScrollableFrame(self.frame, fg_color=BACKGROUND, corner_radius=10)
         self.window.pack(fill="both", expand=True, padx=4, pady=(4, 0))
@@ -1859,6 +1863,15 @@ class ChatRoomTab:
         target = getattr(self.window, "_parent_frame", self.window)
         self.announcement_bar.show(message, timestamp=timestamp, before_widget=target)
 
+    def _on_announcement_closed(self) -> None:
+        self.hide_announcement()
+        if self.on_close_announcement is not None:
+            self.on_close_announcement()
+
+    def hide_announcement(self) -> None:
+        """Dismiss/hide the pinned announcement banner in this chat room."""
+        self.announcement_bar.hide()
+
     def add_message(
         self,
         sender: str,
@@ -1973,6 +1986,7 @@ def _create_room_tab(
     on_sticker: Any,
     on_send_sticker: Any,
     on_announce: Any,
+    on_close_announcement: Any = None,
 ) -> ChatRoomTab:
     """Instantiate ChatRoomTab with backward-compatible fallback for varied test doubles."""
     try:
@@ -1983,6 +1997,7 @@ def _create_room_tab(
             on_sticker=on_sticker,
             on_send_sticker=on_send_sticker,
             on_announce=on_announce,
+            on_close_announcement=on_close_announcement,
         )
     except TypeError:
         try:
@@ -1992,13 +2007,23 @@ def _create_room_tab(
                 on_send=on_send,
                 on_sticker=on_sticker,
                 on_send_sticker=on_send_sticker,
+                on_announce=on_announce,
             )
         except TypeError:
-            return ChatRoomTab(
-                tab,
-                title,
-                on_send=on_send,
-            )
+            try:
+                return ChatRoomTab(
+                    tab,
+                    title,
+                    on_send=on_send,
+                    on_sticker=on_sticker,
+                    on_send_sticker=on_send_sticker,
+                )
+            except TypeError:
+                return ChatRoomTab(
+                    tab,
+                    title,
+                    on_send=on_send,
+                )
 
 
 class MainChatWindow:
@@ -2133,6 +2158,15 @@ class MainChatWindow:
             or self.rooms.get(f"private:{name}")
         )
 
+    def _clear_announcements(self) -> None:
+        """Cancel/dismiss the current active announcement across all rooms."""
+        self._latest_announcement = None
+        for room in self.rooms.values():
+            if hasattr(room, "hide_announcement"):
+                room.hide_announcement()
+            elif hasattr(room, "announcement_bar") and hasattr(room.announcement_bar, "hide"):
+                room.announcement_bar.hide()
+
     def _attach_room_tab(self, room_id: str, title: str, room: Any) -> None:
         """Register, display, and synchronize current announcements into a room tab."""
         room.frame.pack(fill="both", expand=True)
@@ -2164,6 +2198,7 @@ class MainChatWindow:
                     on_sticker=lambda peer=user: self._open_sticker_picker(peer),
                     on_send_sticker=lambda s, peer=user: self._send_sticker(peer, s),
                     on_announce=lambda msg: self.controller.send_announcement(msg),
+                    on_close_announcement=self._clear_announcements,
                 )
                 self._attach_room_tab(room_id, user, room)
             except Exception:
@@ -2202,6 +2237,7 @@ class MainChatWindow:
                     on_sticker=lambda g=group_name: self._open_sticker_picker(g),
                     on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
                     on_announce=lambda msg: self.controller.send_announcement(msg),
+                    on_close_announcement=self._clear_announcements,
                 )
                 self._attach_room_tab(room_id, group_name, room)
             except Exception:
@@ -2459,8 +2495,8 @@ class ChatApplication:
         port: str | None = None,
     ) -> None:
         load_dotenv()
-        host = host or os.getenv("CHAT_SERVER_HOST", "127.0.0.1")
-        port = port or os.getenv("CHAT_SERVER_PORT", "5000")
+        host = host or os.getenv("SERVER_HOST") or os.getenv("CHAT_SERVER_HOST", "127.0.0.1")
+        port = port or os.getenv("SERVER_PORT") or os.getenv("CHAT_SERVER_PORT", "5000")
         ui = _require_ctk()
         configure_fixed_pixel_scaling(ui)
         ui.set_appearance_mode("light")
@@ -2526,8 +2562,12 @@ class ChatApplication:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Simple Chat Application GUI")
-    parser.add_argument("--host", default=None, help="Override CHAT_SERVER_HOST from .env")
-    parser.add_argument("--port", default=None, help="Override CHAT_SERVER_PORT from .env")
+    parser.add_argument(
+        "--host", default=None, help="Override SERVER_HOST / CHAT_SERVER_HOST from .env"
+    )
+    parser.add_argument(
+        "--port", default=None, help="Override SERVER_PORT / CHAT_SERVER_PORT from .env"
+    )
     args = parser.parse_args()
     ChatApplication(host=args.host, port=args.port).run()
 

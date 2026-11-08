@@ -562,11 +562,21 @@ class ClientSession:
 
 def main() -> None:
     """CLI runner for headless ClientSession."""
+    import os
+
+    default_host = os.getenv("SERVER_HOST") or os.getenv("CHAT_SERVER_HOST", "127.0.0.1")
+    default_port = os.getenv("SERVER_PORT") or os.getenv("CHAT_SERVER_PORT", "5000")
+    default_url = (
+        os.getenv("SERVER_URL")
+        or os.getenv("CHAT_SERVER_URL")
+        or f"http://{default_host}:{default_port}"
+    )
+
     parser = argparse.ArgumentParser(description="Simple Chat Application Client Session")
     parser.add_argument(
         "--server-url",
-        default="http://127.0.0.1:5000",
-        help="Socket.IO server URL (default: http://127.0.0.1:5000)",
+        default=default_url,
+        help=f"Socket.IO server URL (default: {default_url})",
     )
     parser.add_argument(
         "--username",

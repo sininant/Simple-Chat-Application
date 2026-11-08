@@ -841,8 +841,8 @@ def main() -> None:
 
     import os
 
-    default_host = os.getenv("CHAT_SERVER_HOST", "0.0.0.0")
-    default_port = int(os.getenv("CHAT_SERVER_PORT", "5000"))
+    default_host = os.getenv("SERVER_HOST") or os.getenv("CHAT_SERVER_HOST", "0.0.0.0")
+    default_port = int(os.getenv("SERVER_PORT") or os.getenv("CHAT_SERVER_PORT", "5000"))
 
     parser = argparse.ArgumentParser(description="Simple Chat Application Socket.IO Server")
     parser.add_argument(
