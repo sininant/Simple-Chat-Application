@@ -486,9 +486,18 @@ class ClientSession:
         target: str | None = None,
         group_name: str | None = None,
     ) -> bool:
-        """Send an announcement broadcast request to the server (SP3 / LINE-style)."""
+        """Send an in-chat announcement pin request to the server (SP3 / LINE-style)."""
         if not self.is_connected or not self.is_registered:
             logger.warning("Cannot send announcement: client is not connected and registered")
+            return False
+
+        has_target = bool(target and str(target).strip())
+        has_group = bool(group_name and str(group_name).strip())
+        if has_target == has_group:
+            logger.warning(
+                "Cannot send announcement: in-chat announcements require "
+                "exactly one destination (target XOR group_name)"
+            )
             return False
 
         try:

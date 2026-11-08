@@ -712,8 +712,20 @@ class ChatServer:
                 logger.warning("Rejected announcement from unresolvable sid=%s", sid)
                 return
 
-            if payload.group_name:
+            # Client-initiated LINE pins must target exactly one room (in-chat private or group)
+            has_group = bool(payload.group_name and str(payload.group_name).strip())
+            has_target = bool(payload.target and str(payload.target).strip())
+            if has_group == has_target:
+                logger.warning(
+                    "Rejected announcement from sid=%s: exactly one destination "
+                    "required (target XOR group_name)",
+                    sid,
+                )
+                return
+
+            if has_group:
                 try:
+                    assert payload.group_name is not None
                     clean_group = validate_group_name(payload.group_name)
                     members = self.engine.get_group_members(clean_group)
                     if members is not None and sender in members:
@@ -740,8 +752,9 @@ class ChatServer:
                     logger.warning("Invalid group_name in announcement: %s", e)
                 return
 
-            if payload.target:
+            if has_target:
                 try:
+                    assert payload.target is not None
                     clean_target = validate_username(payload.target)
                     target_sid = self.engine.get_sid(clean_target)
                     if target_sid is None:
@@ -765,9 +778,6 @@ class ChatServer:
                 except ProtocolValidationError as e:
                     logger.warning("Invalid target in announcement: %s", e)
                 return
-
-            # Broadcast untargeted announcement to all connected clients (SP3)
-            self.broadcast_announcement(payload.message, payload.timestamp)
 
     def _handle_group_message(self, sid: str, data: Any) -> None:
         """Route group messages to group room members only (R11)."""

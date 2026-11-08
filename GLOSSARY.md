@@ -59,8 +59,8 @@ A predefined string identifier, such as `STK_001`, included in a `send_sticker` 
 _Avoid_: Emoji, attachment, image upload
 
 **Announcement**:
-A one-to-all broadcast sent through the `announcement` Event and displayed in a pinned banner across all Chat Rooms. Supports both server-wide broadcasts and client-initiated message pinning (via the LINE-style hover bell on message bubbles).
-_Avoid_: System message, notification, alert
+An in-chat pinned message sent through the `announcement` Event and displayed in a pinned banner across active participants of that specific Chat Room (Private Room or Group Room) via the LINE-style hover bell on message bubbles.
+_Avoid_: System message, notification, alert, global broadcast
 
 **Read Receipt**:
 An automatic `read_ack` Event that references a Message ID when a recipient displays a Private Room message, so the original sender's UI marks that message as read.

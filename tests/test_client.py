@@ -825,7 +825,7 @@ def test_client_session_concurrent_read_write_thread_safety():
 
 
 def test_client_session_send_announcement_emits_payload():
-    """Verify ClientSession emits EVENT_ANNOUNCEMENT when authenticated (SP3)."""
+    """Verify ClientSession emits EVENT_ANNOUNCEMENT when authenticated with destination (SP3)."""
     spy = SocketIOClientSpy()
     session = ClientSession(sio=spy.sio)
 
@@ -834,13 +834,34 @@ def test_client_session_send_announcement_emits_payload():
     spy.trigger("register_ack", {"success": True, "username": "Alice"})
     spy.emitted.clear()
 
-    res = session.send_announcement("Meeting in room A", timestamp="15:30")
+    res = session.send_announcement("Meeting in room A", timestamp="15:30", target="Bob")
     assert res is True
     assert len(spy.emitted) == 1
     event, data = spy.emitted[0]
     assert event == EVENT_ANNOUNCEMENT
     assert data["message"] == "Meeting in room A"
     assert data["timestamp"] == "15:30"
+    assert data["target"] == "Bob"
+
+
+def test_client_session_send_announcement_rejects_missing_or_duplicate_destinations():
+    """Verify send_announcement enforces XOR(target, group_name)."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger("connect")
+    session.register("Alice")
+    spy.trigger("register_ack", {"success": True, "username": "Alice"})
+    spy.emitted.clear()
+
+    # Missing destination
+    assert session.send_announcement("No destination") is False
+    # Conflicting destinations
+    assert (
+        session.send_announcement("Conflicting destinations", target="Bob", group_name="DevTeam")
+        is False
+    )
+    assert len(spy.emitted) == 0
 
 
 def test_client_session_send_announcement_rejected_when_disconnected():
@@ -848,9 +869,9 @@ def test_client_session_send_announcement_rejected_when_disconnected():
     spy = SocketIOClientSpy()
     session = ClientSession(sio=spy.sio)
 
-    assert session.send_announcement("Hello") is False
+    assert session.send_announcement("Hello", target="Bob") is False
     assert len(spy.emitted) == 0
 
     spy.trigger("connect")
-    assert session.send_announcement("Hello") is False
+    assert session.send_announcement("Hello", target="Bob") is False
     assert len(spy.emitted) == 0

@@ -1001,8 +1001,8 @@ def test_server_rejects_unregistered_client_announcement():
     assert spy.get_events(EVENT_ANNOUNCEMENT) == []
 
 
-def test_server_registered_client_announcement_broadcasts_to_all():
-    """SP3: Registered client can announce a message (LINE-style announcement)."""
+def test_server_rejects_client_announcement_without_destination():
+    """SP3: Client announcement omitting both target and group_name is rejected."""
     spy = SocketIOServerSpy()
     server = ChatServer(sio=spy.sio)
     server.engine.register_user("sid_alice", "Alice")
@@ -1015,12 +1015,30 @@ def test_server_registered_client_announcement_broadcasts_to_all():
         {"message": "Meeting at 3 PM!", "timestamp": "14:35"},
     )
 
-    alice_events = spy.get_events(EVENT_ANNOUNCEMENT, room="sid_alice")
-    bob_events = spy.get_events(EVENT_ANNOUNCEMENT, room="sid_bob")
-    assert len(alice_events) == 1
-    assert alice_events[0]["data"]["message"] == "Meeting at 3 PM!"
-    assert len(bob_events) == 1
-    assert bob_events[0]["data"]["message"] == "Meeting at 3 PM!"
+    assert spy.get_events(EVENT_ANNOUNCEMENT) == []
+
+
+def test_server_rejects_client_announcement_with_both_destinations():
+    """SP3: Client announcement supplying both target and group_name is rejected."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+    server.engine.create_group("sid_alice", "DevTeam")
+    spy.clear()
+
+    spy.trigger(
+        EVENT_ANNOUNCEMENT,
+        "sid_alice",
+        {
+            "message": "Conflicting announcement",
+            "timestamp": "14:35",
+            "target": "Bob",
+            "group_name": "DevTeam",
+        },
+    )
+
+    assert spy.get_events(EVENT_ANNOUNCEMENT) == []
 
 
 def test_server_broadcast_announcement_emits_to_all_registered_clients():

@@ -126,13 +126,19 @@ To keep the Socket.IO server and desktop client in Python (`server.py`, `client.
   - Clicking a sticker emits `send_sticker` with identifier, destination, and metadata, such as `{"sticker_id": "STK_001", "target": "Bob", "group_name": null, "message_id": "MSG_003", "timestamp": "14:33"}`.
   - The server verifies sender identity and forwards a `sticker_message` event to the target user or group Room. Upon receiving `sticker_message`, the recipient's UI loads `assets/stickers/STK_001.png` from local disk and renders the image inside the appropriate chat window (`R6`).
 
-### 3. System-Wide Announcement (One-to-All Broadcast & Pinned Announcements)
+### 3. In-Chat Pinned Announcement (LINE-Style Pinned Announcements in Private & Group Rooms)
 - **Architecture:**
-  - Demonstrates **One-to-All Broadcast** across all connected Socket.IO clients regardless of active chat rooms.
-  - Can be triggered directly by server-wide broadcast or client-initiated message pinning (LINE-style announcement UX):
-    - **Client-Initiated Pinning:** Hovering over any text message bubble reveals a centered bell action icon (`announce_btn`); clicking it emits a validated `announcement` event to the server.
-    - **Server Broadcast & Trust Boundary:** The server validates that the emitting client session is currently registered, then broadcasts the announcement payload to all connected clients.
-  - Every connected client displays the announcement in a prominent, pinned top banner styled in pastel pink (`#F8E8EE`), complete with an audible announcement chime (`self.frame.bell()`) and a `[✕]` cancellation button to dismiss the announcement.
+  - Demonstrates **In-Chat Pinned Announcement** scoped strictly to the active room (Private Chat or Group Room), inspired by LINE's pinned announcement UX.
+  - **Client-Initiated Pinning & Room Isolation:**
+    - Hovering over any text message bubble reveals a centered bell action icon (`announce_btn`); clicking it pins that message as the room announcement.
+    - Emits a validated `announcement` event to the server specifying exactly one room destination (`target` for a private chat, or `group_name` for a group chat).
+  - **Server Routing & Trust Boundary:**
+    - The server strictly enforces `XOR(target, group_name)` at the trust boundary, rejecting events with missing or conflicting destinations.
+    - Derives the sender identity strictly from `sessions[sid]` (ignoring any client-supplied sender values).
+    - For private chats, delivers the announcement payload only to the recipient (`room=target_sid`) and sender (`room=sid`).
+    - For group chats, verifies group membership and delivers exclusively to joined members (`room=group_name`).
+  - **UI Display & Dismissal:**
+    - The active room displays the announcement in a prominent, pinned top banner styled in pastel pink (`#F8E8EE`), complete with an audible announcement chime (`self.frame.bell()`) and a `[✕]` cancellation button to dismiss the announcement for that room.
 
 ### 5. Architectural Quality Invariants & UX Hardening
 - **Sticker Composer Lock & Focus Management:**
