@@ -183,10 +183,7 @@ class GuiController:
 
     def send_announcement(self, message: str) -> bool:
         """Send a system announcement request through the session adapter (SP3 / LINE-style)."""
-        send_fn = getattr(self.session, "send_announcement", None)
-        if send_fn is None:
-            return False
-        return bool(send_fn(message))
+        return bool(self.session.send_announcement(message))
 
     def connect_and_register(
         self, host: str, port: str, username: str, avatar: str = "rabbit"
@@ -415,6 +412,8 @@ def _load_icons(size: tuple[int, int] = (28, 28)) -> dict[str, Any]:
                 centered.alpha_composite(image, offset)
                 image = centered
             icons[name] = ctk.CTkImage(light_image=image, dark_image=image, size=icon_size)
+    if "notification" in icons and "announcement" not in icons:
+        icons["announcement"] = icons["notification"]
     return icons
 
 
@@ -631,7 +630,7 @@ class AnnouncementBanner:
         self.label = ui.CTkLabel(
             self.frame,
             text="",
-            image=_load_icons().get("notification"),
+            image=_load_icons().get("announcement"),
             compound="left",
             text_color=INK,
             anchor="w",
@@ -1234,7 +1233,7 @@ class MessageBubble:
 
         # Create announce action button if callback provided and not a sticker
         if self.on_announce is not None and sticker_image is None and message.strip():
-            bell_icon = _load_icons((18, 18)).get("notification")
+            bell_icon = _load_icons((18, 18)).get("announcement")
             self.announce_btn = ui.CTkButton(
                 self._bubble_row,
                 text="",
@@ -2134,6 +2133,16 @@ class MainChatWindow:
             or self.rooms.get(f"private:{name}")
         )
 
+    def _attach_room_tab(self, room_id: str, title: str, room: Any) -> None:
+        """Register, display, and synchronize current announcements into a room tab."""
+        room.frame.pack(fill="both", expand=True)
+        self.rooms[room_id] = room
+        if title not in self.rooms:
+            self.rooms[title] = room
+        latest_ann = getattr(self, "_latest_announcement", None)
+        if latest_ann is not None and hasattr(room, "show_announcement"):
+            room.show_announcement(*latest_ann)
+
     def open_private_room(self, user: str, select: bool = True) -> None:
         if user == self.controller.username:
             return
@@ -2156,13 +2165,7 @@ class MainChatWindow:
                     on_send_sticker=lambda s, peer=user: self._send_sticker(peer, s),
                     on_announce=lambda msg: self.controller.send_announcement(msg),
                 )
-                room.frame.pack(fill="both", expand=True)
-                self.rooms[room_id] = room
-                if user not in self.rooms:
-                    self.rooms[user] = room
-                latest_ann = getattr(self, "_latest_announcement", None)
-                if latest_ann is not None and hasattr(room, "show_announcement"):
-                    room.show_announcement(*latest_ann)
+                self._attach_room_tab(room_id, user, room)
             except Exception:
                 if not tab_exists:
                     getattr(self.tabs, "delete", lambda _: None)(room_id)
@@ -2200,13 +2203,7 @@ class MainChatWindow:
                     on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
                     on_announce=lambda msg: self.controller.send_announcement(msg),
                 )
-                room.frame.pack(fill="both", expand=True)
-                self.rooms[room_id] = room
-                if group_name not in self.rooms:
-                    self.rooms[group_name] = room
-                latest_ann = getattr(self, "_latest_announcement", None)
-                if latest_ann is not None and hasattr(room, "show_announcement"):
-                    room.show_announcement(*latest_ann)
+                self._attach_room_tab(room_id, group_name, room)
             except Exception:
                 if not tab_exists:
                     getattr(self.tabs, "delete", lambda _: None)(room_id)
@@ -2480,14 +2477,14 @@ class ChatApplication:
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
         def _on_global_click(event: Any) -> None:
-            w = getattr(event, "widget", None)
-            if w is None:
+            widget = getattr(event, "widget", None)
+            if widget is None:
                 return
-            w_class = getattr(w, "winfo_class", lambda: "")()
-            if w_class in ("Entry", "Text", "CustomTkinterTextbox"):
+            widget_class = getattr(widget, "winfo_class", lambda: "")()
+            if widget_class in ("Entry", "Text", "CustomTkinterTextbox"):
                 return
             try:
-                w.focus_set()
+                widget.focus_set()
             except Exception:
                 try:
                     self.root.focus_set()

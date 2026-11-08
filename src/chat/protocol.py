@@ -635,7 +635,7 @@ class StickerMessageServerPayload:
 
 @dataclass(frozen=True, slots=True)
 class AnnouncementPayload:
-    """Server -> All Clients: System-wide broadcast alert (SP3)."""
+    """Server -> All Clients: System-wide broadcast announcement (SP3)."""
 
     message: str
     timestamp: str

@@ -68,7 +68,7 @@ To keep the Socket.IO server and desktop client in Python (`server.py`, `client.
 | [Screen 2: Main Chat Window]                                                      |
 | Logged in as: Alice (Online)                                                      |
 +-----------------------------------------------------------------------------------+
-| 📢 ANNOUNCEMENT BANNER (SP3): "Server will restart in 5 minutes!"          [Hide] |
+| 📢 PINNED ANNOUNCEMENT (SP3): "Server will restart in 5 minutes!"    [v] [Hide]  |
 +---------------------------+-------------------------------------------------------+
 | LEFT SIDEBAR              | RIGHT PANEL: CHAT ROOM TABS (CTkTabview - R5)         |
 |                           | [ 👤 Bob ] [ 👥 StudyGroup * ]                        |
@@ -126,11 +126,13 @@ To keep the Socket.IO server and desktop client in Python (`server.py`, `client.
   - Clicking a sticker emits `send_sticker` with identifier, destination, and metadata, such as `{"sticker_id": "STK_001", "target": "Bob", "group_name": null, "message_id": "MSG_003", "timestamp": "14:33"}`.
   - The server verifies sender identity and forwards a `sticker_message` event to the target user or group Room. Upon receiving `sticker_message`, the recipient's UI loads `assets/stickers/STK_001.png` from local disk and renders the image inside the appropriate chat window (`R6`).
 
-### 3. System-Wide Announcement (One-to-All Broadcast)
+### 3. System-Wide Announcement (One-to-All Broadcast & Pinned Announcements)
 - **Architecture:**
   - Demonstrates **One-to-All Broadcast** across all connected Socket.IO clients regardless of active chat rooms.
-  - When an announcement is triggered on the server (or by an authorized admin command), the server emits `announcement` to all clients with `{"message": "Server will restart in 5 minutes!", "timestamp": "14:35"}`.
-  - Every connected client displays the announcement in a prominent top banner (with an optional alert sound) visible across all tabs.
+  - Can be triggered directly by server-wide broadcast or client-initiated message pinning (LINE-style announcement UX):
+    - **Client-Initiated Pinning:** Hovering over any text message bubble reveals a centered bell action icon (`announce_btn`); clicking it emits a validated `announcement` event to the server.
+    - **Server Broadcast & Trust Boundary:** The server validates that the emitting client session is currently registered, then broadcasts the announcement payload to all connected clients.
+  - Every connected client displays the announcement in a prominent, pinned top banner styled in pastel pink (`#F8E8EE`), complete with an audible notification alert (`self.frame.bell()`), a collapsible `[v]`/`[^]` toggle for multi-line text, and a `[Hide]` dismissal option.
 
 ### 4. Private-Message Read Receipt (`READ_ACK`)
 - **Architecture (Inspired by Reliable Data Transfer `rdt2.0` ACK):**

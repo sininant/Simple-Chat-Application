@@ -41,7 +41,7 @@ style/format-protocol-tests
 
 ## While working
 
-- Keep each branch and pull request focused on one task.
+- Keep each branch and pull request focused on one task. Integration and architecture consolidation branches (such as `refactor/tdd-clean-architecture`) serve as unified releases that harmonize package layout (`src/`), test-driven seams, agreed special features (e.g. client-initiated pinned announcements), and cross-platform reliability fixes before merging into `main`.
 - Follow the message contract in `docs/protocol.md`.
 - Update the protocol document before merging a breaking message-format change.
 - Never trust a sender name supplied by a client; derive it from the registered socket.

@@ -1062,7 +1062,7 @@ def test_server_console_loop_triggers_announcements():
     assert alice_events[0]["data"]["message"] == "Scheduled maintenance at 15:00"
     assert alice_events[1]["data"]["message"] == "Direct broadcast message"
     assert bob_events[0]["data"]["message"] == "Scheduled maintenance at 15:00"
-    assert bob_events[0]["data"]["message"] == "Scheduled maintenance at 15:00"
+    assert bob_events[1]["data"]["message"] == "Direct broadcast message"
 
 
 def test_live_server_announcement_reaches_multiple_clients_simultaneously():
