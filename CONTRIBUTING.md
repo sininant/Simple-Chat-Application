@@ -23,7 +23,9 @@ Use one of these prefixes:
 - `bugfix/` for bug fixes;
 - `test/` for test-only changes;
 - `docs/` for documentation;
-- `chore/` for tooling and repository maintenance.
+- `chore/` for tooling and repository maintenance;
+- `refactor/` for structural and architectural refactoring;
+- `style/` for code style, formatting, and lint cleanup.
 
 Examples:
 
@@ -33,6 +35,8 @@ feature/group-chat
 bugfix/disconnect-cleanup
 test/protocol-framing
 docs/update-setup
+refactor/tdd-clean-architecture
+style/format-protocol-tests
 ```
 
 ## While working
@@ -62,6 +66,8 @@ fix: clean up disconnected clients
 test: cover partial TCP reads
 docs: describe group message contract
 chore: configure Python CI
+refactor: adopt standard src-layout package structure
+style: format boundary tests with ruff
 ```
 
 ## Pull requests
