@@ -1152,7 +1152,7 @@ def test_server_group_message_routing_to_room_only_and_charlie_isolation():
     broadcast_events = [e for e in spy.get_events(EVENT_RECEIVE_GROUP) if e["room"] is None]
     assert len(broadcast_events) == 0
 
-    # 4. Charlie received zero direct messages or events
+    # 4. Charlie received zero private messages or events
     assert len(spy.get_events(EVENT_RECEIVE_GROUP, room="sid_charlie")) == 0
 
 

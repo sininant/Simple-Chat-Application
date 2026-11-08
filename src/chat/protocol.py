@@ -49,7 +49,7 @@ EVENT_READ_ACK = "read_ack"  # SP4
 
 
 class ProtocolValidationError(Exception):
-    """Raised when an incoming packet or payload violates schema or validation rules."""
+    """Raised when an incoming event payload violates schema or validation rules."""
 
     def __init__(self, message: str, field: str | None = None):
         super().__init__(message)
@@ -208,7 +208,7 @@ def _ensure_dict(data: Any) -> dict[str, Any]:
 
 @dataclass(frozen=True, slots=True)
 class MessageMeta:
-    """Composite metadata carried across chat packets (message_id and timestamp)."""
+    """Composite metadata carried across chat event payloads (message_id and timestamp)."""
 
     message_id: str
     timestamp: str
@@ -357,7 +357,7 @@ class UserListPayload:
 
 @dataclass(frozen=True, slots=True)
 class PrivateMessagePayload:
-    """Client -> Server: Direct message to a specific peer (R5, R6, R7)."""
+    """Client -> Server: Private message to a specific peer in a 1-to-1 room (R5, R6, R7)."""
 
     target: str
     message: str
@@ -382,7 +382,7 @@ class PrivateMessagePayload:
 
 @dataclass(frozen=True, slots=True)
 class PrivateMessageServerPayload:
-    """Server -> Target & Sender: Forwarded direct message with verified sender (R7)."""
+    """Server -> Target & Sender: Forwarded private message with verified sender (R7)."""
 
     sender: str
     target: str
@@ -595,7 +595,7 @@ class SendStickerPayload:
 
 @dataclass(frozen=True, slots=True)
 class StickerMessageServerPayload:
-    """Server -> Recipients: Forwarded sticker packet with verified sender (SP2)."""
+    """Server -> Recipients: Forwarded sticker event payload with verified sender (SP2)."""
 
     sender: str
     sticker_id: str
