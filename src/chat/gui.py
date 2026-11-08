@@ -2252,10 +2252,6 @@ class MainChatWindow:
         ).get(title)
         if room_ann is not None and hasattr(room, "show_announcement"):
             room.show_announcement(*room_ann)
-        elif room_ann is None:
-            latest_ann = getattr(self, "_latest_announcement", None)
-            if latest_ann is not None and hasattr(room, "show_announcement"):
-                room.show_announcement(*latest_ann)
 
     def open_private_room(self, user: str, select: bool = True) -> None:
         if user == self.controller.username:
@@ -2502,6 +2498,44 @@ class MainChatWindow:
             if peer:
                 target_room_id = f"private:{peer}"
                 target_room_name = peer
+        else:
+            # Fallback deduction: search message history in controller / rooms
+            matched_room: str | None = None
+            matched_kind: str | None = None
+            if controller is not None:
+                for p_peer, p_msgs in getattr(controller, "private_messages", {}).items():
+                    if any(getattr(m, "message", None) == payload.message for m in p_msgs):
+                        matched_room = p_peer
+                        matched_kind = "private"
+                        break
+                if matched_room is None:
+                    for g_name, g_msgs in getattr(controller, "group_messages", {}).items():
+                        if any(getattr(m, "message", None) == payload.message for m in g_msgs):
+                            matched_room = g_name
+                            matched_kind = "group"
+                            break
+
+            if matched_room is None:
+                rooms = getattr(self, "rooms", {})
+                for r_key, r_obj in rooms.items():
+                    bubbles = getattr(r_obj, "bubbles", {})
+                    if any(
+                        getattr(b, "message", None) == payload.message for b in bubbles.values()
+                    ):
+                        is_group = r_key.startswith("group:") or (
+                            controller is not None
+                            and any(
+                                g.get("group_name") == r_key
+                                for g in getattr(controller, "groups", [])
+                            )
+                        )
+                        matched_room = r_key.split(":", 1)[-1]
+                        matched_kind = "group" if is_group else "private"
+                        break
+
+            if matched_room is not None:
+                target_room_id = f"{matched_kind}:{matched_room}"
+                target_room_name = matched_room
 
         if target_room_id and target_room_name:
             if not hasattr(self, "_room_announcements"):
@@ -2510,7 +2544,8 @@ class MainChatWindow:
             self._room_announcements[target_room_name] = (payload.message, payload.timestamp)
 
             room = self._get_room(
-                target_room_name, kind="group" if payload.group_name else "private"
+                target_room_name,
+                kind="group" if target_room_id.startswith("group:") else "private",
             )
             if room is not None and hasattr(room, "show_announcement"):
                 room.show_announcement(payload.message, timestamp=payload.timestamp)
@@ -2518,10 +2553,14 @@ class MainChatWindow:
             self._latest_announcement = (payload.message, payload.timestamp)
             if hasattr(self, "banner"):
                 self.banner.show(payload.message, timestamp=payload.timestamp)
-            rooms = getattr(self, "rooms", {})
-            for room in set(rooms.values()):
-                if hasattr(room, "show_announcement"):
-                    room.show_announcement(payload.message, timestamp=payload.timestamp)
+            active = getattr(self, "_active_room", None)
+            if active and active in self.rooms and hasattr(self.rooms[active], "show_announcement"):
+                self.rooms[active].show_announcement(payload.message, timestamp=payload.timestamp)
+            elif not active:
+                rooms = getattr(self, "rooms", {})
+                for room in set(rooms.values()):
+                    if hasattr(room, "show_announcement"):
+                        room.show_announcement(payload.message, timestamp=payload.timestamp)
 
     def _handle_private_message_error(self, target: str, error: str) -> None:
         if target and target in self.rooms:

@@ -1969,3 +1969,58 @@ def test_clear_room_announcement_isolates_closure():
     assert "private:bob" not in window._room_announcements
     assert "bob" not in window._room_announcements
     assert window._room_announcements["private:charlie"] == ("Note 2", "11:00")
+
+
+def test_private_announcement_never_shows_in_group_chat_even_if_opened_later():
+    """Verify that an announcement in private chat does not appear in a group room opened later."""
+    from chat.gui import MainChatWindow
+    from chat.protocol import AnnouncementPayload, MessageMeta, PrivateMessageServerPayload
+
+    class RoomSpy:
+        def __init__(self) -> None:
+            self.announcements: list[tuple[str, str | None]] = []
+
+        def show_announcement(self, message: str, timestamp: str | None = None) -> None:
+            self.announcements.append((message, timestamp))
+
+    class ControllerSpy:
+        username = "minnoo"
+        private_messages = {
+            "ngor": [
+                PrivateMessageServerPayload(
+                    sender="ngor",
+                    target="minnoo",
+                    message="yh",
+                    meta=MessageMeta(message_id="M1", timestamp="16:38"),
+                )
+            ]
+        }
+        group_messages = {}
+
+    window = object.__new__(MainChatWindow)
+    window.controller = ControllerSpy()
+    window.rooms = {}
+    window._room_announcements = {}
+    window._active_room = "private:ngor"
+
+    # Private room ngor is open
+    ngor_room = RoomSpy()
+    window.rooms["private:ngor"] = ngor_room
+    window.rooms["ngor"] = ngor_room
+
+    # Announcement arrives (even if untargeted or legacy broadcast)
+    payload = AnnouncementPayload(message="yh", timestamp="16:38")
+    window._handle_announcement(payload)
+
+    # ngor room has the announcement
+    assert ngor_room.announcements == [("yh", "16:38")]
+    assert window._room_announcements.get("private:ngor") == ("yh", "16:38")
+
+    # Now minnoo opens group chat tk gang later
+    tk_gang_room = RoomSpy()
+    tk_gang_room.frame = type("MockFrame", (), {"pack": lambda self, **kw: None})()
+    window._attach_room_tab("group:tk gang", "tk gang", tk_gang_room)
+
+    # tk gang must NOT show yh!
+    assert tk_gang_room.announcements == []
+    assert "group:tk gang" not in window._room_announcements
