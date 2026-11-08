@@ -22,6 +22,28 @@ class SpeechTranscriber(Protocol):
     def transcribe(self, paused: Event) -> str: ...
 
 
+_AUDIO_DRIVER_ERROR_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "microphone",
+        "permission",
+        "audio",
+        "portaudio",
+        "pyaudio",
+        "input device",
+        "no default input",
+        "invalid input",
+    }
+)
+
+
+def _is_microphone_driver_error(error: Exception) -> bool:
+    """Classify unhandled PyAudio/PortAudio driver or hardware permission failures."""
+    if isinstance(error, (PermissionError, OSError)):
+        return True
+    error_text = f"{type(error).__name__} {error}".lower()
+    return any(keyword in error_text for keyword in _AUDIO_DRIVER_ERROR_KEYWORDS)
+
+
 class GoogleSpeechTranscriber:
     """Production adapter using SpeechRecognition's Google Web Speech API backend."""
 
@@ -69,37 +91,12 @@ class GoogleSpeechTranscriber:
                 )
         except sr.WaitTimeoutError as error:
             raise SpeechTranscriptionError("No speech was detected. Please try again.") from error
-        except (PermissionError, OSError) as error:
-            raise SpeechTranscriptionError(
-                "Microphone is unavailable or permission was denied.\n"
-                "Please enable microphone access and try again."
-            ) from error
         except Exception as error:
-            # PyAudio/PortAudio can raise driver-specific exceptions that are
-            # not always exposed as OSError.
-            error_text = str(error).lower()
-            error_name = type(error).__name__.lower()
-
-            microphone_failure = any(
-                text in error_text or text in error_name
-                for text in (
-                    "microphone",
-                    "permission",
-                    "audio",
-                    "portaudio",
-                    "pyaudio",
-                    "input device",
-                    "no default input",
-                    "invalid input",
-                )
-            )
-
-            if microphone_failure:
+            if _is_microphone_driver_error(error):
                 raise SpeechTranscriptionError(
                     "Microphone is unavailable or permission was denied.\n"
                     "Please enable microphone access and try again."
                 ) from error
-
             raise
 
         # Speech recognition
