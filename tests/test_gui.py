@@ -1633,3 +1633,200 @@ def test_chat_room_tab_clicking_sticker_disables_entry_and_clicking_entry_restor
     room._on_entry_activated()
     assert room._chosen_sticker is None
     assert states[-1] is False
+
+
+def test_message_bubble_hover_targets_restricted_to_bubble(monkeypatch):
+    """Verify hover targets strictly include bubble shell / button and exclude parent frame/row."""
+    from gui import MessageBubble
+
+    class MockWidget:
+        def __init__(self, parent: Any = None, **kwargs: Any) -> None:
+            self.parent = parent
+            self.kwargs = kwargs
+            self.packed = False
+            self.bound_events: list[str] = []
+
+        def pack(self, **kwargs: Any) -> None:
+            self.packed = True
+
+        def pack_forget(self) -> None:
+            self.packed = False
+
+        def pack_propagate(self, _flag: bool) -> None:
+            pass
+
+        def bind(self, event: str, _handler: Any, add: str | None = None) -> None:
+            self.bound_events.append(event)
+
+        def after(self, ms: int, fn: Any) -> None:
+            pass
+
+    class MockUI:
+        CTkFrame = MockWidget
+        CTkLabel = MockWidget
+        CTkButton = MockWidget
+
+    monkeypatch.setattr("gui._require_ctk", lambda: MockUI)
+    monkeypatch.setattr("gui._get_bubble_avatar", lambda _: None)
+    monkeypatch.setattr("gui._load_icons", lambda *a, **k: {})
+
+    bubble_own = MessageBubble(
+        parent=object(),
+        sender="Bob",
+        message="Hello own",
+        own=True,
+        on_announce=lambda _msg: None,
+    )
+    # self.frame must NOT be a hover target
+    assert bubble_own.frame not in bubble_own._hover_targets
+    assert bubble_own._row not in bubble_own._hover_targets
+    assert bubble_own._content_col not in bubble_own._hover_targets
+    assert bubble_own._bubble_shell in bubble_own._hover_targets
+    assert bubble_own.announce_btn in bubble_own._hover_targets
+
+    bubble_peer = MessageBubble(
+        parent=object(),
+        sender="Alice",
+        message="Hello peer",
+        own=False,
+        on_announce=lambda _msg: None,
+    )
+    assert bubble_peer.frame not in bubble_peer._hover_targets
+    assert bubble_peer._row not in bubble_peer._hover_targets
+    assert bubble_peer._content_col not in bubble_peer._hover_targets
+    assert bubble_peer._bubble_shell in bubble_peer._hover_targets
+    assert bubble_peer.announce_btn in bubble_peer._hover_targets
+
+
+def test_enable_mousewheel_scrolling_enhances_check():
+    """Verify smart_check permits scrolling when cursor pointer is over the scrollable frame."""
+    from gui import _enable_mousewheel_scrolling
+
+    class MockCanvas:
+        def __init__(self) -> None:
+            self.scrolled: list[tuple[str, int, str]] = []
+
+        def yview(self, op: str, amount: int, unit: str) -> None:
+            self.scrolled.append((op, amount, unit))
+
+    class MockScrollFrame:
+        def __init__(self) -> None:
+            self._parent_canvas = MockCanvas()
+            self._parent_frame = object()
+            self.pointer = (100, 100)
+            self.hovered_widget = self._parent_canvas
+            self.bindings: dict[str, list[Any]] = {}
+
+        def check_if_master_is_canvas(self, widget: Any) -> bool:
+            return widget is self._parent_canvas
+
+        def winfo_pointerxy(self) -> tuple[int, int]:
+            return self.pointer
+
+        def winfo_containing(self, x: int, y: int) -> Any:
+            return self.hovered_widget
+
+        def bind_all(self, event: str, handler: Any, add: str | None = None) -> None:
+            self.bindings.setdefault(event, []).append(handler)
+
+    frame = MockScrollFrame()
+    _enable_mousewheel_scrolling(frame)
+
+    unrelated_widget = object()
+    # 1. When pointer is over canvas, smart_check returns True even if event.widget is unrelated
+    frame.hovered_widget = frame._parent_canvas
+    assert frame.check_if_master_is_canvas(unrelated_widget) is True
+
+    # 2. When pointer is outside, smart_check returns False for unrelated widget
+    frame.hovered_widget = object()
+    assert frame.check_if_master_is_canvas(unrelated_widget) is False
+
+    # 3. Linux Button-4 and Button-5 invoke canvas yview
+    frame.hovered_widget = frame._parent_canvas
+
+    class MockEvent:
+        widget = unrelated_widget
+
+    b4_handler = frame.bindings["<Button-4>"][0]
+    b4_handler(MockEvent())
+    assert frame._parent_canvas.scrolled[-1] == ("scroll", -1, "units")
+
+    b5_handler = frame.bindings["<Button-5>"][0]
+    b5_handler(MockEvent())
+    assert frame._parent_canvas.scrolled[-1] == ("scroll", 1, "units")
+
+
+def test_chat_box_bar_clear_entry_when_disabled():
+    """Verify clear_entry successfully clears text even if entry is in disabled state."""
+    from gui import ChatBoxBar
+
+    class MockInternalTextbox:
+        def __init__(self) -> None:
+            self.state = "disabled"
+            self.text = "draft message"
+
+        def cget(self, prop: str) -> str:
+            if prop == "state":
+                return self.state
+            return ""
+
+        def configure(self, **kwargs: Any) -> None:
+            if "state" in kwargs:
+                self.state = kwargs["state"]
+
+        def delete(self, start: str, end: str) -> None:
+            if self.state == "disabled":
+                raise RuntimeError("Cannot delete when disabled")
+            self.text = ""
+
+    mock_tb = MockInternalTextbox()
+
+    class MockEntry:
+        def __init__(self) -> None:
+            self._textbox = mock_tb
+
+        def configure(self, **kwargs: Any) -> None:
+            mock_tb.configure(**kwargs)
+
+        def delete(self, start: str, end: str) -> None:
+            mock_tb.delete(start, end)
+
+    box = object.__new__(ChatBoxBar)
+    box.entry = MockEntry()
+
+    # Clear entry should temporarily enable, delete, and restore disabled state without crashing
+    box.clear_entry()
+    assert mock_tb.text == ""
+    assert mock_tb.state == "disabled"
+
+
+def test_chat_room_tab_send_with_sticker_chosen_clears_entry_and_selection():
+    """Verify sending message clears entry and resets sticker mode when draft existed."""
+    from gui import ChatBoxBar, ChatRoomTab
+
+    room = object.__new__(ChatRoomTab)
+    box = object.__new__(ChatBoxBar)
+    entry_text = ["typed text"]
+
+    class MockEntry:
+        def delete(self, start: Any, end: Any) -> None:
+            entry_text.clear()
+
+    box.entry = MockEntry()
+    box.clear_entry = lambda: MockEntry().delete(0, 0)
+    updated_icons: list[bool] = []
+    box._update_action_icon = lambda: updated_icons.append(True)
+    box.set_sticker_mode = lambda _enabled: None
+
+    room.box = box
+    room._chosen_sticker = "STK_001"
+    room.sticker_buttons = {}
+    sent: list[str] = []
+    room.on_send = lambda msg: sent.append(msg)
+
+    # Calling _send clears sticker, clears entry, updates icon
+    room._send("typed text")
+    assert sent == ["typed text"]
+    assert room._chosen_sticker is None
+    assert entry_text == []
+    assert len(updated_icons) > 0

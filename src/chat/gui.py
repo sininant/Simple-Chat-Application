@@ -702,6 +702,52 @@ class AnnouncementBanner:
             pass
 
 
+def _enable_mousewheel_scrolling(scroll_frame: Any) -> None:
+    """Ensure CTkScrollableFrame responds to mouse wheel when pointer is hovering over it."""
+    orig_check = getattr(scroll_frame, "check_if_master_is_canvas", None)
+    if orig_check is None:
+        return
+
+    def smart_check(widget: Any) -> bool:
+        if orig_check(widget):
+            return True
+        try:
+            x, y = scroll_frame.winfo_pointerxy()
+            hovered = scroll_frame.winfo_containing(x, y)
+            if hovered is not None:
+                if orig_check(hovered) or hovered in (
+                    scroll_frame,
+                    getattr(scroll_frame, "_parent_frame", None),
+                    getattr(scroll_frame, "_parent_canvas", None),
+                ):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    scroll_frame.check_if_master_is_canvas = smart_check
+
+    def _on_button4(event: Any) -> None:
+        if smart_check(getattr(event, "widget", None)):
+            try:
+                scroll_frame._parent_canvas.yview("scroll", -1, "units")
+            except Exception:
+                pass
+
+    def _on_button5(event: Any) -> None:
+        if smart_check(getattr(event, "widget", None)):
+            try:
+                scroll_frame._parent_canvas.yview("scroll", 1, "units")
+            except Exception:
+                pass
+
+    try:
+        scroll_frame.bind_all("<Button-4>", _on_button4, add="+")
+        scroll_frame.bind_all("<Button-5>", _on_button5, add="+")
+    except Exception:
+        pass
+
+
 class SidebarPanel:
     """Reusable responsive presence and server-backed group discovery panel."""
 
@@ -745,6 +791,7 @@ class SidebarPanel:
         )
         self.users = ui.CTkScrollableFrame(self.friends_card, fg_color=BACKGROUND, corner_radius=0)
         self.users.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        _enable_mousewheel_scrolling(self.users)
         self.community_card = ui.CTkFrame(
             self.frame,
             height=270,
@@ -785,6 +832,7 @@ class SidebarPanel:
             self.community_card, fg_color=BACKGROUND, corner_radius=10
         )
         self.groups.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        _enable_mousewheel_scrolling(self.groups)
         self.group_placeholder = ui.CTkLabel(
             self.groups,
             text="Group rooms will appear here.",
@@ -1105,22 +1153,21 @@ class MessageBubble:
         avatar_img = _get_bubble_avatar(avatar) if avatar is not None else None
         self.frame = ui.CTkFrame(parent, fg_color="transparent")
 
-        hover_targets: list[Any] = [self.frame]
+        # Restrict hover targets to the bubble shell / label so empty row space
+        # does not trigger the announcement bell
+        hover_targets: list[Any] = []
 
         if own:
             row = ui.CTkFrame(self.frame, fg_color="transparent")
             row.pack(anchor="e", padx=8, pady=4)
-            hover_targets.append(row)
 
             content_col = ui.CTkFrame(row, fg_color="transparent")
             content_col.pack(side="left", anchor="e")
-            hover_targets.append(content_col)
             self._content_col = content_col
             self._row = row
 
             bubble_row = ui.CTkFrame(content_col, fg_color="transparent")
             bubble_row.pack(anchor="e")
-            hover_targets.append(bubble_row)
             self._bubble_row = bubble_row
 
             if sticker_image is not None:
@@ -1131,7 +1178,6 @@ class MessageBubble:
                     fg_color="transparent",
                 )
                 bubble.pack(side="left")
-                hover_targets.append(bubble)
                 self._bubble_shell = bubble
             else:
                 bubble_shell = ui.CTkFrame(
@@ -1170,7 +1216,6 @@ class MessageBubble:
         else:
             row = ui.CTkFrame(self.frame, fg_color="transparent")
             row.pack(anchor="w", padx=8, pady=4)
-            hover_targets.append(row)
 
             if avatar_img is not None:
                 self.avatar_label = ui.CTkLabel(
@@ -1182,11 +1227,9 @@ class MessageBubble:
                     fg_color="transparent",
                 )
                 self.avatar_label.pack(side="left", anchor="n", padx=(0, 8), pady=2)
-                hover_targets.append(self.avatar_label)
 
             content_col = ui.CTkFrame(row, fg_color="transparent")
             content_col.pack(side="left", anchor="w")
-            hover_targets.append(content_col)
             self._content_col = content_col
             self._row = row
 
@@ -1201,7 +1244,6 @@ class MessageBubble:
 
             bubble_row = ui.CTkFrame(content_col, fg_color="transparent")
             bubble_row.pack(anchor="w")
-            hover_targets.append(bubble_row)
             self._bubble_row = bubble_row
 
             if sticker_image is not None:
@@ -1212,7 +1254,6 @@ class MessageBubble:
                     fg_color="transparent",
                 )
                 bubble.pack(side="left")
-                hover_targets.append(bubble)
                 self._bubble_shell = bubble
             else:
                 bubble_shell = ui.CTkFrame(
@@ -1237,6 +1278,8 @@ class MessageBubble:
                 )
                 bubble.pack(padx=12, pady=7)
                 hover_targets.append(bubble)
+
+        self._hover_targets = hover_targets
 
         # Create announce action button if callback provided and not a sticker
         if self.on_announce is not None and sticker_image is None and message.strip():
@@ -1435,10 +1478,25 @@ class ChatBoxBar:
 
     def clear_entry(self) -> None:
         """Clear the composer after the existing send flow accepts its draft."""
+        was_disabled = False
+        try:
+            if hasattr(self.entry, "_textbox") and self.entry._textbox.cget("state") == "disabled":
+                was_disabled = True
+                self.entry.configure(state="normal")
+            elif hasattr(self.entry, "cget") and self.entry.cget("state") == "disabled":
+                was_disabled = True
+                self.entry.configure(state="normal")
+        except Exception:
+            pass
         try:
             self.entry.delete("1.0", "end")
         except TypeError:
             self.entry.delete(0, "end")
+        if was_disabled:
+            try:
+                self.entry.configure(state="disabled")
+            except Exception:
+                pass
 
     def _handle_action(self) -> None:
         if self._entry_text().strip():
@@ -1618,6 +1676,7 @@ class ChatRoomTab:
         self.announcement_bar.hide()
         self.window = ui.CTkScrollableFrame(self.frame, fg_color=BACKGROUND, corner_radius=10)
         self.window.pack(fill="both", expand=True, padx=4, pady=(4, 0))
+        _enable_mousewheel_scrolling(self.window)
         self.on_send = on_send or self._send_local
         self.on_send_sticker = on_send_sticker
         self.on_announce = on_announce
@@ -1646,6 +1705,7 @@ class ChatRoomTab:
             scrollbar_button_color="#BAAFA8",
             scrollbar_button_hover_color=INK,
         )
+        _enable_mousewheel_scrolling(self.sticker_panel)
         self._populate_stickers()
         self.room_name = room_name
         self.bubbles: dict[str, MessageBubble] = {}
@@ -1773,8 +1833,6 @@ class ChatRoomTab:
         self._chosen_sticker = None
         self._highlight_chosen_sticker(None)
         getattr(self.box, "set_sticker_mode", lambda _: None)(False)
-        self._chosen_sticker = None
-        self._highlight_chosen_sticker(None)
 
     def _send_sticker_local(self, sticker_id: str) -> None:
         current_time = datetime.now().strftime("%H:%M")
@@ -1840,9 +1898,9 @@ class ChatRoomTab:
     def _send(self, message: str) -> None:
         if message.strip():
             self.on_send(message)
+            self._clear_chosen_sticker()
             self.box.clear_entry()
             self.box._update_action_icon()
-            self._clear_chosen_sticker()
 
     def _send_local(self, message: str) -> None:
         """Render a local demonstration message until private transport (R7) is wired."""
