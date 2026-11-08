@@ -778,3 +778,47 @@ def test_client_session_drops_invalid_announcement_event():
     spy.trigger(EVENT_ANNOUNCEMENT, {"message": "", "timestamp": "14:30"})
     assert session.get_next_event(block=False) is None
     assert session.announcements == []
+
+
+def test_client_session_concurrent_read_write_thread_safety():
+    """Verify ClientSession maintains thread-safe state access under concurrent usage."""
+    import threading
+
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+    errors: list[Exception] = []
+
+    def writer():
+        for i in range(100):
+            try:
+                spy.trigger("connect")
+                session.register("Alice")
+                spy.trigger("register_ack", {"success": True, "username": "Alice"})
+                spy.trigger("user_list", {"users": ["Alice", f"User_{i}"]})
+                spy.trigger("disconnect")
+            except Exception as e:
+                errors.append(e)
+
+    def reader():
+        for _ in range(100):
+            try:
+                _ = session.is_connected
+                _ = session.is_registered
+                _ = session.username
+                _ = session.online_users
+                _ = session.groups
+                _ = session.get_next_event(block=False)
+            except Exception as e:
+                errors.append(e)
+
+    threads = [
+        threading.Thread(target=writer),
+        threading.Thread(target=reader),
+        threading.Thread(target=reader),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []

@@ -447,7 +447,7 @@ class ClientSession:
         message_id: str | None = None,
         timestamp: str | None = None,
     ) -> str | None:
-        """Send a predefined sticker to a target peer or group over Socker.IO (SP2).
+        """Send a predefined sticker to a target peer or group over Socket.IO (SP2).
 
         Returns:
             The message_id if emission succeeded, or None if validation/emission failed.
