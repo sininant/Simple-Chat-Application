@@ -119,8 +119,9 @@ class ChatEngine:
     headless testability.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_message_history: int = 10000) -> None:
         self._lock = threading.RLock()
+        self._max_message_history = max_message_history
         self._sessions: dict[str, str] = {}  # sid -> username
         self._users: dict[str, str] = {}  # username -> sid
         self._avatars: dict[str, str] = {}  # username -> selected character
@@ -331,6 +332,9 @@ class ChatEngine:
                 meta=meta,
             )
             self._private_messages[meta.message_id] = (sender, target)
+            while len(self._private_messages) > self._max_message_history:
+                oldest_id = next(iter(self._private_messages))
+                self._private_messages.pop(oldest_id, None)
             return RouteResult(
                 success=True,
                 payload=server_payload,

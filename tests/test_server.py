@@ -1221,3 +1221,24 @@ def test_server_group_message_invalid_payload_rejected():
     errors = spy.get_events(EVENT_GROUP_ERROR, room="sid_alice")
     assert len(errors) == 1
     assert "empty or whitespace-only" in errors[0]["data"]["error"]
+
+
+def test_chat_engine_bounded_private_messages_prunes_old_entries():
+    """Verify ChatEngine prunes oldest messages when bounded limit is exceeded."""
+    engine = ChatEngine(max_message_history=3)
+    engine.register_user("sid_alice", "Alice")
+    engine.register_user("sid_bob", "Bob")
+
+    # Send 4 messages (limit is 3)
+    for i in range(1, 5):
+        meta = MessageMeta(message_id=f"MSG_{i:03d}", timestamp="12:00")
+        engine.route_private_message("sid_alice", "Bob", f"Hello {i}", meta)
+
+    # Oldest MSG_001 should be pruned
+    ack_res_old = engine.route_read_ack("sid_bob", "MSG_001", "Alice")
+    assert ack_res_old.success is False
+    assert "not found" in (ack_res_old.error or "")
+
+    # Newer MSG_002, MSG_003, MSG_004 should still exist
+    ack_res_new = engine.route_read_ack("sid_bob", "MSG_004", "Alice")
+    assert ack_res_new.success is True
