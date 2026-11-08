@@ -66,6 +66,7 @@ the rabbit character for every listed user.
 | *(Client-side Speech-to-Text)* | Client local -> `private_message` / `group_message` | *(Normal message payload)* | Microphone audio transcribed to text locally before emitting as text (**Special Point 1 — Mandatory AI**). |
 | `send_sticker` | Client -> Server | `{"sticker_id": "STK_001", "target": "Bob", "group_name": null, "message_id": "MSG_003", "timestamp": "14:33"}` | Client sends a predefined sticker to a peer or group (**Special Point 2**). |
 | `sticker_message` | Server -> Recipients | `{"sender": "Alice", "sticker_id": "STK_001", "target": "Bob", "group_name": null, "message_id": "MSG_003", "timestamp": "14:33"}` | Server forwards sticker event; client renders image from `assets/stickers/<sticker_id>.png`. |
+| `announcement` | Client -> Server | `{"message": "Pinned announcement", "timestamp": "14:30"}` | Client requests a pinned room/system announcement broadcast (**Special Point 3**). |
 | `announcement` | Server -> All Clients | `{"message": "Server will restart in 5 minutes!", "timestamp": "14:30"}` | Server broadcasts alert across all client instances, displayed in top banner (**Special Point 3**). |
 | `read_ack` | Client -> Server | `{"message_id": "MSG_001", "target": "Alice"}` | Client notifies server that they viewed Alice's private message (**Special Point 4**). |
 | `read_ack` | Server -> Original Sender | `{"message_id": "MSG_001", "reader": "Bob"}` | Server derives `reader` from `sessions[sid]`, validates target, and emits acknowledgment exclusively to Alice, updating message status to `"Read ✓✓"`. |
@@ -94,3 +95,6 @@ the rabbit character for every listed user.
 3. **Thread Safety in Client GUI**:
    - `socketio.Client()` event callbacks run on background network threads.
    - Incoming events must be pushed into a thread-safe `queue.Queue` so the CustomTkinter GUI thread polls and renders updates via `.after()` without race conditions.
+4. **System Announcement & Trust Boundary (SP3)**:
+   - The server operator can trigger announcements directly via terminal console stdin (`run_console_loop` or `/announce <msg>`).
+   - When a client emits `announcement`, the server verifies that the sending `sid` is authenticated and registered before broadcasting, preventing unauthorized broadcast spoofing.

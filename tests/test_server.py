@@ -1,5 +1,6 @@
 """Unit and integration tests for Socket.IO server and ChatEngine (R2, R3, R4)."""
 
+import io
 import threading
 import time
 from typing import Any
@@ -1038,6 +1039,29 @@ def test_server_broadcast_announcement_emits_to_all_registered_clients():
     assert len(alice_events) == 1
     assert len(bob_events) == 1
     assert alice_events[0]["data"]["message"] == "Scheduled maintenance at 15:00"
+    assert bob_events[0]["data"]["message"] == "Scheduled maintenance at 15:00"
+
+
+def test_server_console_loop_triggers_announcements():
+    """SP3: Operator console input triggers one-to-all announcements and ignores invalid lines."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+    spy.clear()
+
+    console_input = io.StringIO(
+        "\n  \n/announce\n/announce Scheduled maintenance at 15:00\nDirect broadcast message\n"
+    )
+    server.run_console_loop(stream=console_input)
+
+    alice_events = spy.get_events(EVENT_ANNOUNCEMENT, room="sid_alice")
+    bob_events = spy.get_events(EVENT_ANNOUNCEMENT, room="sid_bob")
+    assert len(alice_events) == 2
+    assert len(bob_events) == 2
+    assert alice_events[0]["data"]["message"] == "Scheduled maintenance at 15:00"
+    assert alice_events[1]["data"]["message"] == "Direct broadcast message"
+    assert bob_events[0]["data"]["message"] == "Scheduled maintenance at 15:00"
     assert bob_events[0]["data"]["message"] == "Scheduled maintenance at 15:00"
 
 
