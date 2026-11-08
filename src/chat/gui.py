@@ -702,52 +702,6 @@ class AnnouncementBanner:
             pass
 
 
-def _enable_mousewheel_scrolling(scroll_frame: Any) -> None:
-    """Ensure CTkScrollableFrame responds to mouse wheel when pointer is hovering over it."""
-    orig_check = getattr(scroll_frame, "check_if_master_is_canvas", None)
-    if orig_check is None:
-        return
-
-    def smart_check(widget: Any) -> bool:
-        if orig_check(widget):
-            return True
-        try:
-            x, y = scroll_frame.winfo_pointerxy()
-            hovered = scroll_frame.winfo_containing(x, y)
-            if hovered is not None:
-                if orig_check(hovered) or hovered in (
-                    scroll_frame,
-                    getattr(scroll_frame, "_parent_frame", None),
-                    getattr(scroll_frame, "_parent_canvas", None),
-                ):
-                    return True
-        except Exception:
-            pass
-        return False
-
-    scroll_frame.check_if_master_is_canvas = smart_check
-
-    def _on_button4(event: Any) -> None:
-        if smart_check(getattr(event, "widget", None)):
-            try:
-                scroll_frame._parent_canvas.yview("scroll", -1, "units")
-            except Exception:
-                pass
-
-    def _on_button5(event: Any) -> None:
-        if smart_check(getattr(event, "widget", None)):
-            try:
-                scroll_frame._parent_canvas.yview("scroll", 1, "units")
-            except Exception:
-                pass
-
-    try:
-        scroll_frame.bind_all("<Button-4>", _on_button4, add="+")
-        scroll_frame.bind_all("<Button-5>", _on_button5, add="+")
-    except Exception:
-        pass
-
-
 class SidebarPanel:
     """Reusable responsive presence and server-backed group discovery panel."""
 
@@ -791,7 +745,6 @@ class SidebarPanel:
         )
         self.users = ui.CTkScrollableFrame(self.friends_card, fg_color=BACKGROUND, corner_radius=0)
         self.users.pack(fill="both", expand=True, padx=4, pady=(0, 4))
-        _enable_mousewheel_scrolling(self.users)
         self.community_card = ui.CTkFrame(
             self.frame,
             height=270,
@@ -832,7 +785,6 @@ class SidebarPanel:
             self.community_card, fg_color=BACKGROUND, corner_radius=10
         )
         self.groups.pack(fill="both", expand=True, padx=4, pady=(0, 4))
-        _enable_mousewheel_scrolling(self.groups)
         self.group_placeholder = ui.CTkLabel(
             self.groups,
             text="Group rooms will appear here.",
@@ -1676,7 +1628,6 @@ class ChatRoomTab:
         self.announcement_bar.hide()
         self.window = ui.CTkScrollableFrame(self.frame, fg_color=BACKGROUND, corner_radius=10)
         self.window.pack(fill="both", expand=True, padx=4, pady=(4, 0))
-        _enable_mousewheel_scrolling(self.window)
         self.on_send = on_send or self._send_local
         self.on_send_sticker = on_send_sticker
         self.on_announce = on_announce
@@ -1705,7 +1656,6 @@ class ChatRoomTab:
             scrollbar_button_color="#BAAFA8",
             scrollbar_button_hover_color=INK,
         )
-        _enable_mousewheel_scrolling(self.sticker_panel)
         self._populate_stickers()
         self.room_name = room_name
         self.bubbles: dict[str, MessageBubble] = {}

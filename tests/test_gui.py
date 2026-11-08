@@ -1698,64 +1698,6 @@ def test_message_bubble_hover_targets_restricted_to_bubble(monkeypatch):
     assert bubble_peer.announce_btn in bubble_peer._hover_targets
 
 
-def test_enable_mousewheel_scrolling_enhances_check():
-    """Verify smart_check permits scrolling when cursor pointer is over the scrollable frame."""
-    from gui import _enable_mousewheel_scrolling
-
-    class MockCanvas:
-        def __init__(self) -> None:
-            self.scrolled: list[tuple[str, int, str]] = []
-
-        def yview(self, op: str, amount: int, unit: str) -> None:
-            self.scrolled.append((op, amount, unit))
-
-    class MockScrollFrame:
-        def __init__(self) -> None:
-            self._parent_canvas = MockCanvas()
-            self._parent_frame = object()
-            self.pointer = (100, 100)
-            self.hovered_widget = self._parent_canvas
-            self.bindings: dict[str, list[Any]] = {}
-
-        def check_if_master_is_canvas(self, widget: Any) -> bool:
-            return widget is self._parent_canvas
-
-        def winfo_pointerxy(self) -> tuple[int, int]:
-            return self.pointer
-
-        def winfo_containing(self, x: int, y: int) -> Any:
-            return self.hovered_widget
-
-        def bind_all(self, event: str, handler: Any, add: str | None = None) -> None:
-            self.bindings.setdefault(event, []).append(handler)
-
-    frame = MockScrollFrame()
-    _enable_mousewheel_scrolling(frame)
-
-    unrelated_widget = object()
-    # 1. When pointer is over canvas, smart_check returns True even if event.widget is unrelated
-    frame.hovered_widget = frame._parent_canvas
-    assert frame.check_if_master_is_canvas(unrelated_widget) is True
-
-    # 2. When pointer is outside, smart_check returns False for unrelated widget
-    frame.hovered_widget = object()
-    assert frame.check_if_master_is_canvas(unrelated_widget) is False
-
-    # 3. Linux Button-4 and Button-5 invoke canvas yview
-    frame.hovered_widget = frame._parent_canvas
-
-    class MockEvent:
-        widget = unrelated_widget
-
-    b4_handler = frame.bindings["<Button-4>"][0]
-    b4_handler(MockEvent())
-    assert frame._parent_canvas.scrolled[-1] == ("scroll", -1, "units")
-
-    b5_handler = frame.bindings["<Button-5>"][0]
-    b5_handler(MockEvent())
-    assert frame._parent_canvas.scrolled[-1] == ("scroll", 1, "units")
-
-
 def test_chat_box_bar_clear_entry_when_disabled():
     """Verify clear_entry successfully clears text even if entry is in disabled state."""
     from gui import ChatBoxBar
