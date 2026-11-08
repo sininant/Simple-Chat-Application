@@ -291,3 +291,75 @@ def test_speech_input_controller_is_listening_property():
 
     time.sleep(0.05)
     assert controller.is_listening is False
+
+
+def test_google_transcriber_handles_permission_error_with_guidance(monkeypatch):
+    """PermissionError during mic initialization yields actionable user message."""
+    import pytest
+    import speech_recognition as sr
+
+    from chat.speech import SpeechTranscriptionError
+
+    class MockMic:
+        def __enter__(self):
+            raise PermissionError("Access to audio device denied")
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(sr, "Microphone", MockMic)
+    transcriber = GoogleSpeechTranscriber()
+
+    with pytest.raises(SpeechTranscriptionError) as exc_info:
+        transcriber.transcribe(Event())
+
+    assert "Microphone is unavailable or permission was denied." in str(exc_info.value)
+    assert "Please enable microphone access and try again." in str(exc_info.value)
+
+
+def test_google_transcriber_handles_driver_and_portaudio_errors(monkeypatch):
+    """Driver-specific exceptions mentioning audio/portaudio/device are mapped cleanly."""
+    import pytest
+    import speech_recognition as sr
+
+    from chat.speech import SpeechTranscriptionError
+
+    class PortAudioError(Exception):
+        pass
+
+    class MockMic:
+        def __enter__(self):
+            raise PortAudioError("Error opening PortAudio input device: no default input device")
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(sr, "Microphone", MockMic)
+    transcriber = GoogleSpeechTranscriber()
+
+    with pytest.raises(SpeechTranscriptionError) as exc_info:
+        transcriber.transcribe(Event())
+
+    assert "Microphone is unavailable or permission was denied." in str(exc_info.value)
+
+
+def test_google_transcriber_reraises_unrelated_exception(monkeypatch):
+    """Exceptions unrelated to microphone hardware or permissions are re-raised."""
+    import pytest
+    import speech_recognition as sr
+
+    class CustomSystemFailure(Exception):
+        pass
+
+    class MockMic:
+        def __enter__(self):
+            raise CustomSystemFailure("Kernel memory exhausted")
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(sr, "Microphone", MockMic)
+    transcriber = GoogleSpeechTranscriber()
+
+    with pytest.raises(CustomSystemFailure):
+        transcriber.transcribe(Event())

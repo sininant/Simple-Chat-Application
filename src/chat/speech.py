@@ -46,6 +46,7 @@ class GoogleSpeechTranscriber:
         recognizer.dynamic_energy_threshold = True
 
     def transcribe(self, paused: Event) -> str:
+        del paused
         try:
             import speech_recognition as sr
         except ImportError as error:  # pragma: no cover - depends on local installation
@@ -55,28 +56,65 @@ class GoogleSpeechTranscriber:
 
         recognizer = sr.Recognizer()
         self._configure_recognizer(recognizer)
+
+        # Microphone access/capture
         try:
             with sr.Microphone() as source:
                 recognizer.adjust_for_ambient_noise(source, duration=0.1)
+
                 audio = recognizer.listen(
                     source,
                     timeout=self.listen_timeout,
                     phrase_time_limit=self.phrase_time_limit,
                 )
-            return recognizer.recognize_google(audio, language=self.language).strip()
         except sr.WaitTimeoutError as error:
             raise SpeechTranscriptionError("No speech was detected. Please try again.") from error
+        except (PermissionError, OSError) as error:
+            raise SpeechTranscriptionError(
+                "Microphone is unavailable or permission was denied.\n"
+                "Please enable microphone access and try again."
+            ) from error
+        except Exception as error:
+            # PyAudio/PortAudio can raise driver-specific exceptions that are
+            # not always exposed as OSError.
+            error_text = str(error).lower()
+            error_name = type(error).__name__.lower()
+
+            microphone_failure = any(
+                text in error_text or text in error_name
+                for text in (
+                    "microphone",
+                    "permission",
+                    "audio",
+                    "portaudio",
+                    "pyaudio",
+                    "input device",
+                    "no default input",
+                    "invalid input",
+                )
+            )
+
+            if microphone_failure:
+                raise SpeechTranscriptionError(
+                    "Microphone is unavailable or permission was denied.\n"
+                    "Please enable microphone access and try again."
+                ) from error
+
+            raise
+
+        # Speech recognition
+        try:
+            return recognizer.recognize_google(
+                audio,
+                language=self.language,
+            ).strip()
         except sr.UnknownValueError as error:
             raise SpeechTranscriptionError(
-                "Sorry, I could not understand that.\n Please try again."
+                "Sorry, I could not understand that.\nPlease try again."
             ) from error
         except sr.RequestError as error:
             raise SpeechTranscriptionError(
-                "Speech recognition is unavailable. Check your internet connection and try again."
-            ) from error
-        except OSError as error:
-            raise SpeechTranscriptionError(
-                "Microphone is unavailable.\n Please check it and try again."
+                "Speech recognition is unavailable.\nCheck your internet connection and try again."
             ) from error
 
 
