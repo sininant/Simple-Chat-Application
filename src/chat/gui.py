@@ -624,7 +624,7 @@ class AnnouncementBanner:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(
             parent,
-            fg_color=WHITE,
+            fg_color=PINK_LIGHT,
             border_color=INK,
             border_width=2,
             corner_radius=12,
@@ -645,7 +645,7 @@ class AnnouncementBanner:
             width=36,
             height=28,
             fg_color="transparent",
-            hover_color=PINK_LIGHT,
+            hover_color=PINK,
             text_color=INK,
             border_color=INK,
             border_width=1,
@@ -1118,25 +1118,32 @@ class MessageBubble:
             self._content_col = content_col
             self._row = row
 
+            bubble_row = ui.CTkFrame(content_col, fg_color="transparent")
+            bubble_row.pack(anchor="e")
+            hover_targets.append(bubble_row)
+            self._bubble_row = bubble_row
+
             if sticker_image is not None:
                 bubble = ui.CTkLabel(
-                    content_col,
+                    bubble_row,
                     text="",
                     image=sticker_image,
                     fg_color="transparent",
                 )
-                bubble.pack(anchor="e")
+                bubble.pack(side="left")
                 hover_targets.append(bubble)
+                self._bubble_shell = bubble
             else:
                 bubble_shell = ui.CTkFrame(
-                    content_col,
+                    bubble_row,
                     fg_color=PINK,
                     border_color=INK,
                     border_width=2,
                     corner_radius=16,
                 )
-                bubble_shell.pack(anchor="e")
+                bubble_shell.pack(side="left")
                 hover_targets.append(bubble_shell)
+                self._bubble_shell = bubble_shell
 
                 bubble = ui.CTkLabel(
                     bubble_shell,
@@ -1192,25 +1199,32 @@ class MessageBubble:
                 anchor="w",
             ).pack(anchor="w", padx=4, pady=(0, 2))
 
+            bubble_row = ui.CTkFrame(content_col, fg_color="transparent")
+            bubble_row.pack(anchor="w")
+            hover_targets.append(bubble_row)
+            self._bubble_row = bubble_row
+
             if sticker_image is not None:
                 bubble = ui.CTkLabel(
-                    content_col,
+                    bubble_row,
                     text="",
                     image=sticker_image,
                     fg_color="transparent",
                 )
-                bubble.pack(anchor="w")
+                bubble.pack(side="left")
                 hover_targets.append(bubble)
+                self._bubble_shell = bubble
             else:
                 bubble_shell = ui.CTkFrame(
-                    content_col,
+                    bubble_row,
                     fg_color=PINK_LIGHT,
                     border_color=INK,
                     border_width=2,
                     corner_radius=16,
                 )
-                bubble_shell.pack(anchor="w")
+                bubble_shell.pack(side="left")
                 hover_targets.append(bubble_shell)
+                self._bubble_shell = bubble_shell
 
                 bubble = ui.CTkLabel(
                     bubble_shell,
@@ -1228,7 +1242,7 @@ class MessageBubble:
         if self.on_announce is not None and sticker_image is None and message.strip():
             bell_icon = _load_icons((18, 18)).get("notification")
             self.announce_btn = ui.CTkButton(
-                row,
+                self._bubble_row,
                 text="",
                 image=bell_icon,
                 width=30,
@@ -1253,8 +1267,8 @@ class MessageBubble:
         self._hovering = True
         if self.announce_btn is not None:
             try:
-                if self.own and hasattr(self, "_content_col"):
-                    self.announce_btn.pack(side="left", padx=(0, 6), before=self._content_col)
+                if self.own and hasattr(self, "_bubble_shell"):
+                    self.announce_btn.pack(side="left", padx=(0, 6), before=self._bubble_shell)
                 else:
                     self.announce_btn.pack(side="left", padx=(6, 0))
             except Exception:

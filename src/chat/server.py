@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 import threading
 from dataclasses import dataclass
 from datetime import datetime
 from socketserver import ThreadingMixIn
-from typing import Any, Generic, TextIO, TypeVar
+from typing import Any, Generic, TypeVar
 from wsgiref.simple_server import WSGIServer, make_server
 
 import socketio
@@ -780,22 +779,6 @@ class ChatServer:
         )
         return payload
 
-    def run_console_loop(self, stream: TextIO | None = None) -> None:
-        """Read operator lines from server console stdin and broadcast announcements (SP3)."""
-        input_stream = stream if stream is not None else sys.stdin
-        for raw_line in input_stream:
-            text = raw_line.strip()
-            if not text:
-                continue
-            if text.startswith("/announce"):
-                text = text[len("/announce") :].strip()
-                if not text:
-                    continue
-            try:
-                self.broadcast_announcement(text)
-            except ProtocolValidationError as error:
-                logger.warning("Ignored invalid console announcement: %s", error)
-
     # --- HTTP/WSGI Server Lifecycle ---
 
     def create_http_server(self, host: str = "0.0.0.0", port: int = 5000) -> ThreadedWSGIServer:
@@ -808,15 +791,8 @@ class ChatServer:
         print("============================================================")
         print("  Simple Chat Application - Socket.IO Server")
         print(f"  Listening on http://{host}:{port}")
-        print("  Type a message (or /announce <msg>) and press Enter to broadcast (SP3).")
         print("  Press Ctrl+C to terminate.")
         print("============================================================")
-        console_thread = threading.Thread(
-            target=self.run_console_loop,
-            name="server-console-announcement",
-            daemon=True,
-        )
-        console_thread.start()
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
