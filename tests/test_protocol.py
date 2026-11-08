@@ -607,3 +607,34 @@ def test_parse_server_event_rejects_client_only_events():
     """Verify server parser rejects client-exclusive events like register."""
     with pytest.raises(ProtocolValidationError):
         parse_server_event(EVENT_REGISTER, {"username": "Alice"})
+
+
+def test_parse_events_reject_non_dict_payloads():
+    """Verify both dispatchers reject non-dictionary inputs unconditionally."""
+    with pytest.raises(ProtocolValidationError):
+        parse_client_event(EVENT_REGISTER, "not-a-dict")
+    with pytest.raises(ProtocolValidationError):
+        parse_client_event(EVENT_REGISTER, None)
+    with pytest.raises(ProtocolValidationError):
+        parse_server_event(EVENT_REGISTER_ACK, [1, 2, 3])
+    with pytest.raises(ProtocolValidationError):
+        parse_server_event(EVENT_USER_LIST, "users")
+
+
+def test_message_text_exact_boundary_limits():
+    """Verify exact 1000 char threshold allows 1000 and rejects 1001 chars."""
+    boundary_text = "a" * 1000
+    assert validate_message_text(boundary_text) == boundary_text
+
+    with pytest.raises(ProtocolValidationError):
+        validate_message_text("a" * 1001)
+
+
+def test_group_name_exact_boundary_limits():
+    """Verify exact 1-50 char boundaries for group names."""
+    assert validate_group_name("A") == "A"
+    assert validate_group_name("G" * 50) == "G" * 50
+
+    with pytest.raises(ProtocolValidationError):
+        validate_group_name("G" * 51)
+
