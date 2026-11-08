@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 import threading
 from dataclasses import dataclass
 from datetime import datetime
 from socketserver import ThreadingMixIn
-from typing import Any, Generic, TextIO, TypeVar
+from typing import Any, Generic, TypeVar
 from wsgiref.simple_server import WSGIServer, make_server
 
 import socketio
@@ -308,6 +307,13 @@ class ChatEngine:
                 payload=server_payload,
             )
 
+    def _record_private_message(self, message_id: str, sender: str, target: str) -> None:
+        """Record private message ownership with FIFO bounded memory eviction."""
+        self._private_messages[message_id] = (sender, target)
+        while len(self._private_messages) > self._max_message_history:
+            oldest_id = next(iter(self._private_messages))
+            self._private_messages.pop(oldest_id, None)
+
     # --- 1-to-1 Private Message Routing (R7) ---
 
     def route_private_message(
@@ -337,10 +343,7 @@ class ChatEngine:
                 message=message,
                 meta=meta,
             )
-            self._private_messages[meta.message_id] = (sender, target)
-            while len(self._private_messages) > self._max_message_history:
-                oldest_id = next(iter(self._private_messages))
-                self._private_messages.pop(oldest_id, None)
+            self._record_private_message(meta.message_id, sender, target)
             return RouteResult(
                 success=True,
                 payload=server_payload,
@@ -431,7 +434,7 @@ class ChatEngine:
                     target=target,
                     group_name=None,
                 )
-                self._private_messages[meta.message_id] = (sender, target)
+                self._record_private_message(meta.message_id, sender, target)
                 return StickerRouteResult(
                     success=True, payload=server_payload, target_sid=target_sid, group_name=None
                 )
@@ -704,7 +707,11 @@ class ChatServer:
                 logger.warning("Invalid announcement from sid=%s: %s", sid, e)
                 return
 
-            sender = self.engine.get_username(sid) or payload.sender
+            sender = self.engine.get_username(sid)
+            if not sender:
+                logger.warning("Rejected announcement from unresolvable sid=%s", sid)
+                return
+
             if payload.group_name:
                 try:
                     clean_group = validate_group_name(payload.group_name)
@@ -723,13 +730,23 @@ class ChatServer:
                             sender,
                             payload.message,
                         )
-                        return
+                    else:
+                        logger.warning(
+                            "Rejected group announcement: '%s' is not a member of '%s'",
+                            sender,
+                            clean_group,
+                        )
                 except ProtocolValidationError as e:
                     logger.warning("Invalid group_name in announcement: %s", e)
-            elif payload.target:
+                return
+
+            if payload.target:
                 try:
                     clean_target = validate_username(payload.target)
                     target_sid = self.engine.get_sid(clean_target)
+                    if target_sid is None:
+                        logger.warning("Target user '%s' offline or not found", clean_target)
+                        return
                     outbound = AnnouncementPayload(
                         message=payload.message,
                         timestamp=payload.timestamp,
@@ -737,8 +754,7 @@ class ChatServer:
                         target=clean_target,
                     )
                     outbound_dict = outbound.to_dict()
-                    if target_sid:
-                        self.sio.emit(EVENT_ANNOUNCEMENT, outbound_dict, room=target_sid)
+                    self.sio.emit(EVENT_ANNOUNCEMENT, outbound_dict, room=target_sid)
                     self.sio.emit(EVENT_ANNOUNCEMENT, outbound_dict, room=sid)
                     logger.info(
                         "Announced in private chat between '%s' and '%s': %s",
@@ -746,11 +762,11 @@ class ChatServer:
                         clean_target,
                         payload.message,
                     )
-                    return
                 except ProtocolValidationError as e:
                     logger.warning("Invalid target in announcement: %s", e)
+                return
 
-            # Broadcast the client-announced message to all connected clients (SP3)
+            # Broadcast untargeted announcement to all connected clients (SP3)
             self.broadcast_announcement(payload.message, payload.timestamp)
 
     def _handle_group_message(self, sid: str, data: Any) -> None:
@@ -832,22 +848,6 @@ class ChatServer:
         )
         return payload
 
-    def run_console_loop(self, stream: TextIO | None = None) -> None:
-        """Read operator lines from server console stdin and broadcast announcements (SP3)."""
-        input_stream = stream if stream is not None else sys.stdin
-        for raw_line in input_stream:
-            text = raw_line.strip()
-            if not text:
-                continue
-            if text.startswith("/announce"):
-                text = text[len("/announce") :].strip()
-                if not text:
-                    continue
-            try:
-                self.broadcast_announcement(text)
-            except ProtocolValidationError as error:
-                logger.warning("Ignored invalid console announcement: %s", error)
-
     # --- HTTP/WSGI Server Lifecycle ---
 
     def create_http_server(self, host: str = "0.0.0.0", port: int = 5000) -> ThreadedWSGIServer:
@@ -860,15 +860,8 @@ class ChatServer:
         print("============================================================")
         print("  Simple Chat Application - Socket.IO Server")
         print(f"  Listening on http://{host}:{port}")
-        print("  Type a message (or /announce <msg>) and press Enter to broadcast (SP3).")
         print("  Press Ctrl+C to terminate.")
         print("============================================================")
-        console_thread = threading.Thread(
-            target=self.run_console_loop,
-            name="server-console-announcement",
-            daemon=True,
-        )
-        console_thread.start()
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

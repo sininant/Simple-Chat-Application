@@ -1,6 +1,5 @@
 """Unit and integration tests for Socket.IO server and ChatEngine (R2, R3, R4)."""
 
-import io
 import threading
 import time
 from typing import Any
@@ -1042,27 +1041,123 @@ def test_server_broadcast_announcement_emits_to_all_registered_clients():
     assert bob_events[0]["data"]["message"] == "Scheduled maintenance at 15:00"
 
 
-def test_server_console_loop_triggers_announcements():
-    """SP3: Operator console input triggers one-to-all announcements and ignores invalid lines."""
+def test_server_announcement_derives_sender_strictly_from_sid():
+    """SP3: Client-supplied sender is ignored; identity derived strictly from session sid."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+    server.engine.create_group("sid_alice", "DevTeam")
+    server.engine.join_group("sid_bob", "DevTeam")
+    spy.clear()
+
+    # Alice passes spoofed sender "FakedAdmin"
+    spy.trigger(
+        EVENT_ANNOUNCEMENT,
+        "sid_alice",
+        {
+            "message": "Team update",
+            "timestamp": "12:00",
+            "group_name": "DevTeam",
+            "sender": "FakedAdmin",
+        },
+    )
+
+    events = spy.get_events(EVENT_ANNOUNCEMENT, room="DevTeam")
+    assert len(events) == 1
+    assert events[0]["data"]["sender"] == "Alice"  # Server enforced Alice, not FakedAdmin
+
+
+def test_server_unauthorized_group_announcement_does_not_fallthrough():
+    """SP3: Unauthorized or missing group announcement is rejected without global broadcast."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+    server.engine.create_group("sid_alice", "SecretGroup")
+    spy.clear()
+
+    # Bob is not a member of SecretGroup
+    spy.trigger(
+        EVENT_ANNOUNCEMENT,
+        "sid_bob",
+        {
+            "message": "Intrusion attempt",
+            "timestamp": "12:05",
+            "group_name": "SecretGroup",
+        },
+    )
+
+    # Bob also tries to announce to a non-existent group
+    spy.trigger(
+        EVENT_ANNOUNCEMENT,
+        "sid_bob",
+        {
+            "message": "Phantom group announcement",
+            "timestamp": "12:06",
+            "group_name": "GhostGroup",
+        },
+    )
+
+    # Must NOT emit to SecretGroup, GhostGroup, or broadcast to any client sid
+    assert spy.get_events(EVENT_ANNOUNCEMENT, room="SecretGroup") == []
+    assert spy.get_events(EVENT_ANNOUNCEMENT, room="GhostGroup") == []
+    assert spy.get_events(EVENT_ANNOUNCEMENT, room="sid_alice") == []
+    assert spy.get_events(EVENT_ANNOUNCEMENT, room="sid_bob") == []
+
+
+def test_server_invalid_target_announcement_does_not_fallthrough():
+    """SP3: Malformed target announcement is rejected without falling through to broadcast."""
     spy = SocketIOServerSpy()
     server = ChatServer(sio=spy.sio)
     server.engine.register_user("sid_alice", "Alice")
     server.engine.register_user("sid_bob", "Bob")
     spy.clear()
 
-    console_input = io.StringIO(
-        "\n  \n/announce\n/announce Scheduled maintenance at 15:00\nDirect broadcast message\n"
+    # 1. Target with invalid characters
+    spy.trigger(
+        EVENT_ANNOUNCEMENT,
+        "sid_alice",
+        {
+            "message": "Bad target announcement",
+            "timestamp": "12:10",
+            "target": "Invalid@User",
+        },
     )
-    server.run_console_loop(stream=console_input)
 
-    alice_events = spy.get_events(EVENT_ANNOUNCEMENT, room="sid_alice")
-    bob_events = spy.get_events(EVENT_ANNOUNCEMENT, room="sid_bob")
-    assert len(alice_events) == 2
-    assert len(bob_events) == 2
-    assert alice_events[0]["data"]["message"] == "Scheduled maintenance at 15:00"
-    assert alice_events[1]["data"]["message"] == "Direct broadcast message"
-    assert bob_events[0]["data"]["message"] == "Scheduled maintenance at 15:00"
-    assert bob_events[1]["data"]["message"] == "Direct broadcast message"
+    # 2. Target user does not exist / is offline
+    spy.trigger(
+        EVENT_ANNOUNCEMENT,
+        "sid_alice",
+        {
+            "message": "Ghost target announcement",
+            "timestamp": "12:11",
+            "target": "GhostUser",
+        },
+    )
+
+    assert spy.get_events(EVENT_ANNOUNCEMENT, room="sid_alice") == []
+    assert spy.get_events(EVENT_ANNOUNCEMENT, room="sid_bob") == []
+
+
+def test_server_sticker_private_message_history_bounded():
+    """SP2/SP4: Private stickers adhere to max_message_history FIFO eviction."""
+    engine = ChatEngine(max_message_history=3)
+    engine.register_user("sid_alice", "Alice")
+    engine.register_user("sid_bob", "Bob")
+
+    for i in range(5):
+        meta = MessageMeta(message_id=f"STK_{i}", timestamp="12:00")
+        res = engine.route_sticker("sid_alice", "STK_001", meta, target="Bob")
+        assert res.success
+
+    # History must be bounded to exactly 3 entries: STK_2, STK_3, STK_4
+    assert len(engine._private_messages) == 3
+    assert "STK_0" not in engine._private_messages
+    assert "STK_1" not in engine._private_messages
+    assert "STK_2" in engine._private_messages
+    assert "STK_3" in engine._private_messages
+    assert "STK_4" in engine._private_messages
 
 
 def test_live_server_announcement_reaches_multiple_clients_simultaneously():

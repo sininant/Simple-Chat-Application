@@ -66,8 +66,11 @@ the rabbit character for every listed user.
 | *(Client-side Speech-to-Text)* | Client local -> `private_message` / `group_message` | *(Normal message payload)* | Microphone audio transcribed to text locally before emitting as text (**Special Point 1 — Mandatory AI**). |
 | `send_sticker` | Client -> Server | `{"sticker_id": "STK_001", "target": "Bob", "group_name": null, "message_id": "MSG_003", "timestamp": "14:33"}` | Client sends a predefined sticker to a peer or group (**Special Point 2**). |
 | `sticker_message` | Server -> Recipients | `{"sender": "Alice", "sticker_id": "STK_001", "target": "Bob", "group_name": null, "message_id": "MSG_003", "timestamp": "14:33"}` | Server forwards sticker event; client renders image from `assets/stickers/<sticker_id>.png`. |
-| `announcement` | Client -> Server | `{"message": "Pinned announcement", "timestamp": "14:30"}` | Registered client triggers a pinned room/system announcement broadcast (e.g. via LINE-style hover bell on a message bubble) (**Special Point 3**). |
-| `announcement` | Server -> All Clients | `{"message": "Server will restart in 5 minutes!", "timestamp": "14:30"}` | Server broadcasts announcement across all client instances, displayed in pinned top banner (**Special Point 3**). |
+| `announcement` (Private Pin) | Client -> Server | `{"message": "Pinned announcement", "timestamp": "14:30", "target": "Bob"}` | Registered client pins announcement in private chat with peer user (**Special Point 3**). |
+| `announcement` (Private Pin Delivery) | Server -> Recipient & Sender | `{"message": "Pinned announcement", "timestamp": "14:30", "sender": "Alice", "target": "Bob"}` | Server verifies sender from `sessions[sid]` and delivers announcement banner exclusively to target peer (`room=target_sid`) and sender (`room=sid`). |
+| `announcement` (Group Pin) | Client -> Server | `{"message": "Team update", "timestamp": "14:30", "group_name": "StudyGroup"}` | Registered client pins announcement in group chat; server verifies membership before routing (**Special Point 3**). |
+| `announcement` (Group Pin Delivery) | Server -> Group Room | `{"message": "Team update", "timestamp": "14:30", "sender": "Alice", "group_name": "StudyGroup"}` | Server delivers room-scoped announcement exclusively to joined group members (`room=group_name`). |
+| `announcement` (System Broadcast) | Server -> All Clients | `{"message": "Server will restart in 5 minutes!", "timestamp": "14:30"}` | Server broadcasts system-wide announcement across all client instances, displayed in top banner (**Special Point 3**). |
 | `read_ack` | Client -> Server | `{"message_id": "MSG_001", "target": "Alice"}` | Client notifies server that they viewed Alice's private message (**Special Point 4**). |
 | `read_ack` | Server -> Original Sender | `{"message_id": "MSG_001", "reader": "Bob"}` | Server derives `reader` from `sessions[sid]`, validates target, and emits acknowledgment exclusively to Alice, updating message status to `"Read ✓✓"`. |
 
@@ -95,9 +98,11 @@ the rabbit character for every listed user.
 3. **Thread Safety in Client GUI**:
    - `socketio.Client()` event callbacks run on background network threads.
    - Incoming events must be pushed into a thread-safe `queue.Queue` so the CustomTkinter GUI thread polls and renders updates via `.after()` without race conditions.
-4. **System Announcement & Trust Boundary (SP3)**:
-   - The server operator can trigger announcements directly via terminal console stdin (`run_console_loop` or `/announce <msg>`).
-   - When a client emits `announcement`, the server verifies that the sending `sid` is authenticated and registered before broadcasting, preventing unauthorized broadcast spoofing.
+4. **Room Announcement & Trust Boundary (SP3)**:
+   - Registered clients can pin room-scoped announcements in their active private or group chat tabs via the message bubble hover bell.
+   - The server strictly derives the sender identity from authenticated session mapping (`sessions[sid]`), ignoring any client-supplied `sender` property to preserve the Server Trust Boundary.
+   - When receiving a group announcement request, the server verifies group existence and requester membership before routing; unauthorized or malformed room announcement requests are denied immediately and never fall through to global broadcasts.
+   - The server can also emit system-wide broadcasts (`server.broadcast_announcement(...)`) to all registered clients when needed.
 5. **Server Memory Boundary (SP4 Read Receipt Invariant)**:
    - The server maintains private message history using a bounded FIFO queue (`max_message_history = 10000`) so long-running deployments never experience memory exhaustion while maintaining `READ_ACK` validation.
 6. **Client-Side Composer State Invariant (SP2 Sticker Exclusivity)**:
