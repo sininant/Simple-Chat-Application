@@ -30,7 +30,6 @@ except ImportError:  # pragma: no cover - exercised only on machines without GUI
 
     def load_dotenv(dotenv_path: Any = None) -> None:
         del dotenv_path
-        return None
 
 
 from chat.client import ClientSession

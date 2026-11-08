@@ -287,20 +287,20 @@ class RegisterAckPayload:
                     "RegisterAck 'message' must be a string", field="message"
                 )
             return cls(success=True, username=validated_username, message=message, error=None)
-        else:
-            if not error or not isinstance(error, str):
-                raise ProtocolValidationError(
-                    "Failed RegisterAck must specify an 'error' message", field="error"
-                )
-            if username is not None:
-                raise ProtocolValidationError(
-                    "Failed RegisterAck cannot contain 'username'", field="username"
-                )
-            if message is not None:
-                raise ProtocolValidationError(
-                    "Failed RegisterAck cannot contain 'message'", field="message"
-                )
-            return cls(success=False, username=None, message=None, error=error)
+
+        if not error or not isinstance(error, str):
+            raise ProtocolValidationError(
+                "Failed RegisterAck must specify an 'error' message", field="error"
+            )
+        if username is not None:
+            raise ProtocolValidationError(
+                "Failed RegisterAck cannot contain 'username'", field="username"
+            )
+        if message is not None:
+            raise ProtocolValidationError(
+                "Failed RegisterAck cannot contain 'message'", field="message"
+            )
+        return cls(success=False, username=None, message=None, error=error)
 
     def to_dict(self) -> dict[str, Any]:
         if self.success:
