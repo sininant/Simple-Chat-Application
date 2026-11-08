@@ -1870,3 +1870,102 @@ def test_protocol_get_server_host_port_and_url(monkeypatch):
     assert host == "192.168.1.100"
     assert port == 9000
     assert get_server_url() == "http://192.168.1.100:9000"
+
+
+def test_announcement_scoped_to_private_room_only():
+    """Verify private announcement only pins in the conversation room and not others."""
+    from chat.gui import MainChatWindow
+    from chat.protocol import AnnouncementPayload
+
+    class RoomSpy:
+        def __init__(self) -> None:
+            self.announcements: list[tuple[str, str | None]] = []
+
+        def show_announcement(self, message: str, timestamp: str | None = None) -> None:
+            self.announcements.append((message, timestamp))
+
+    class ControllerSpy:
+        username = "alice"
+
+    window = object.__new__(MainChatWindow)
+    window.controller = ControllerSpy()
+    bob_room = RoomSpy()
+    charlie_room = RoomSpy()
+    window.rooms = {"private:bob": bob_room, "bob": bob_room, "private:charlie": charlie_room}
+
+    payload = AnnouncementPayload(
+        message="Important between Alice and Bob",
+        timestamp="14:00",
+        sender="alice",
+        target="bob",
+    )
+    window._handle_announcement(payload)
+
+    assert bob_room.announcements == [("Important between Alice and Bob", "14:00")]
+    assert charlie_room.announcements == []
+    assert window._room_announcements["private:bob"] == ("Important between Alice and Bob", "14:00")
+    assert "private:charlie" not in window._room_announcements
+
+
+def test_announcement_scoped_to_group_room_only():
+    """Verify group announcement only pins in that specific group room and not private rooms."""
+    from chat.gui import MainChatWindow
+    from chat.protocol import AnnouncementPayload
+
+    class RoomSpy:
+        def __init__(self) -> None:
+            self.announcements: list[tuple[str, str | None]] = []
+
+        def show_announcement(self, message: str, timestamp: str | None = None) -> None:
+            self.announcements.append((message, timestamp))
+
+    class ControllerSpy:
+        username = "alice"
+
+    window = object.__new__(MainChatWindow)
+    window.controller = ControllerSpy()
+    dev_room = RoomSpy()
+    bob_room = RoomSpy()
+    window.rooms = {"group:DevTeam": dev_room, "DevTeam": dev_room, "private:bob": bob_room}
+
+    payload = AnnouncementPayload(
+        message="Dev sprint starts now!",
+        timestamp="14:30",
+        sender="alice",
+        group_name="DevTeam",
+    )
+    window._handle_announcement(payload)
+
+    assert dev_room.announcements == [("Dev sprint starts now!", "14:30")]
+    assert bob_room.announcements == []
+    assert window._room_announcements["group:DevTeam"] == ("Dev sprint starts now!", "14:30")
+    assert "private:bob" not in window._room_announcements
+
+
+def test_clear_room_announcement_isolates_closure():
+    """Verify dismissing an announcement in one room does not clear other rooms' announcements."""
+    from chat.gui import MainChatWindow
+
+    class RoomSpy:
+        def __init__(self) -> None:
+            self.hidden = False
+
+        def hide_announcement(self) -> None:
+            self.hidden = True
+
+    window = object.__new__(MainChatWindow)
+    room_a = RoomSpy()
+    room_b = RoomSpy()
+    window.rooms = {"private:bob": room_a, "bob": room_a, "private:charlie": room_b}
+    window._room_announcements = {
+        "private:bob": ("Note 1", "10:00"),
+        "bob": ("Note 1", "10:00"),
+        "private:charlie": ("Note 2", "11:00"),
+    }
+
+    window._clear_room_announcement("private:bob")
+    assert room_a.hidden is True
+    assert room_b.hidden is False
+    assert "private:bob" not in window._room_announcements
+    assert "bob" not in window._room_announcements
+    assert window._room_announcements["private:charlie"] == ("Note 2", "11:00")

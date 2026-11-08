@@ -256,6 +256,12 @@ class ChatEngine:
         with self._lock:
             return [name for name, members in self._groups.items() if username in members]
 
+    def get_group_members(self, group_name: str) -> set[str] | None:
+        """Return members of group_name if it exists (R9, R11)."""
+        with self._lock:
+            members = self._groups.get(group_name)
+            return set(members) if members is not None else None
+
     # --- Group Message Routing (R11) ---
 
     def route_group_message(
@@ -697,6 +703,52 @@ class ChatServer:
             except ProtocolValidationError as e:
                 logger.warning("Invalid announcement from sid=%s: %s", sid, e)
                 return
+
+            sender = self.engine.get_username(sid) or payload.sender
+            if payload.group_name:
+                try:
+                    clean_group = validate_group_name(payload.group_name)
+                    members = self.engine.get_group_members(clean_group)
+                    if members is not None and sender in members:
+                        outbound = AnnouncementPayload(
+                            message=payload.message,
+                            timestamp=payload.timestamp,
+                            sender=sender,
+                            group_name=clean_group,
+                        )
+                        self.sio.emit(EVENT_ANNOUNCEMENT, outbound.to_dict(), room=clean_group)
+                        logger.info(
+                            "Announced in group '%s' by '%s': %s",
+                            clean_group,
+                            sender,
+                            payload.message,
+                        )
+                        return
+                except ProtocolValidationError as e:
+                    logger.warning("Invalid group_name in announcement: %s", e)
+            elif payload.target:
+                try:
+                    clean_target = validate_username(payload.target)
+                    target_sid = self.engine.get_sid(clean_target)
+                    outbound = AnnouncementPayload(
+                        message=payload.message,
+                        timestamp=payload.timestamp,
+                        sender=sender,
+                        target=clean_target,
+                    )
+                    outbound_dict = outbound.to_dict()
+                    if target_sid:
+                        self.sio.emit(EVENT_ANNOUNCEMENT, outbound_dict, room=target_sid)
+                    self.sio.emit(EVENT_ANNOUNCEMENT, outbound_dict, room=sid)
+                    logger.info(
+                        "Announced in private chat between '%s' and '%s': %s",
+                        sender,
+                        clean_target,
+                        payload.message,
+                    )
+                    return
+                except ProtocolValidationError as e:
+                    logger.warning("Invalid target in announcement: %s", e)
 
             # Broadcast the client-announced message to all connected clients (SP3)
             self.broadcast_announcement(payload.message, payload.timestamp)

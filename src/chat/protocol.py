@@ -635,20 +635,46 @@ class StickerMessageServerPayload:
 
 @dataclass(frozen=True, slots=True)
 class AnnouncementPayload:
-    """Server -> All Clients: System-wide broadcast announcement (SP3)."""
+    """Server -> All Clients: System-wide or room-scoped announcement (SP3)."""
 
     message: str
     timestamp: str
+    sender: str | None = None
+    target: str | None = None
+    group_name: str | None = None
 
     @classmethod
     def from_dict(cls, data: Any) -> Self:
         d = _ensure_dict(data)
         message = validate_message_text(d.get("message"), field_name="message")
         timestamp = validate_timestamp(d.get("timestamp"), field_name="timestamp")
-        return cls(message=message, timestamp=timestamp)
+        sender = d.get("sender")
+        target = d.get("target")
+        group_name = d.get("group_name")
+        return cls(
+            message=message,
+            timestamp=timestamp,
+            sender=str(sender).strip() if sender is not None and str(sender).strip() else None,
+            target=str(target).strip() if target is not None and str(target).strip() else None,
+            group_name=(
+                str(group_name).strip()
+                if group_name is not None and str(group_name).strip()
+                else None
+            ),
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data: dict[str, Any] = {
+            "message": self.message,
+            "timestamp": self.timestamp,
+        }
+        if self.sender is not None:
+            data["sender"] = self.sender
+        if self.target is not None:
+            data["target"] = self.target
+        if self.group_name is not None:
+            data["group_name"] = self.group_name
+        return data
 
 
 @dataclass(frozen=True, slots=True)

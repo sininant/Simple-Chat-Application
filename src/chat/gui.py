@@ -109,7 +109,13 @@ class SessionPort(Protocol):
         timestamp: str | None = None,
     ) -> str | None: ...
 
-    def send_announcement(self, message: str, timestamp: str | None = None) -> bool: ...
+    def send_announcement(
+        self,
+        message: str,
+        timestamp: str | None = None,
+        target: str | None = None,
+        group_name: str | None = None,
+    ) -> bool: ...
 
 
 class GuiController:
@@ -182,9 +188,23 @@ class GuiController:
             return None
         return send_fn(group_name, message)
 
-    def send_announcement(self, message: str) -> bool:
-        """Send a system announcement request through the session adapter (SP3 / LINE-style)."""
-        return bool(self.session.send_announcement(message))
+    def send_announcement(
+        self,
+        message: str,
+        target: str | None = None,
+        group_name: str | None = None,
+    ) -> bool:
+        """Send an announcement request through the session adapter (SP3 / LINE-style)."""
+        send_fn = getattr(self.session, "send_announcement", None)
+        if send_fn is None:
+            return False
+        try:
+            return bool(send_fn(message, target=target, group_name=group_name))
+        except TypeError:
+            try:
+                return bool(send_fn(message, None, target, group_name))
+            except TypeError:
+                return bool(send_fn(message))
 
     def connect_and_register(
         self, host: str, port: str, username: str, avatar: str = "rabbit"
@@ -2133,6 +2153,7 @@ class MainChatWindow:
         self._unread_messages: dict[str, set[str]] = {}
         self._acknowledged_messages: set[str] = set()
         self._latest_announcement: tuple[str, str | None] | None = None
+        self._room_announcements: dict[str, tuple[str, str | None]] = {}
         self.controller.on_private_message = self._handle_incoming_private_message
         self.controller.on_private_message_error = self._handle_private_message_error
         self.controller.on_read_ack = self._handle_read_ack
@@ -2196,10 +2217,25 @@ class MainChatWindow:
             or self.rooms.get(f"private:{name}")
         )
 
+    def _clear_room_announcement(self, room_id: str) -> None:
+        """Cancel/dismiss the pinned announcement in a specific chat room."""
+        short_name = room_id.split(":", 1)[-1]
+        if hasattr(self, "_room_announcements"):
+            self._room_announcements.pop(room_id, None)
+            self._room_announcements.pop(short_name, None)
+        room = self.rooms.get(room_id) or self.rooms.get(short_name)
+        if room is not None:
+            if hasattr(room, "hide_announcement"):
+                room.hide_announcement()
+            elif hasattr(room, "announcement_bar") and hasattr(room.announcement_bar, "hide"):
+                room.announcement_bar.hide()
+
     def _clear_announcements(self) -> None:
         """Cancel/dismiss the current active announcement across all rooms."""
         self._latest_announcement = None
-        for room in self.rooms.values():
+        if hasattr(self, "_room_announcements"):
+            self._room_announcements.clear()
+        for room in set(self.rooms.values()):
             if hasattr(room, "hide_announcement"):
                 room.hide_announcement()
             elif hasattr(room, "announcement_bar") and hasattr(room.announcement_bar, "hide"):
@@ -2211,9 +2247,15 @@ class MainChatWindow:
         self.rooms[room_id] = room
         if title not in self.rooms:
             self.rooms[title] = room
-        latest_ann = getattr(self, "_latest_announcement", None)
-        if latest_ann is not None and hasattr(room, "show_announcement"):
-            room.show_announcement(*latest_ann)
+        room_ann = getattr(self, "_room_announcements", {}).get(room_id) or getattr(
+            self, "_room_announcements", {}
+        ).get(title)
+        if room_ann is not None and hasattr(room, "show_announcement"):
+            room.show_announcement(*room_ann)
+        elif room_ann is None:
+            latest_ann = getattr(self, "_latest_announcement", None)
+            if latest_ann is not None and hasattr(room, "show_announcement"):
+                room.show_announcement(*latest_ann)
 
     def open_private_room(self, user: str, select: bool = True) -> None:
         if user == self.controller.username:
@@ -2232,8 +2274,12 @@ class MainChatWindow:
                 on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
                 on_sticker=lambda peer=user: self._open_sticker_picker(peer),
                 on_send_sticker=lambda s, peer=user: self._send_sticker(peer, s),
-                on_announce=lambda msg: self.controller.send_announcement(msg),
-                on_close_announcement=self._clear_announcements,
+                on_announce=lambda msg, peer=user: self.controller.send_announcement(
+                    msg, target=peer
+                ),
+                on_close_announcement=lambda peer=user: self._clear_room_announcement(
+                    f"private:{peer}"
+                ),
             )
             try:
                 room = _create_room_tab(tab, user, actions)
@@ -2270,8 +2316,12 @@ class MainChatWindow:
                 on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
                 on_sticker=lambda g=group_name: self._open_sticker_picker(g),
                 on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
-                on_announce=lambda msg: self.controller.send_announcement(msg),
-                on_close_announcement=self._clear_announcements,
+                on_announce=lambda msg, g=group_name: self.controller.send_announcement(
+                    msg, group_name=g
+                ),
+                on_close_announcement=lambda g=group_name: self._clear_room_announcement(
+                    f"group:{g}"
+                ),
             )
             try:
                 room = _create_room_tab(tab, group_name, actions)
@@ -2434,14 +2484,44 @@ class MainChatWindow:
             self.rooms[reader].mark_message_read(message_id)
 
     def _handle_announcement(self, payload: AnnouncementPayload) -> None:
-        """Reveal and update AnnouncementBanner in all open rooms (SP3 / LINE-style)."""
-        self._latest_announcement = (payload.message, payload.timestamp)
-        if hasattr(self, "banner"):
-            self.banner.show(payload.message, timestamp=payload.timestamp)
-        rooms = getattr(self, "rooms", {})
-        for room in set(rooms.values()):
-            if hasattr(room, "show_announcement"):
+        """Reveal and update AnnouncementBanner in the target room only (SP3 / LINE-style)."""
+        controller = getattr(self, "controller", None)
+        current_user = getattr(controller, "username", None)
+        target_room_id: str | None = None
+        target_room_name: str | None = None
+
+        if payload.group_name:
+            target_room_id = f"group:{payload.group_name}"
+            target_room_name = payload.group_name
+        elif payload.target or payload.sender:
+            peer = (
+                payload.target
+                if current_user == payload.sender
+                else (payload.sender or payload.target)
+            )
+            if peer:
+                target_room_id = f"private:{peer}"
+                target_room_name = peer
+
+        if target_room_id and target_room_name:
+            if not hasattr(self, "_room_announcements"):
+                self._room_announcements = {}
+            self._room_announcements[target_room_id] = (payload.message, payload.timestamp)
+            self._room_announcements[target_room_name] = (payload.message, payload.timestamp)
+
+            room = self._get_room(
+                target_room_name, kind="group" if payload.group_name else "private"
+            )
+            if room is not None and hasattr(room, "show_announcement"):
                 room.show_announcement(payload.message, timestamp=payload.timestamp)
+        else:
+            self._latest_announcement = (payload.message, payload.timestamp)
+            if hasattr(self, "banner"):
+                self.banner.show(payload.message, timestamp=payload.timestamp)
+            rooms = getattr(self, "rooms", {})
+            for room in set(rooms.values()):
+                if hasattr(room, "show_announcement"):
+                    room.show_announcement(payload.message, timestamp=payload.timestamp)
 
     def _handle_private_message_error(self, target: str, error: str) -> None:
         if target and target in self.rooms:

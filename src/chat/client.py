@@ -483,6 +483,8 @@ class ClientSession:
         self,
         message: str,
         timestamp: str | None = None,
+        target: str | None = None,
+        group_name: str | None = None,
     ) -> bool:
         """Send an announcement broadcast request to the server (SP3 / LINE-style)."""
         if not self.is_connected or not self.is_registered:
@@ -494,7 +496,15 @@ class ClientSession:
             clean_timestamp = validate_timestamp(
                 timestamp if timestamp is not None else datetime.now().strftime("%H:%M")
             )
-            payload = AnnouncementPayload(message=clean_message, timestamp=clean_timestamp)
+            clean_target = validate_username(target) if target else None
+            clean_group = validate_group_name(group_name) if group_name else None
+            payload = AnnouncementPayload(
+                message=clean_message,
+                timestamp=clean_timestamp,
+                sender=self.username,
+                target=clean_target,
+                group_name=clean_group,
+            )
         except ProtocolValidationError as e:
             logger.warning("Invalid announcement payload: %s", e)
             return False

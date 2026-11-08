@@ -1297,3 +1297,57 @@ def test_server_host_port_env_precedence(monkeypatch):
 
     assert host == "0.0.0.0"
     assert port == 9999
+
+
+def test_server_announcement_routes_to_group_only():
+    """Verify group-scoped announcement is emitted only to that group room."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+    server.engine.create_group("sid_alice", "DevTeam")
+    server.engine.join_group("sid_bob", "DevTeam")
+    spy.clear()
+
+    spy.trigger(
+        EVENT_ANNOUNCEMENT,
+        "sid_alice",
+        {"message": "Deploy at midnight!", "timestamp": "23:00", "group_name": "DevTeam"},
+    )
+
+    group_events = spy.get_events(EVENT_ANNOUNCEMENT, room="DevTeam")
+    assert len(group_events) == 1
+    assert group_events[0]["data"]["message"] == "Deploy at midnight!"
+    assert group_events[0]["data"]["group_name"] == "DevTeam"
+    assert group_events[0]["data"]["sender"] == "Alice"
+    assert spy.get_events(EVENT_ANNOUNCEMENT, room="sid_bob") == []
+
+
+def test_server_announcement_routes_to_private_target_only():
+    """Verify private-scoped announcement is emitted only to sender and recipient."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+    server.engine.register_user("sid_charlie", "Charlie")
+    spy.clear()
+
+    spy.trigger(
+        EVENT_ANNOUNCEMENT,
+        "sid_alice",
+        {"message": "Secret memo", "timestamp": "10:00", "target": "Bob"},
+    )
+
+    alice_events = spy.get_events(EVENT_ANNOUNCEMENT, room="sid_alice")
+    bob_events = spy.get_events(EVENT_ANNOUNCEMENT, room="sid_bob")
+    charlie_events = spy.get_events(EVENT_ANNOUNCEMENT, room="sid_charlie")
+
+    assert len(alice_events) == 1
+    assert alice_events[0]["data"]["message"] == "Secret memo"
+    assert alice_events[0]["data"]["target"] == "Bob"
+    assert alice_events[0]["data"]["sender"] == "Alice"
+
+    assert len(bob_events) == 1
+    assert bob_events[0]["data"]["message"] == "Secret memo"
+
+    assert len(charlie_events) == 0
