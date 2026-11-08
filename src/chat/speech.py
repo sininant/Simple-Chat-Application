@@ -103,6 +103,12 @@ class SpeechInputController:
         self._lock = Lock()
         self._paused: Event | None = None
 
+    @property
+    def is_listening(self) -> bool:
+        """Check whether the controller is actively capturing audio."""
+        with self._lock:
+            return self._paused is not None
+
     def pause(self) -> bool:
         """Stop waiting for a new phrase while preserving one already being captured."""
         with self._lock:

@@ -258,3 +258,36 @@ def test_listening_state_turns_the_microphone_button_into_pause():
         "font": (FONT, 14),
     }
     assert box._is_listening is True
+
+
+def test_speech_input_controller_is_listening_property():
+    """Verify is_listening accurately reflects controller's active capture state."""
+    started = Event()
+    release = Event()
+    completed = Event()
+
+    class BlockingTranscriber:
+        def transcribe(self, paused: Event) -> str:
+            started.set()
+            release.wait(timeout=1)
+            return "Done"
+
+    controller = SpeechInputController(BlockingTranscriber())
+    assert controller.is_listening is False
+
+    controller.transcribe_async(
+        on_listening=lambda: None,
+        on_transcript=lambda _: completed.set(),
+        on_error=lambda _: completed.set(),
+        on_paused=lambda: completed.set(),
+    )
+
+    assert started.wait(timeout=1)
+    assert controller.is_listening is True
+
+    release.set()
+    assert completed.wait(timeout=1)
+    import time
+
+    time.sleep(0.05)
+    assert controller.is_listening is False
