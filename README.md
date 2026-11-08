@@ -143,27 +143,31 @@ Enter the server host, port, and an unclaimed username. The login screen moves t
 responsive chat layout after the server confirms registration. The interface polls
 `ClientSession` on the GUI event loop, so Socket.IO callbacks never mutate widgets directly.
 
-## Planned project structure
+## Project structure
+
+The application follows the modern Python `src/` package layout for clean packaging, maintainability, and testing isolation:
 
 ```text
 Simple-Chat-Application/
-|-- .github/
-|   `-- workflows/pr-check.yml
-|-- assets/stickers/         Preinstalled sticker images (.png)
-|-- docs/
-|   |-- agents/              Agent skill, tracker, and domain docs config
-|   |-- project-ideas.md     Part 1, Part 2, and Part 3 working design guide
-|   `-- protocol.md          Shared client-server protocol draft
-|-- tests/                   Automated unit and integration tests
-|-- AGENTS.md                Agent instructions and safety rules
-|-- client.py                Client networking and session entry point
-|-- gui.py                   Desktop user interface (CustomTkinter / Tkinter / PySide6)
-|-- protocol.py              Socket.IO event names, payload schemas, and validators
-|-- server.py                Socket.IO server, session registry, rooms, and routing logic
-`-- speech.py                Client-side speech-to-text integration
+|-- .github/workflows/       CI quality checks (linting, tests)
+|-- assets/                  Avatars, icons, and preinstalled stickers (.png)
+|-- docs/                    Architecture, protocol contract, and work plan
+|-- src/chat/                Core application package
+|   |-- __init__.py          Package marker and version
+|   |-- protocol.py          Presentation layer schemas, event contracts, validators
+|   |-- server.py            Headless ChatEngine and Socket.IO ChatServer
+|   |-- client.py            Headless ClientSession Socket.IO adapter
+|   |-- speech.py            SpeechTranscriber and SpeechInputController
+|   `-- gui.py               Desktop UI and headless GuiController
+|-- tests/                   Automated headless unit and integration tests
+|-- client.py                Root CLI entrypoint (aliases chat.client)
+|-- gui.py                   Root GUI entrypoint (aliases chat.gui)
+|-- protocol.py              Root re-export alias (aliases chat.protocol)
+|-- server.py                Root server entrypoint (aliases chat.server)
+|-- speech.py                Root re-export alias (aliases chat.speech)
+|-- pyproject.toml           Project configuration and test runner settings
+`-- requirements.txt         Runtime dependencies
 ```
-
-The implementation files will be added incrementally through focused pull requests and can be adapted as the team finalizes each part.
 
 ## Quality checks
 
