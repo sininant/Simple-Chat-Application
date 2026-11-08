@@ -637,4 +637,3 @@ def test_group_name_exact_boundary_limits():
 
     with pytest.raises(ProtocolValidationError):
         validate_group_name("G" * 51)
-
