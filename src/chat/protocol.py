@@ -722,6 +722,7 @@ CLIENT_EVENT_PAYLOAD_MAP: dict[str, type] = {
     EVENT_SEND_GROUP: GroupMessagePayload,
     EVENT_SEND_STICKER: SendStickerPayload,
     EVENT_READ_ACK: ReadAckClientPayload,
+    EVENT_ANNOUNCEMENT: AnnouncementPayload,
 }
 
 SERVER_EVENT_PAYLOAD_MAP: dict[str, type] = {

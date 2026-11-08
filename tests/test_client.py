@@ -822,3 +822,35 @@ def test_client_session_concurrent_read_write_thread_safety():
         t.join()
 
     assert errors == []
+
+
+def test_client_session_send_announcement_emits_payload():
+    """Verify ClientSession emits EVENT_ANNOUNCEMENT when authenticated (SP3)."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    spy.trigger("connect")
+    session.register("Alice")
+    spy.trigger("register_ack", {"success": True, "username": "Alice"})
+    spy.emitted.clear()
+
+    res = session.send_announcement("Meeting in room A", timestamp="15:30")
+    assert res is True
+    assert len(spy.emitted) == 1
+    event, data = spy.emitted[0]
+    assert event == EVENT_ANNOUNCEMENT
+    assert data["message"] == "Meeting in room A"
+    assert data["timestamp"] == "15:30"
+
+
+def test_client_session_send_announcement_rejected_when_disconnected():
+    """Verify send_announcement is guarded when disconnected or unregistered."""
+    spy = SocketIOClientSpy()
+    session = ClientSession(sio=spy.sio)
+
+    assert session.send_announcement("Hello") is False
+    assert len(spy.emitted) == 0
+
+    spy.trigger("connect")
+    assert session.send_announcement("Hello") is False
+    assert len(spy.emitted) == 0

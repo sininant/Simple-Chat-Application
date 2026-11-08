@@ -52,6 +52,7 @@ class SessionSpy:
         self.created_groups: list[str] = []
         self.joined_groups: list[str] = []
         self.sent_group: list[tuple[str, str, str | None, str | None]] = []
+        self.announcements: list[str] = []
         self.connect_result = connect_result
         self.send_read_ack_result = send_read_ack_result
 
@@ -96,6 +97,10 @@ class SessionSpy:
     ) -> str | None:
         self.sent_group.append((group_name, message, message_id, timestamp))
         return message_id or "MSG_G_TEST"
+
+    def send_announcement(self, message: str, timestamp: str | None = None) -> bool:
+        self.announcements.append(message)
+        return True
 
     def get_next_event(self, *, block: bool = False) -> tuple[str, Any] | None:
         del block
@@ -1460,3 +1465,116 @@ def test_controller_poll_events_handles_unknown_or_corrupt_events_gracefully():
 
     # Should not throw any exception
     controller.poll_events()
+
+
+def test_gui_controller_send_announcement_delegates_to_session():
+    """Verify GuiController delegates send_announcement request to session."""
+    session = SessionSpy()
+    controller = GuiController(session)
+    assert controller.send_announcement("Important update!") is True
+    assert session.announcements == ["Important update!"]
+
+
+def test_message_bubble_creates_hover_announce_button(monkeypatch):
+    """SP3: MessageBubble creates announce button on text messages and triggers callback."""
+    from gui import MessageBubble
+
+    announced: list[str] = []
+
+    class MockWidget:
+        def __init__(self, parent: Any = None, **kwargs: Any) -> None:
+            self.parent = parent
+            self.kwargs = kwargs
+            self.command = kwargs.get("command")
+            self.packed = False
+
+        def pack(self, **kwargs: Any) -> None:
+            self.packed = True
+
+        def pack_forget(self) -> None:
+            self.packed = False
+
+        def pack_propagate(self, _flag: bool) -> None:
+            pass
+
+        def bind(self, _event: str, _handler: Any, add: str | None = None) -> None:
+            pass
+
+        def after(self, ms: int, fn: Any) -> None:
+            pass
+
+    class MockUI:
+        CTkFrame = MockWidget
+        CTkLabel = MockWidget
+        CTkButton = MockWidget
+
+    monkeypatch.setattr("gui._require_ctk", lambda: MockUI)
+    monkeypatch.setattr("gui._get_bubble_avatar", lambda _: None)
+    monkeypatch.setattr("gui._load_icons", lambda *a, **k: {})
+
+    # 1. Text message with on_announce callback
+    bubble = MessageBubble(
+        parent=object(),
+        sender="Alice",
+        message="Notice: deploy at 4PM",
+        own=False,
+        on_announce=lambda msg: announced.append(msg),
+    )
+    assert bubble.announce_btn is not None
+
+    # Hover enter shows the button
+    bubble._on_enter()
+    assert bubble.announce_btn.packed is True
+
+    # Clicking / invoking announce calls the callback
+    bubble.announce()
+    assert announced == ["Notice: deploy at 4PM"]
+
+    # 2. Sticker message does not create announce button
+    bubble_stk = MessageBubble(
+        parent=object(),
+        sender="Alice",
+        message="stk",
+        sticker_image=object(),
+        on_announce=lambda msg: announced.append(msg),
+    )
+    assert bubble_stk.announce_btn is None
+
+    # 3. Message without on_announce does not create announce button
+    bubble_no_cb = MessageBubble(
+        parent=object(),
+        sender="Bob",
+        message="Hello",
+        on_announce=None,
+    )
+    assert bubble_no_cb.announce_btn is None
+
+
+def test_main_chat_window_broadcasts_announcement_to_room_banners():
+    """SP3: Incoming announcement reveals both global banner and pinned room banner."""
+    window = object.__new__(MainChatWindow)
+
+    class BannerSpy:
+        def __init__(self) -> None:
+            self.shown: list[tuple[str, str | None]] = []
+
+        def show(self, message: str, timestamp: str | None = None) -> None:
+            self.shown.append((message, timestamp))
+
+    class RoomSpy:
+        def __init__(self) -> None:
+            self.announcements: list[tuple[str, str | None]] = []
+
+        def show_announcement(self, message: str, timestamp: str | None = None) -> None:
+            self.announcements.append((message, timestamp))
+
+    window.banner = BannerSpy()
+    room = RoomSpy()
+    window.rooms = {"Bob": room}
+
+    payload = AnnouncementPayload(message="Pinned room announcement", timestamp="16:00")
+    window._handle_announcement(payload)
+
+    assert window.banner.shown == [("Pinned room announcement", "16:00")]
+    assert room.announcements == [("Pinned room announcement", "16:00")]
+    assert window._latest_announcement == ("Pinned room announcement", "16:00")

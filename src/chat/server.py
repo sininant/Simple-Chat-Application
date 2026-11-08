@@ -685,11 +685,21 @@ class ChatServer:
 
         @self.sio.event
         def announcement(sid: str, data: Any = None) -> None:
-            del data
-            logger.warning(
-                "Rejected unauthorized client announcement spoof attempt from sid=%s",
-                sid,
-            )
+            if not self.engine.is_registered(sid):
+                logger.warning(
+                    "Rejected announcement from unregistered sid=%s",
+                    sid,
+                )
+                return
+            try:
+                payload = parse_client_event(EVENT_ANNOUNCEMENT, data)
+                assert isinstance(payload, AnnouncementPayload)
+            except ProtocolValidationError as e:
+                logger.warning("Invalid announcement from sid=%s: %s", sid, e)
+                return
+
+            # Broadcast the client-announced message to all connected clients (SP3)
+            self.broadcast_announcement(payload.message, payload.timestamp)
 
     def _handle_group_message(self, sid: str, data: Any) -> None:
         """Route group messages to group room members only (R11)."""

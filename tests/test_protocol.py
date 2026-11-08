@@ -48,10 +48,10 @@ from protocol import (
 
 def test_directional_event_maps():
     """Verify client and server event maps are explicitly partitioned."""
-    # Client map: only client-to-server events
+    # Client map: client-to-server events (including announcement pinning)
     assert EVENT_REGISTER in CLIENT_EVENT_PAYLOAD_MAP
     assert EVENT_PRIVATE_MSG in CLIENT_EVENT_PAYLOAD_MAP
-    assert EVENT_ANNOUNCEMENT not in CLIENT_EVENT_PAYLOAD_MAP
+    assert EVENT_ANNOUNCEMENT in CLIENT_EVENT_PAYLOAD_MAP
     assert EVENT_USER_LIST not in CLIENT_EVENT_PAYLOAD_MAP
 
     # Server map: only server-to-client events
@@ -580,11 +580,19 @@ def test_parse_client_event_prevents_identity_spoofing():
 
 
 def test_parse_client_event_rejects_server_only_events():
-    """Verify client parser rejects server-exclusive events like announcement."""
-    with pytest.raises(ProtocolValidationError):
-        parse_client_event(EVENT_ANNOUNCEMENT, {"message": "alert", "timestamp": "12:00"})
+    """Verify client parser rejects server-exclusive events like user_list."""
     with pytest.raises(ProtocolValidationError):
         parse_client_event(EVENT_USER_LIST, {"users": ["Alice"]})
+
+
+def test_parse_client_event_announcement():
+    """Verify client parser permits valid announcement payloads from clients."""
+    payload = parse_client_event(
+        EVENT_ANNOUNCEMENT, {"message": "Important pin", "timestamp": "12:00"}
+    )
+    assert isinstance(payload, AnnouncementPayload)
+    assert payload.message == "Important pin"
+    assert payload.timestamp == "12:00"
 
 
 def test_parse_server_event_inbound():

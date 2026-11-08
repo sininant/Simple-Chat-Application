@@ -987,20 +987,41 @@ def test_server_broadcast_announcement_rejects_invalid_input():
     assert spy.get_events(EVENT_ANNOUNCEMENT) == []
 
 
-def test_server_rejects_unauthorized_client_announcement_spoof():
-    """SP3: Unauthorized client attempts to spoof a system announcement are rejected."""
+def test_server_rejects_unregistered_client_announcement():
+    """SP3: Unregistered client attempts to announce are rejected."""
     spy = SocketIOServerSpy()
-    server = ChatServer(sio=spy.sio)
-    server.engine.register_user("sid_attacker", "Attacker")
+    _ = ChatServer(sio=spy.sio)
     spy.clear()
 
     spy.trigger(
         EVENT_ANNOUNCEMENT,
-        "sid_attacker",
-        {"message": "Fake admin broadcast!", "timestamp": "14:35"},
+        "sid_unregistered",
+        {"message": "Unauthorized broadcast!", "timestamp": "14:35"},
     )
 
     assert spy.get_events(EVENT_ANNOUNCEMENT) == []
+
+
+def test_server_registered_client_announcement_broadcasts_to_all():
+    """SP3: Registered client can announce a message (LINE-style announcement)."""
+    spy = SocketIOServerSpy()
+    server = ChatServer(sio=spy.sio)
+    server.engine.register_user("sid_alice", "Alice")
+    server.engine.register_user("sid_bob", "Bob")
+    spy.clear()
+
+    spy.trigger(
+        EVENT_ANNOUNCEMENT,
+        "sid_alice",
+        {"message": "Meeting at 3 PM!", "timestamp": "14:35"},
+    )
+
+    alice_events = spy.get_events(EVENT_ANNOUNCEMENT, room="sid_alice")
+    bob_events = spy.get_events(EVENT_ANNOUNCEMENT, room="sid_bob")
+    assert len(alice_events) == 1
+    assert alice_events[0]["data"]["message"] == "Meeting at 3 PM!"
+    assert len(bob_events) == 1
+    assert bob_events[0]["data"]["message"] == "Meeting at 3 PM!"
 
 
 def test_server_console_loop_triggers_announcements():

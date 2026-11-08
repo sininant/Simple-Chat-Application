@@ -109,6 +109,8 @@ class SessionPort(Protocol):
         timestamp: str | None = None,
     ) -> str | None: ...
 
+    def send_announcement(self, message: str, timestamp: str | None = None) -> bool: ...
+
 
 class GuiController:
     """Headless adapter that owns GUI-facing login, presence, and chat message state."""
@@ -179,6 +181,13 @@ class GuiController:
         if send_fn is None:
             return None
         return send_fn(group_name, message)
+
+    def send_announcement(self, message: str) -> bool:
+        """Send a system announcement request through the session adapter (SP3 / LINE-style)."""
+        send_fn = getattr(self.session, "send_announcement", None)
+        if send_fn is None:
+            return False
+        return bool(send_fn(message))
 
     def connect_and_register(
         self, host: str, port: str, username: str, avatar: str = "rabbit"
@@ -609,13 +618,13 @@ class LoginView:
 
 
 class AnnouncementBanner:
-    """Reusable, dismissible global announcement slot (SP3)."""
+    """Reusable, dismissible announcement banner styled after LINE (SP3)."""
 
     def __init__(self, parent: Any) -> None:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(
             parent,
-            fg_color=YELLOW,
+            fg_color=WHITE,
             border_color=INK,
             border_width=2,
             corner_radius=12,
@@ -627,37 +636,70 @@ class AnnouncementBanner:
             compound="left",
             text_color=INK,
             anchor="w",
-            font=(FONT, 16, "bold"),
+            font=(FONT, 15, "bold"),
         )
         self.label.pack(side="left", fill="x", expand=True, padx=14, pady=7)
-        ui.CTkButton(
+        self.toggle_btn = ui.CTkButton(
             self.frame,
-            text="Hide",
-            width=60,
+            text="v",
+            width=36,
             height=28,
-            fg_color=WHITE,
+            fg_color="transparent",
             hover_color=PINK_LIGHT,
             text_color=INK,
             border_color=INK,
             border_width=1,
-            corner_radius=10,
+            corner_radius=8,
             font=(FONT, 13, "bold"),
-            command=self.hide,
-        ).pack(side="right", padx=10, pady=5)
+            command=self.toggle,
+        )
+        self.toggle_btn.pack(side="right", padx=10, pady=5)
+        self._current_message = ""
+        self._current_timestamp: str | None = None
+        self._is_collapsed = False
 
-    def show(self, message: str, timestamp: str | None = None) -> None:
-        """Display the announcement text and timestamp in the global top banner."""
-        prefix = f"[{timestamp}] " if timestamp else ""
-        self.label.configure(text=f"  {prefix}{message}")
-        self.frame.grid()
+    def toggle(self) -> None:
+        """Toggle banner between full message text and collapsed state."""
+        self._is_collapsed = not self._is_collapsed
+        if self._is_collapsed:
+            self.label.configure(text="  (Announcement)")
+            self.toggle_btn.configure(text="^")
+        else:
+            self.label.configure(text=f"  {self._current_message}")
+            self.toggle_btn.configure(text="v")
+
+    def show(
+        self,
+        message: str,
+        timestamp: str | None = None,
+        before_widget: Any | None = None,
+    ) -> None:
+        """Display the announcement text and timestamp in the banner."""
+        self._current_message = message
+        self._current_timestamp = timestamp
+        self._is_collapsed = False
+        self.label.configure(text=f"  {message}")
+        self.toggle_btn.configure(text="v")
+        if before_widget is not None:
+            try:
+                self.frame.pack(fill="x", padx=10, pady=(6, 2), before=before_widget)
+            except Exception:
+                pass
         try:
             self.frame.bell()
         except Exception:
             pass
 
     def hide(self) -> None:
-        """Dismiss the global announcement banner until the next broadcast arrives."""
-        self.frame.grid_remove()
+        """Dismiss the announcement banner until the next broadcast arrives."""
+        try:
+            self.frame.grid_remove()
+        except Exception:
+            pass
+        try:
+            self.frame.pack_forget()
+        except Exception:
+            pass
 
 
 class SidebarPanel:
@@ -1047,22 +1089,34 @@ class MessageBubble:
         timestamp: str | None = None,
         avatar: Any | None = None,
         sticker_image: Any | None = None,
+        on_announce: Callable[[str], None] | None = None,
     ) -> None:
         ui = _require_ctk()
+        self.sender = sender
+        self.message = message
         self.own = own
         self.timestamp = timestamp
+        self.on_announce = on_announce
         self.status_label: Any | None = None
         self.avatar_label: Any | None = None
         self.avatar = avatar
+        self.announce_btn: Any | None = None
+        self._hovering = False
         avatar_img = _get_bubble_avatar(avatar) if avatar is not None else None
         self.frame = ui.CTkFrame(parent, fg_color="transparent")
+
+        hover_targets: list[Any] = [self.frame]
 
         if own:
             row = ui.CTkFrame(self.frame, fg_color="transparent")
             row.pack(anchor="e", padx=8, pady=4)
+            hover_targets.append(row)
 
             content_col = ui.CTkFrame(row, fg_color="transparent")
             content_col.pack(side="left", anchor="e")
+            hover_targets.append(content_col)
+            self._content_col = content_col
+            self._row = row
 
             if sticker_image is not None:
                 bubble = ui.CTkLabel(
@@ -1072,6 +1126,7 @@ class MessageBubble:
                     fg_color="transparent",
                 )
                 bubble.pack(anchor="e")
+                hover_targets.append(bubble)
             else:
                 bubble_shell = ui.CTkFrame(
                     content_col,
@@ -1081,6 +1136,7 @@ class MessageBubble:
                     corner_radius=16,
                 )
                 bubble_shell.pack(anchor="e")
+                hover_targets.append(bubble_shell)
 
                 bubble = ui.CTkLabel(
                     bubble_shell,
@@ -1092,6 +1148,7 @@ class MessageBubble:
                     font=(FONT, 16),
                 )
                 bubble.pack(padx=12, pady=7)
+                hover_targets.append(bubble)
 
             status_text = f"{timestamp} • Sent" if timestamp else "Sent"
             self.status_label = ui.CTkLabel(
@@ -1106,6 +1163,7 @@ class MessageBubble:
         else:
             row = ui.CTkFrame(self.frame, fg_color="transparent")
             row.pack(anchor="w", padx=8, pady=4)
+            hover_targets.append(row)
 
             if avatar_img is not None:
                 self.avatar_label = ui.CTkLabel(
@@ -1117,9 +1175,13 @@ class MessageBubble:
                     fg_color="transparent",
                 )
                 self.avatar_label.pack(side="left", anchor="n", padx=(0, 8), pady=2)
+                hover_targets.append(self.avatar_label)
 
             content_col = ui.CTkFrame(row, fg_color="transparent")
             content_col.pack(side="left", anchor="w")
+            hover_targets.append(content_col)
+            self._content_col = content_col
+            self._row = row
 
             sender_label = f"{sender} • {timestamp}" if timestamp else sender
             ui.CTkLabel(
@@ -1138,6 +1200,7 @@ class MessageBubble:
                     fg_color="transparent",
                 )
                 bubble.pack(anchor="w")
+                hover_targets.append(bubble)
             else:
                 bubble_shell = ui.CTkFrame(
                     content_col,
@@ -1147,6 +1210,7 @@ class MessageBubble:
                     corner_radius=16,
                 )
                 bubble_shell.pack(anchor="w")
+                hover_targets.append(bubble_shell)
 
                 bubble = ui.CTkLabel(
                     bubble_shell,
@@ -1158,6 +1222,66 @@ class MessageBubble:
                     font=(FONT, 16),
                 )
                 bubble.pack(padx=12, pady=7)
+                hover_targets.append(bubble)
+
+        # Create announce action button if callback provided and not a sticker
+        if self.on_announce is not None and sticker_image is None and message.strip():
+            bell_icon = _load_icons((18, 18)).get("notification")
+            self.announce_btn = ui.CTkButton(
+                row,
+                text="",
+                image=bell_icon,
+                width=30,
+                height=30,
+                corner_radius=6,
+                fg_color=WHITE,
+                border_color=INK,
+                border_width=1,
+                hover_color=PINK_LIGHT,
+                command=self.announce,
+            )
+            hover_targets.append(self.announce_btn)
+            for target in hover_targets:
+                if hasattr(target, "bind"):
+                    try:
+                        target.bind("<Enter>", self._on_enter, add="+")
+                        target.bind("<Leave>", self._on_leave, add="+")
+                    except Exception:
+                        pass
+
+    def _on_enter(self, _event: Any = None) -> None:
+        self._hovering = True
+        if self.announce_btn is not None:
+            try:
+                if self.own and hasattr(self, "_content_col"):
+                    self.announce_btn.pack(side="left", padx=(0, 6), before=self._content_col)
+                else:
+                    self.announce_btn.pack(side="left", padx=(6, 0))
+            except Exception:
+                try:
+                    self.announce_btn.pack(expand=True)
+                except Exception:
+                    pass
+
+    def _on_leave(self, _event: Any = None) -> None:
+        self._hovering = False
+
+        def _check() -> None:
+            if not getattr(self, "_hovering", False) and self.announce_btn is not None:
+                try:
+                    self.announce_btn.pack_forget()
+                except Exception:
+                    pass
+
+        try:
+            self.frame.after(120, _check)
+        except Exception:
+            pass
+
+    def announce(self) -> None:
+        """Trigger the announcement callback for this bubble message (SP3 / LINE-style)."""
+        if self.on_announce is not None and self.message:
+            self.on_announce(self.message)
 
     def mark_read(self, text: str = "Read ✓✓") -> None:
         """Update the sender status indicator to Read (SP4)."""
@@ -1427,6 +1551,7 @@ class ChatRoomTab:
         on_sticker: Callable[[], None] | None = None,
         transcriber: SpeechTranscriber | None = None,
         on_send_sticker: Callable[[str], None] | None = None,
+        on_announce: Callable[[str], None] | None = None,
     ) -> None:
         ui = _require_ctk()
         self.frame = ui.CTkFrame(
@@ -1440,10 +1565,13 @@ class ChatRoomTab:
         self.header = tk.Canvas(self.frame, height=52, bg=BACKGROUND, highlightthickness=0, bd=0)
         self.header.pack(fill="x")
         self.header.bind("<Configure>", lambda _event: self._draw_header(room_name))
+        self.announcement_bar = AnnouncementBanner(self.frame)
+        self.announcement_bar.hide()
         self.window = ui.CTkScrollableFrame(self.frame, fg_color=BACKGROUND, corner_radius=10)
         self.window.pack(fill="both", expand=True, padx=4, pady=(4, 0))
         self.on_send = on_send or self._send_local
         self.on_send_sticker = on_send_sticker
+        self.on_announce = on_announce
         self.box = ChatBoxBar(
             self.frame,
             self._send,
@@ -1659,6 +1787,11 @@ class ChatRoomTab:
         """Render a local demonstration message until private transport (R7) is wired."""
         self.add_message("You", message, own=True)
 
+    def show_announcement(self, message: str, timestamp: str | None = None) -> None:
+        """Display or update the pinned announcement banner in this chat room (SP3 / LINE-style)."""
+        target = getattr(self.window, "_parent_frame", self.window)
+        self.announcement_bar.show(message, timestamp=timestamp, before_widget=target)
+
     def add_message(
         self,
         sender: str,
@@ -1667,9 +1800,17 @@ class ChatRoomTab:
         timestamp: str | None = None,
         message_id: str | None = None,
         avatar: Any | None = None,
+        on_announce: Callable[[str], None] | None = None,
     ) -> MessageBubble:
+        announce_cb = on_announce if on_announce is not None else self.on_announce
         bubble = MessageBubble(
-            self.window, sender, message, own, timestamp=timestamp, avatar=avatar
+            self.window,
+            sender,
+            message,
+            own,
+            timestamp=timestamp,
+            avatar=avatar,
+            on_announce=announce_cb,
         )
         bubble.frame.pack(fill="x")
         if message_id:
@@ -1826,6 +1967,7 @@ class MainChatWindow:
         self._rendered_messages: set[str] = set()
         self._unread_messages: dict[str, set[str]] = {}
         self._acknowledged_messages: set[str] = set()
+        self._latest_announcement: tuple[str, str | None] | None = None
         self.controller.on_private_message = self._handle_incoming_private_message
         self.controller.on_private_message_error = self._handle_private_message_error
         self.controller.on_read_ack = self._handle_read_ack
@@ -1910,20 +2052,33 @@ class MainChatWindow:
                         on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
                         on_sticker=lambda peer=user: self._open_sticker_picker(peer),
                         on_send_sticker=lambda s, peer=user: self._send_sticker(peer, s),
+                        on_announce=lambda msg: self.controller.send_announcement(msg),
                     )
                 except TypeError:
-                    room = ChatRoomTab(
-                        tab,
-                        user,
-                        on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
-                    )
+                    try:
+                        room = ChatRoomTab(
+                            tab,
+                            user,
+                            on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
+                            on_sticker=lambda peer=user: self._open_sticker_picker(peer),
+                            on_send_sticker=lambda s, peer=user: self._send_sticker(peer, s),
+                        )
+                    except TypeError:
+                        room = ChatRoomTab(
+                            tab,
+                            user,
+                            on_send=lambda msg, peer=user: self._send_private_message(peer, msg),
+                        )
                 room.frame.pack(fill="both", expand=True)
                 self.rooms[room_id] = room
                 if user not in self.rooms:
                     self.rooms[user] = room
+                latest_ann = getattr(self, "_latest_announcement", None)
+                if latest_ann is not None and hasattr(room, "show_announcement"):
+                    room.show_announcement(*latest_ann)
             except Exception:
                 if not tab_exists:
-                    self.tabs.delete(room_id)
+                    getattr(self.tabs, "delete", lambda _: None)(room_id)
                 raise
         if select:
             active_tab = (
@@ -1957,20 +2112,37 @@ class MainChatWindow:
                         on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
                         on_sticker=lambda g=group_name: self._open_sticker_picker(g),
                         on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
+                        on_announce=lambda msg: self.controller.send_announcement(msg),
                     )
                 except TypeError:
-                    room = ChatRoomTab(
-                        tab,
-                        group_name,
-                        on_send=lambda msg, gname=group_name: self._send_group_message(gname, msg),
-                    )
+                    try:
+                        room = ChatRoomTab(
+                            tab,
+                            group_name,
+                            on_send=lambda msg, gname=group_name: self._send_group_message(
+                                gname, msg
+                            ),
+                            on_sticker=lambda g=group_name: self._open_sticker_picker(g),
+                            on_send_sticker=lambda s, g=group_name: self._send_sticker(g, s),
+                        )
+                    except TypeError:
+                        room = ChatRoomTab(
+                            tab,
+                            group_name,
+                            on_send=lambda msg, gname=group_name: self._send_group_message(
+                                gname, msg
+                            ),
+                        )
                 room.frame.pack(fill="both", expand=True)
                 self.rooms[room_id] = room
                 if group_name not in self.rooms:
                     self.rooms[group_name] = room
+                latest_ann = getattr(self, "_latest_announcement", None)
+                if latest_ann is not None and hasattr(room, "show_announcement"):
+                    room.show_announcement(*latest_ann)
             except Exception:
                 if not tab_exists:
-                    self.tabs.delete(room_id)
+                    getattr(self.tabs, "delete", lambda _: None)(room_id)
                 raise
         if select:
             self.tabs.set(room_id)
@@ -2126,8 +2298,14 @@ class MainChatWindow:
             self.rooms[reader].mark_message_read(message_id)
 
     def _handle_announcement(self, payload: AnnouncementPayload) -> None:
-        """Reveal and update the global top-level AnnouncementBanner across all tabs (SP3)."""
-        self.banner.show(payload.message, timestamp=payload.timestamp)
+        """Reveal and update AnnouncementBanner in all open rooms (SP3 / LINE-style)."""
+        self._latest_announcement = (payload.message, payload.timestamp)
+        if hasattr(self, "banner"):
+            self.banner.show(payload.message, timestamp=payload.timestamp)
+        rooms = getattr(self, "rooms", {})
+        for room in set(rooms.values()):
+            if hasattr(room, "show_announcement"):
+                room.show_announcement(payload.message, timestamp=payload.timestamp)
 
     def _handle_private_message_error(self, target: str, error: str) -> None:
         if target and target in self.rooms:

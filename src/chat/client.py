@@ -59,6 +59,7 @@ from chat.protocol import (
     validate_message_id,
     validate_message_text,
     validate_sticker_id,
+    validate_timestamp,
     validate_username,
 )
 
@@ -477,6 +478,29 @@ class ClientSession:
 
         self.sio.emit(EVENT_SEND_STICKER, payload.to_dict())
         return msg_id
+
+    def send_announcement(
+        self,
+        message: str,
+        timestamp: str | None = None,
+    ) -> bool:
+        """Send an announcement broadcast request to the server (SP3 / LINE-style)."""
+        if not self.is_connected or not self.is_registered:
+            logger.warning("Cannot send announcement: client is not connected and registered")
+            return False
+
+        try:
+            clean_message = validate_message_text(message)
+            clean_timestamp = validate_timestamp(
+                timestamp if timestamp is not None else datetime.now().strftime("%H:%M")
+            )
+            payload = AnnouncementPayload(message=clean_message, timestamp=clean_timestamp)
+        except ProtocolValidationError as e:
+            logger.warning("Invalid announcement payload: %s", e)
+            return False
+
+        self.sio.emit(EVENT_ANNOUNCEMENT, payload.to_dict())
+        return True
 
     def get_next_event(
         self, block: bool = False, timeout: float | None = None
